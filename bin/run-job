@@ -32,7 +32,7 @@ ts="$(date -u +%Y%m%dT%H%M%SZ)"
 label="$(printf '%s' "${base%.*}" | tr -c 'A-Za-z0-9._-' '_')"
 runid="${ts}-${label}"
 
-prompt=""; cwd="$DEF_CWD"; model="$DEF_MODEL"; max_turns="$DEF_MAXTURNS"; allowed=""; project=""
+prompt=""; cwd="$DEF_CWD"; model=""; max_turns="$DEF_MAXTURNS"; allowed=""; project=""
 case "$base" in
   *.json)
     if ! jq -e . "$jobfile" >/dev/null 2>&1; then
@@ -126,6 +126,9 @@ if [ -n "$project" ]; then
   } > "$ptmp"
   prompt="$(cat "$ptmp")"; rm -f "$ptmp"
 fi
+
+# Model precedence: spec > project registry > global default ($DEF_MODEL) > account default.
+[ -z "$model" ] && model="$DEF_MODEL"
 
 outjson="$JOBS_ROOT/logs/${runid}.json"
 outtxt="$JOBS_ROOT/logs/${runid}.txt"

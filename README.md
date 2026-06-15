@@ -46,6 +46,7 @@ reads a half-written file — `*.partial` / `*.tmp` are ignored). Or, on a worke
 ```bash
 cr-submit "a quick ad-hoc prompt"                  # runs in /home/claude/work
 cr-submit -p ice-cream-book "fix broken doc links" # project job: clean checkout + PR
+cr-submit -m opus -p ice-cream-book "big refactor" # override the model for this one job
 cr-submit -f /srv/jobs/scheduled/daily.json        # queue a copy of a saved spec (cron uses this)
 ```
 
@@ -55,6 +56,10 @@ A job is **plain text** (the whole file is the prompt) or a **JSON spec**:
 { "project": "ice-cream-book", "prompt": "…", "model": "sonnet",
   "max_turns": 30, "cwd": "…", "allowed_tools": "Read Bash" }
 ```
+
+**Model resolution**, most-specific wins: the job spec's `model` (or `cr-submit -m`)
+→ the project registry's `model` → the global `CLAUDE_RUNNER_MODEL` in `runner.env`
+→ the account default.
 
 With `"project"`, the worker resolves the registry, prepares a clean checkout
 (warm-but-reset), auto-loads the repo `CLAUDE.md`, injects that project's memory, and

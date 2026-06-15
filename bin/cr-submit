@@ -1,31 +1,44 @@
 #!/usr/bin/env bash
-# cr-submit "prompt"               ad-hoc prompt
-# echo "prompt" | cr-submit        from stdin
-# cr-submit -p <project> "task"    project job (resolves repo/context/memory)
-# cr-submit -f spec.json           queue a copy of a spec (original kept; used by cron)
+# cr-submit [-m <model>] "prompt"              ad-hoc prompt
+# echo "prompt" | cr-submit [-m <model>]       from stdin
+# cr-submit [-m <model>] -p <project> "task"   project job (resolves repo/context/memory)
+# cr-submit -f spec.json                       queue a copy of a spec (original kept; used by cron)
+# -m sets the job's model (opus|sonnet|haiku|fable or a full id); it wins over the
+# project/global defaults. Omit -m to use the project (or account) default.
 set -euo pipefail
 JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$JOBS_ROOT/inbox"
-case "${1:-}" in
-  -p)
-    project="${2:?usage: cr-submit -p <project> \"task\"}"; shift 2
-    task="$*"; [ -n "$task" ] || task="$(cat)"
-    [ -n "${task// /}" ] || { echo "cr-submit: empty task" >&2; exit 1; }
-    dest="$JOBS_ROOT/inbox/${ts}-${project}.json"
-    jq -n --arg p "$project" --arg t "$task" '{project:$p, prompt:$t}' > "$dest.partial" && mv "$dest.partial" "$dest"
-    echo "queued: $dest (project=$project)" ;;
-  -f)
-    [ -f "${2:-}" ] || { echo "cr-submit: no such file: ${2:-}" >&2; exit 1; }
-    dest="$JOBS_ROOT/inbox/${ts}-$(basename "$2")"
-    cp "$2" "$dest.partial" && mv "$dest.partial" "$dest"
-    echo "queued: $dest" ;;
-  "")
-    dest="$JOBS_ROOT/inbox/${ts}-adhoc.txt"
-    cat > "$dest.partial" && mv "$dest.partial" "$dest"
-    echo "queued: $dest" ;;
-  *)
-    dest="$JOBS_ROOT/inbox/${ts}-adhoc.txt"
-    printf '%s\n' "$*" > "$dest.partial" && mv "$dest.partial" "$dest"
-    echo "queued: $dest" ;;
-esac
+
+model=""
+if [ "${1:-}" = "-m" ]; then model="${2:?usage: cr-submit -m <model> ...}"; shift 2; fi
+
+# -f: queue a verbatim copy of an existing spec (it carries its own model).
+if [ "${1:-}" = "-f" ]; then
+  [ -z "$model" ] || echo "cr-submit: -m ignored with -f (the spec carries its own model)" >&2
+  [ -f "${2:-}" ] || { echo "cr-submit: no such file: ${2:-}" >&2; exit 1; }
+  dest="$JOBS_ROOT/inbox/${ts}-$(basename "$2")"
+  cp "$2" "$dest.partial" && mv "$dest.partial" "$dest"
+  echo "queued: $dest"; exit 0
+fi
+
+project=""
+if [ "${1:-}" = "-p" ]; then project="${2:?usage: cr-submit [-m model] -p <project> \"task\"}"; shift 2; fi
+
+task="$*"; [ -n "$task" ] || task="$(cat)"
+[ -n "${task// /}" ] || { echo "cr-submit: empty task" >&2; exit 1; }
+
+if [ -n "$project" ] || [ -n "$model" ]; then
+  # JSON spec when a project and/or an explicit model is in play
+  dest="$JOBS_ROOT/inbox/${ts}-${project:-adhoc}.json"
+  jq -n --arg p "$project" --arg t "$task" --arg m "$model" \
+    '{prompt:$t}
+     + (if $p != "" then {project:$p} else {} end)
+     + (if $m != "" then {model:$m} else {} end)' \
+    > "$dest.partial" && mv "$dest.partial" "$dest"
+else
+  # plain ad-hoc text prompt
+  dest="$JOBS_ROOT/inbox/${ts}-adhoc.txt"
+  printf '%s\n' "$task" > "$dest.partial" && mv "$dest.partial" "$dest"
+fi
+echo "queued: $dest${project:+ (project=$project)}${model:+ (model=$model)}"
