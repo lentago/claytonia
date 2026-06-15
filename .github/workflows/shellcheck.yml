@@ -1,0 +1,35 @@
+# ============================================================================
+# ShellCheck — Static Analysis  (required status check for branch ruleset)
+# ============================================================================
+# Thin wrapper around PitziLabs/shared-workflows/shellcheck.yml.
+# bullpen's runner commands in bin/ are EXTENSIONLESS (they're on PATH), so the
+# default `find -name '*.sh'` discovery would miss them — we pass an explicit
+# `scripts` list. Add new bin/ scripts here when you add them.
+# ============================================================================
+
+name: ShellCheck
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+jobs:
+  shellcheck:
+    uses: PitziLabs/shared-workflows/.github/workflows/shellcheck.yml@main
+    with:
+      scripts: |
+        bin/run-job
+        bin/process-inbox
+        bin/cr-submit
+        bin/cr-newproject
+        bin/cr-emit
+        bin/gh-token
+        bin/gh-credential-helper
+        bin/claude-set-token
+        gitops/bullpen-gitops.sh
+        gitops/install.sh
+        provision/01-create-container.sh
+        provision/02-install-runner.sh
+        provision/03-github-app.sh
+        provision/04-project-layer.sh
+        provision/05-reaper-heartbeat.sh

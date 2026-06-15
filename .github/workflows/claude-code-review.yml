@@ -1,0 +1,44 @@
+# ============================================================================
+# Claude Code — Automated PR Review
+# ============================================================================
+# Thin wrapper around PitziLabs/shared-workflows/claude-review.yml. Pinned to Haiku.
+# review_prompt is tailored to bullpen (bash + systemd + gitops agent fleet).
+# ============================================================================
+
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+    paths-ignore:
+      - "LICENSE"
+      - ".gitignore"
+
+jobs:
+  claude-review:
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    uses: PitziLabs/shared-workflows/.github/workflows/claude-review.yml@main
+    secrets: inherit
+    with:
+      review_prompt: |
+        This repo is **bullpen** — a self-hosted fleet of headless Claude agents on the
+        homelab LAN. Workers poll a NAS inbox, claim jobs by atomic `rename`, run
+        `claude -p` headless in a clean checkout, and open PRs. It is bash scripts +
+        systemd units + a gitops self-deploy loop. Review with these dimensions:
+
+        - **Shell correctness & safety** — quoting, `set -euo pipefail`, error handling,
+          and the atomicity of the inbox→processing→done/failed moves.
+        - **Claim / concurrency model** — could a change let two workers double-process a
+          job or lose one? The per-worker `flock` is local sanity only; the atomic `mv`
+          is the cross-worker arbiter — flag anything that weakens either.
+        - **Crash-safety / reaper** — owner files, heartbeats, requeue/retry caps. Could a
+          change strand a job, or cause an infinite requeue loop?
+        - **Secrets hygiene** — NO tokens/keys/passwords committed; secrets live on the
+          workers (`token.env`, `gh-app.pem`). Flag anything that logs or commits a credential.
+        - **Gitops deploy loop** — validation before deploy (`bash -n`, `systemd-analyze`),
+          drift detection, and the bootstrap-only rule for the gitops units themselves.
+        - **Idempotency** — for anything that opens PRs or mutates remote state on retry.

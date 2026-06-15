@@ -6,7 +6,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo ">>> install gh CLI"
 if ! command -v gh >/dev/null 2>&1; then
-  mkdir -p -m 755 /etc/apt/keyrings
+  install -d -m 755 /etc/apt/keyrings
   curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
   chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
   echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list

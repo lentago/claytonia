@@ -5,6 +5,7 @@
 set -euo pipefail
 ENVF=/etc/claude-runner/gh-app.env
 PEM=/etc/claude-runner/gh-app.pem
+# shellcheck source=/dev/null
 [ -f "$ENVF" ] && . "$ENVF"
 : "${APP_ID:?APP_ID not set in $ENVF}"
 [ -s "$PEM" ] || { echo "gh-token: missing/empty $PEM" >&2; exit 1; }
