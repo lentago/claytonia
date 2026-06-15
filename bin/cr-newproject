@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# cr-newproject <name> <owner/repo> [model] [default_branch]
+set -euo pipefail
+JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
+REG="$JOBS_ROOT/projects/registry.json"
+name="${1:?usage: cr-newproject <name> <owner/repo> [model] [branch]}"
+repo="${2:?usage: cr-newproject <name> <owner/repo> [model] [branch]}"
+model="${3:-}"; branch="${4:-main}"
+mkdir -p "$JOBS_ROOT/projects/$name"
+[ -f "$REG" ] || echo '{}' > "$REG"
+tmp="$(mktemp)"
+jq --arg n "$name" --arg r "$repo" --arg m "$model" --arg b "$branch" --arg c "$JOBS_ROOT/projects/$name" \
+   '.[$n] = {repo:$r, default_branch:$b, model:$m, context_dir:$c, setup:""}' "$REG" > "$tmp" && mv "$tmp" "$REG"
+mem="$JOBS_ROOT/projects/$name/memory.md"
+[ -f "$mem" ] || printf '# %s — accumulated project memory\n\n_Concise, dated, durable learnings only (conventions, gotchas, build quirks)._\n' "$name" > "$mem"
+echo "registered '$name' -> $repo (branch $branch, model ${model:-default})"
+jq --arg n "$name" '.[$n]' "$REG"

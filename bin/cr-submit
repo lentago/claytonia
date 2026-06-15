@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# cr-submit "prompt"               ad-hoc prompt
+# echo "prompt" | cr-submit        from stdin
+# cr-submit -p <project> "task"    project job (resolves repo/context/memory)
+# cr-submit -f spec.json           queue a copy of a spec (original kept; used by cron)
+set -euo pipefail
+JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$JOBS_ROOT/inbox"
+case "${1:-}" in
+  -p)
+    project="${2:?usage: cr-submit -p <project> \"task\"}"; shift 2
+    task="$*"; [ -n "$task" ] || task="$(cat)"
+    [ -n "${task// /}" ] || { echo "cr-submit: empty task" >&2; exit 1; }
+    dest="$JOBS_ROOT/inbox/${ts}-${project}.json"
+    jq -n --arg p "$project" --arg t "$task" '{project:$p, prompt:$t}' > "$dest.partial" && mv "$dest.partial" "$dest"
+    echo "queued: $dest (project=$project)" ;;
+  -f)
+    [ -f "${2:-}" ] || { echo "cr-submit: no such file: ${2:-}" >&2; exit 1; }
+    dest="$JOBS_ROOT/inbox/${ts}-$(basename "$2")"
+    cp "$2" "$dest.partial" && mv "$dest.partial" "$dest"
+    echo "queued: $dest" ;;
+  "")
+    dest="$JOBS_ROOT/inbox/${ts}-adhoc.txt"
+    cat > "$dest.partial" && mv "$dest.partial" "$dest"
+    echo "queued: $dest" ;;
+  *)
+    dest="$JOBS_ROOT/inbox/${ts}-adhoc.txt"
+    printf '%s\n' "$*" > "$dest.partial" && mv "$dest.partial" "$dest"
+    echo "queued: $dest" ;;
+esac

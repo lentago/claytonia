@@ -1,0 +1,9 @@
+[Unit]
+Description=Claude worker liveness heartbeat
+ConditionPathIsDirectory=/srv/jobs
+
+[Service]
+Type=oneshot
+User=claude
+Group=claude
+ExecStart=/bin/sh -c 'mkdir -p /srv/jobs/workers && touch /srv/jobs/workers/$(hostname).alive'

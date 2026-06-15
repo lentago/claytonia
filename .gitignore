@@ -1,0 +1,13 @@
+# Secrets live on the workers, NEVER in this repo.
+**/token.env
+**/gh-app.pem
+**/gh-app.env
+*.pem
+*.smbcred
+.smbcred
+*.credentials
+
+# Local noise
+*.log
+*.swp
+*~

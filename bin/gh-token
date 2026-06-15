@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# gh-token [owner/repo] — print a short-lived (~1h) GitHub App installation token.
+# Config: /etc/claude-runner/gh-app.env  (APP_ID=, optional INSTALLATION_ID=)
+#         /etc/claude-runner/gh-app.pem  (App private key)
+set -euo pipefail
+ENVF=/etc/claude-runner/gh-app.env
+PEM=/etc/claude-runner/gh-app.pem
+[ -f "$ENVF" ] && . "$ENVF"
+: "${APP_ID:?APP_ID not set in $ENVF}"
+[ -s "$PEM" ] || { echo "gh-token: missing/empty $PEM" >&2; exit 1; }
+
+b64url(){ openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+now=$(date +%s)
+hdr=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url)
+pld=$(printf '{"iat":%s,"exp":%s,"iss":"%s"}' "$((now-60))" "$((now+540))" "$APP_ID" | b64url)
+sig=$(printf '%s' "$hdr.$pld" | openssl dgst -sha256 -sign "$PEM" -binary | b64url)
+jwt="$hdr.$pld.$sig"
+ghapi(){ curl -fsSL -H "Authorization: Bearer $jwt" -H "Accept: application/vnd.github+json" \
+                    -H "X-GitHub-Api-Version: 2022-11-28" "$@"; }
+
+inst="${INSTALLATION_ID:-}"
+repo="${1:-${GH_REPO:-}}"
+if [ -z "$inst" ]; then
+  [ -n "$repo" ] || { echo "gh-token: set INSTALLATION_ID in $ENVF, or pass owner/repo" >&2; exit 1; }
+  inst=$(ghapi "https://api.github.com/repos/$repo/installation" | jq -r .id)
+fi
+[ -n "$inst" ] && [ "$inst" != null ] || { echo "gh-token: cannot resolve installation id" >&2; exit 1; }
+
+ghapi -X POST "https://api.github.com/app/installations/$inst/access_tokens" | jq -r .token

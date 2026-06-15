@@ -1,0 +1,10 @@
+[Unit]
+Description=Claude worker heartbeat (every 30s)
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=30s
+AccuracySec=2s
+
+[Install]
+WantedBy=timers.target

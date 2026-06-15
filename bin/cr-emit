@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# cr-emit <runid> — push one structured job event to Loki via Alloy on LXC 105.
+# Reads logs/<runid>.meta (+ .txt for a PR url), builds the event, POSTs it.
+# Low-cardinality fields -> Loki stream labels; full event -> the log line.
+set -uo pipefail
+JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
+[ -f /opt/claude-runner/etc/runner.env ] && . /opt/claude-runner/etc/runner.env
+LOKI_PUSH_URL="${LOKI_PUSH_URL:-http://192.168.139.20:3100/loki/api/v1/push}"
+
+runid="${1:?usage: cr-emit <runid>}"
+meta="$JOBS_ROOT/logs/${runid}.meta"
+txt="$JOBS_ROOT/logs/${runid}.txt"
+[ -f "$meta" ] || { echo "cr-emit: no meta for $runid" >&2; exit 1; }
+
+declare -A M
+while IFS='=' read -r k v; do [ -n "$k" ] && M[$k]="$v"; done < "$meta"
+status=$([ "${M[exit]:-1}" = 0 ] && echo success || echo failed)
+project="${M[project]:-}"; [ -z "$project" ] && project="none"
+worker="$(hostname)"
+pr_url=""; [ -f "$txt" ] && pr_url="$(grep -oE 'https://github.com/[^ )]+/pull/[0-9]+' "$txt" | head -1)"
+
+event="$(jq -cn \
+  --arg runid "$runid" --arg project "$project" --arg repo "${M[repo]:-}" \
+  --arg model "${M[model]:-default}" --arg status "$status" \
+  --arg exit "${M[exit]:-}" --arg dur "${M[duration_sec]:-}" \
+  --arg cost "${M[cost_usd]:-}" --arg turns "${M[num_turns]:-}" \
+  --arg pr "$pr_url" --arg worker "$worker" --arg fin "${M[finished]:-}" \
+  '{event:"job_complete", runid:$runid, project:$project, repo:$repo, model:$model,
+    status:$status, exit:($exit|tonumber? // null), duration_sec:($dur|tonumber? // null),
+    cost_usd:($cost|tonumber? // 0), num_turns:($turns|tonumber? // null),
+    pr_url:$pr, worker:$worker, finished:$fin}')"
+
+labels="$(jq -cn --arg project "$project" --arg status "$status" \
+  --arg model "${M[model]:-default}" --arg worker "$worker" \
+  '{job:"claude_runner", service:"claude_runner", project:$project,
+    status:$status, model:$model, worker:$worker}')"
+
+ns="$(date +%s)000000000"
+payload="$(jq -cn --argjson s "$labels" --arg line "$event" --arg ts "$ns" \
+  '{streams:[{stream:$s, values:[[$ts,$line]]}]}')"
+
+curl -sf -m 10 -XPOST "$LOKI_PUSH_URL" -H 'Content-Type: application/json' \
+  --data-binary "$payload" >/dev/null && exit 0 || { echo "cr-emit: push failed" >&2; exit 1; }

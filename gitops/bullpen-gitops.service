@@ -1,0 +1,8 @@
+[Unit]
+Description=Bullpen gitops — pull origin/main and redeploy this worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bullpen-gitops

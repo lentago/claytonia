@@ -1,0 +1,10 @@
+[Unit]
+Description=Process the Claude job inbox (one-shot)
+ConditionPathIsDirectory=/srv/jobs/inbox
+
+[Service]
+Type=oneshot
+User=claude
+Group=claude
+Nice=5
+ExecStart=/opt/claude-runner/bin/process-inbox

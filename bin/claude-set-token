@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# claude-set-token — store the OAuth token from `claude setup-token` securely.
+# Run `claude setup-token` first, copy the printed token, then run this and paste it.
+set -euo pipefail
+DEST=/etc/claude-runner/token.env
+printf 'Paste the OAuth token from `claude setup-token`, then Enter: ' >&2
+read -rs TOKEN; echo >&2
+[ -n "$TOKEN" ] || { echo "no token provided" >&2; exit 1; }
+umask 077
+printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$TOKEN" | sudo tee "$DEST" >/dev/null
+sudo chown root:claude "$DEST"; sudo chmod 640 "$DEST"
+echo "stored in $DEST (root:claude 640), token length ${#TOKEN}" >&2
