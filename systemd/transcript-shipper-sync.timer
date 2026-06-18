@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically sync the fleet transcript shipper from homelab-observability
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

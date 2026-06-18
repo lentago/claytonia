@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# transcript-shipper-sync — keep this worker's live fleet transcript shipper in
+# sync with its canonical config in PitziLabs/homelab-observability.
+#
+# Deployed to /opt/claude-runner/bin by the bullpen gitops loop; run as root by
+# transcript-shipper-sync.timer. Pulls origin/main of the obs checkout and
+# re-runs that repo's deploy script ONLY when it actually changed — so a steady
+# state is a silent no-op and the alloy-transcript service isn't restarted for
+# nothing. Mirrors the pve2 kiosk gitops loop.
+#
+# The shipper's Alloy config + deploy logic live in homelab-observability (single
+# source of truth) — this loop owns neither, it just re-applies them on drift.
+# Grafana Cloud push creds come from the unit's EnvironmentFile
+# (/etc/default/alloy-transcript), which the deploy script itself wrote.
+set -uo pipefail
+
+OBS_DIR="${OBS_REPO_DIR:-/opt/homelab-observability}"
+LOG="${TRANSCRIPT_SYNC_LOG:-/var/log/transcript-shipper-sync.log}"
+DEPLOY="$OBS_DIR/scripts/deploy-runner-transcript-alloy.sh"
+
+exec 9>/tmp/transcript-shipper-sync.lock; flock -n 9 || exit 0
+log(){ echo "[$(date -u +%FT%TZ)] $*" >> "$LOG"; }
+[ -f "$LOG" ] && [ "$(stat -c%s "$LOG" 2>/dev/null || echo 0)" -gt 1000000 ] && mv -f "$LOG" "$LOG.1"
+
+[ -d "$OBS_DIR/.git" ] || { log "no checkout at $OBS_DIR — run provision/06 first"; exit 1; }
+cd "$OBS_DIR" || exit 1
+br="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+[ "$br" = main ] || { log "on '$br', not main — refusing to redeploy"; exit 0; }
+git fetch --quiet origin main || { log "git fetch failed"; exit 1; }
+local_sha="$(git rev-parse HEAD)"; remote_sha="$(git rev-parse origin/main)"
+[ "$local_sha" = "$remote_sha" ] && exit 0          # no change — silent no-op
+log "update ${local_sha:0:8} -> ${remote_sha:0:8}"
+git reset --hard --quiet origin/main || { log "git reset failed"; exit 1; }
+
+# Creds are injected by the unit's EnvironmentFile; bail quietly if this worker
+# hasn't been given the push token yet (the config is unchanged, nothing breaks).
+if [ -z "${GRAFANA_CLOUD_LOGS_URL:-}" ] || [ -z "${GRAFANA_CLOUD_LOGS_USER:-}" ] || [ -z "${GRAFANA_CLOUD_LOGS_TOKEN:-}" ]; then
+  log "GRAFANA_CLOUD_LOGS_* not set — pulled new config but skipping redeploy"
+  exit 0
+fi
+
+[ -x "$DEPLOY" ] || { log "deploy script missing/!x at $DEPLOY"; exit 1; }
+if "$DEPLOY" >>"$LOG" 2>&1; then
+  log "redeploy complete"
+else
+  log "redeploy FAILED — see output above"; exit 1
+fi

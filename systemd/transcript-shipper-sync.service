@@ -1,0 +1,14 @@
+[Unit]
+Description=Sync the live fleet transcript shipper from homelab-observability (oneshot)
+Documentation=https://github.com/PitziLabs/homelab-observability/issues/71
+ConditionPathIsDirectory=/opt/homelab-observability
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as root: the deploy script installs/reloads systemd units and the alloy
+# binary. The push token (GRAFANA_CLOUD_LOGS_*) is read from the file the deploy
+# script itself maintains; '-' makes it optional until the worker is credentialed.
+EnvironmentFile=-/etc/default/alloy-transcript
+ExecStart=/opt/claude-runner/bin/transcript-shipper-sync

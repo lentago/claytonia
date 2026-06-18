@@ -11,6 +11,7 @@ the intended sequence.
 | `03-github-app.sh` | `gh` CLI + GitHub App token plumbing (`gh-token`, credential helper, git identity). |
 | `04-project-layer.sh` | Project registry + per-project context layer + project-aware `run-job` + `cr-newproject`. |
 | `05-reaper-heartbeat.sh` | Heartbeat timer + reaper (stranded-job recovery) wired into `process-inbox`. |
+| `06-transcript-shipper.sh` | Live fleet **transcript shipper**: checks out `homelab-observability`, runs its `deploy-runner-transcript-alloy.sh`, and enables a drift-sync timer. Ships each running job's scrubbed reasoning to Grafana Cloud Loki (`job="claude_transcript"`) for the fleet dashboard's *"stream of consciousness"* panel. Config is canonical in [homelab-observability#71](https://github.com/PitziLabs/homelab-observability/issues/71) — nothing is vendored here. |
 
 > These are the bootstrap history. Once a worker is up and `gitops/install.sh` is run,
 > further changes to `bin/`/`systemd/`/`cron/`/`etc/` come from `main` via the gitops
@@ -31,7 +32,13 @@ the intended sequence.
    - GitHub App: write `/etc/claude-runner/gh-app.env` (APP_ID, INSTALLATION_ID) and
      pipe the App private key to `/etc/claude-runner/gh-app.pem` (mode 640 root:claude).
    - Install the App on the repos this worker should touch.
-5. **Bootstrap gitops:** `gitops/install.sh` — from then on the worker self-updates from `main`.
+   - **Transcript shipper (optional):** the Grafana Cloud LOGS push token. Provide it
+     when you run `06` (below); it lands in `/etc/default/alloy-transcript` (640
+     root:claude) and is inherited by clones.
+5. **Run `06`** with the push token to install the transcript shipper:
+   `sudo env GRAFANA_CLOUD_LOGS_URL=… GRAFANA_CLOUD_LOGS_USER=… GRAFANA_CLOUD_LOGS_TOKEN=… provision/06-transcript-shipper.sh`
+   (Skip if this worker shouldn't ship reasoning. Safe to re-run later with the token.)
+6. **Bootstrap gitops:** `gitops/install.sh` — from then on the worker self-updates from `main`.
 
 ## Additional worker (clone an existing one)
 
@@ -49,3 +56,9 @@ pct set <new> -net0 name=eth0,bridge=vmbr0,ip=<new-ip>/24,gw=<gw>
 The clone inherits the auth secrets and code — it's a working worker immediately. Give
 it a unique IP + hostname (the hostname becomes its metrics `worker` label). Co-locate
 clones on the same host so they share one CIFS mount (kernel-arbitrated claims).
+
+The **transcript shipper** comes along for free on a clone: its Alloy service, the
+`/opt/homelab-observability` checkout, the sync timer, and the
+`/etc/default/alloy-transcript` push token are all copied. Because the shipper labels
+its stream with `constants.hostname` (not a baked value), the clone self-labels with
+its own new hostname — no per-clone reconfiguration needed.
