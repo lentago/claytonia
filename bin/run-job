@@ -149,6 +149,7 @@ printf '%s\n' "$runid" > "$_sid_projdir/${sid}.runid" 2>/dev/null || true
 unset _sid_projdir
 
 echo "run-job START runid=$runid project=${project:-none} model=${model:-default} cwd=$cwd" | systemd-cat -t claude-runner -p info
+cr-emit started "$runid" "${project:-}" "${model:-}" 2>/dev/null || true
 start=$(date -u +%s)
 # Heartbeat: mark this worker as underway in Loki (event=job_running) every 10s while
 # the job is in flight, so the "Runners underway" dashboard panel has an in-flight
