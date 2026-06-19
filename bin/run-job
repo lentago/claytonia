@@ -141,6 +141,7 @@ args=( -p --dangerously-skip-permissions --output-format json )
 
 echo "run-job START runid=$runid project=${project:-none} model=${model:-default} cwd=$cwd" | systemd-cat -t claude-runner -p info
 start=$(date -u +%s)
+cr-emit started "$runid" "${project:-}" "${model:-}" 2>/dev/null || true
 # Heartbeat: mark this worker as underway in Loki (event=job_running) every 30s while
 # the job is in flight, so the "Runners underway" dashboard panel has an in-flight
 # signal (the job_complete event only lands at the end). One beat fires immediately so
