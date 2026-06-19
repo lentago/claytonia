@@ -17,7 +17,11 @@ if [ "${1:-}" = "-m" ]; then model="${2:?usage: cr-submit -m <model> ...}"; shif
 if [ "${1:-}" = "-f" ]; then
   [ -z "$model" ] || echo "cr-submit: -m ignored with -f (the spec carries its own model)" >&2
   [ -f "${2:-}" ] || { echo "cr-submit: no such file: ${2:-}" >&2; exit 1; }
-  dest="$JOBS_ROOT/inbox/${ts}-$(basename "$2")"
+  _base="$(basename "$2")"
+  _ext="${_base##*.}"
+  _stem="${_base%.*}"
+  if [ "$_ext" != "$_base" ]; then _ext=".$_ext"; else _ext=""; fi
+  dest="$JOBS_ROOT/inbox/${ts}-${_stem}-$$-$RANDOM${_ext}"
   cp "$2" "$dest.partial" && mv "$dest.partial" "$dest"
   echo "queued: $dest"; exit 0
 fi
@@ -30,7 +34,7 @@ task="$*"; [ -n "$task" ] || task="$(cat)"
 
 if [ -n "$project" ] || [ -n "$model" ]; then
   # JSON spec when a project and/or an explicit model is in play
-  dest="$JOBS_ROOT/inbox/${ts}-${project:-adhoc}.json"
+  dest="$JOBS_ROOT/inbox/${ts}-${project:-adhoc}-$$-$RANDOM.json"
   jq -n --arg p "$project" --arg t "$task" --arg m "$model" \
     '{prompt:$t}
      + (if $p != "" then {project:$p} else {} end)
@@ -38,7 +42,7 @@ if [ -n "$project" ] || [ -n "$model" ]; then
     > "$dest.partial" && mv "$dest.partial" "$dest"
 else
   # plain ad-hoc text prompt
-  dest="$JOBS_ROOT/inbox/${ts}-adhoc.txt"
+  dest="$JOBS_ROOT/inbox/${ts}-adhoc-$$-$RANDOM.txt"
   printf '%s\n' "$task" > "$dest.partial" && mv "$dest.partial" "$dest"
 fi
 echo "queued: $dest${project:+ (project=$project)}${model:+ (model=$model)}"
