@@ -31,6 +31,7 @@ base="$(basename "$jobfile")"
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 label="$(printf '%s' "${base%.*}" | tr -c 'A-Za-z0-9._-' '_')"
 runid="${ts}-${label}"
+sid="$(uuidgen)"
 
 prompt=""; cwd="$DEF_CWD"; model=""; max_turns="$DEF_MAXTURNS"; allowed=""; project=""
 case "$base" in
@@ -134,10 +135,18 @@ outjson="$JOBS_ROOT/logs/${runid}.json"
 outtxt="$JOBS_ROOT/logs/${runid}.txt"
 meta="$JOBS_ROOT/logs/${runid}.meta"
 
-args=( -p --dangerously-skip-permissions --output-format json )
+args=( -p --dangerously-skip-permissions --output-format json --session-id "$sid" )
 [ -n "$model" ]     && args+=( --model "$model" )
 [ -n "$max_turns" ] && args+=( --max-turns "$max_turns" )
 [ -n "$allowed" ]   && args+=( --allowedTools "$allowed" )
+
+# Write <sid>.runid sidecar next to the live transcript so the worker Alloy can
+# attach a runid label to the transcript stream without waiting for the run to end.
+# Directory name mirrors Claude Code's cwd-encoding convention (/ → -).
+_sid_projdir="$HOME/.claude/projects/$(printf '%s' "$cwd" | tr '/' '-')"
+mkdir -p "$_sid_projdir" 2>/dev/null || true
+printf '%s\n' "$runid" > "$_sid_projdir/${sid}.runid" 2>/dev/null || true
+unset _sid_projdir
 
 echo "run-job START runid=$runid project=${project:-none} model=${model:-default} cwd=$cwd" | systemd-cat -t claude-runner -p info
 start=$(date -u +%s)
@@ -162,8 +171,6 @@ else
   cp "$outjson" "$outtxt" 2>/dev/null || true
 fi
 
-# session id links this runid to Claude Code's local session transcript
-sid="$(jq -r '.session_id // empty' "$outjson" 2>/dev/null)"
 # Capture the full reasoning transcript (assistant messages, thinking blocks, tool
 # calls/results) that Claude Code wrote locally -> durable NAS log, keyed by runid.
 # Best-effort; toggle off with CLAUDE_RUNNER_CAPTURE_TRANSCRIPT=0.
