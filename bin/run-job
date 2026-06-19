@@ -141,11 +141,11 @@ args=( -p --dangerously-skip-permissions --output-format json )
 
 echo "run-job START runid=$runid project=${project:-none} model=${model:-default} cwd=$cwd" | systemd-cat -t claude-runner -p info
 start=$(date -u +%s)
-# Heartbeat: mark this worker as underway in Loki (event=job_running) every 30s while
+# Heartbeat: mark this worker as underway in Loki (event=job_running) every 10s while
 # the job is in flight, so the "Runners underway" dashboard panel has an in-flight
 # signal (the job_complete event only lands at the end). One beat fires immediately so
-# even sub-30s jobs register. Best-effort; killed as soon as the job returns.
-( while :; do cr-emit running "$runid" "${project:-}" "${model:-}" 2>/dev/null; sleep 30; done ) &
+# even sub-10s jobs register. Best-effort; killed as soon as the job returns.
+( while :; do cr-emit running "$runid" "${project:-}" "${model:-}" 2>/dev/null; sleep 10; done ) &
 hb_pid=$!
 ( cd "$cwd" && "$CLAUDE_BIN" "${args[@]}" "$prompt" ) >"$outjson" 2>>"$errlog"
 rc=$?

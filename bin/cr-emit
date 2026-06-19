@@ -3,7 +3,7 @@
 #                              Builds the event from logs/<runid>.meta (+ .txt for a PR url).
 # cr-emit running <runid> [project] [model]
 #                            — push a lightweight job_running heartbeat (no .meta needed),
-#                              emitted by run-job every ~30s while a job is in flight so the
+#                              emitted by run-job every ~10s while a job is in flight so the
 #                              "Runners underway" dashboard panel has an in-flight signal.
 # Low-cardinality fields -> Loki stream labels; full event -> the log line.
 set -uo pipefail
@@ -14,7 +14,7 @@ LOKI_PUSH_URL="${LOKI_PUSH_URL:-http://192.168.139.20:3100/loki/api/v1/push}"
 # loki_push <labels-json> <line-json> — POST one stream value to Loki, stamped now.
 loki_push() {
   local labels="$1" line="$2" ns payload
-  ns="$(date +%s)000000000"
+  ns="$(date +%s%N)"
   payload="$(jq -cn --argjson s "$labels" --arg line "$line" --arg ts "$ns" \
     '{streams:[{stream:$s, values:[[$ts,$line]]}]}')"
   curl -sf -m 10 -XPOST "$LOKI_PUSH_URL" -H 'Content-Type: application/json' \
