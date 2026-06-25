@@ -1,11 +1,10 @@
-## Origin
-
-<!-- 2–4 sentences, third-person past tense: who asked for this and what they wanted,
-     including the substantive constraints. Don't quote the prompt verbatim. -->
-
 ## Summary
 
-<!-- One or two sentences: what changed and why. Link the issue if there is one. -->
+<!-- What changed and why, in a neutral, objective, action-oriented voice.
+     Cover the who/what/why woven in: what the change does, the motivation
+     behind it, and the substantive constraints. No "X wanted…" narrative and
+     no separate Origin section; don't quote the prompt verbatim. Link the
+     issue if there is one. -->
 
 Closes #
 
