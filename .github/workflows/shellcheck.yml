@@ -1,7 +1,7 @@
 # ============================================================================
 # ShellCheck — Static Analysis  (required status check for branch ruleset)
 # ============================================================================
-# Thin wrapper around PitziLabs/shared-workflows/shellcheck.yml.
+# Thin wrapper around lentago/shared-workflows/shellcheck.yml.
 # bullpen's runner commands in bin/ are EXTENSIONLESS (they're on PATH), so the
 # default `find -name '*.sh'` discovery would miss them — we pass an explicit
 # `scripts` list. Add new bin/ scripts here when you add them.
@@ -15,7 +15,7 @@ on:
 
 jobs:
   shellcheck:
-    uses: PitziLabs/shared-workflows/.github/workflows/shellcheck.yml@main
+    uses: lentago/shared-workflows/.github/workflows/shellcheck.yml@main
     with:
       scripts: |
         bin/run-job
