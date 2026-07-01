@@ -10,16 +10,41 @@ JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$JOBS_ROOT/inbox"
 
+usage() {
+  cat <<'EOF'
+Usage:
+  cr-submit [-m <model>] "prompt"
+  echo "prompt" | cr-submit [-m <model>]
+  cr-submit [-m <model>] -p <project> "task"
+  cr-submit -f spec.json
+
+Options:
+  -m <model>    job model (opus|sonnet|haiku|fable or a full id); wins over project/global defaults
+  -p <project>  project name (resolves repo/context/memory)
+  -f spec.json  queue a verbatim copy of an existing spec (original kept; used by cron)
+  -h, --help    show this help and exit
+EOF
+}
+
 model=""
 project=""
 
 while true; do
   case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
     -m) model="${2:?usage: cr-submit -m <model> ...}"; shift 2 ;;
     -p) project="${2:?usage: cr-submit [-m model] -p <project> \"task\"}"; shift 2 ;;
+    -f) break ;;
+    -*) echo "cr-submit: unknown option: ${1}" >&2; usage >&2; exit 1 ;;
     *)  break ;;
   esac
 done
+
+# bare invocation with no args and no piped stdin → show usage
+if [ $# -eq 0 ] && [ -t 0 ]; then
+  usage
+  exit 0
+fi
 
 # -f: queue a verbatim copy of an existing spec (it carries its own model).
 if [ "${1:-}" = "-f" ]; then
