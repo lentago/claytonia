@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # transcript-shipper-sync — keep this worker's live fleet transcript shipper in
-# sync with its canonical config in PitziLabs/homelab-observability.
+# sync with its canonical config in lentago/homelab-observability.
 #
 # Deployed to /opt/claude-runner/bin by the bullpen gitops loop; run as root by
 # transcript-shipper-sync.timer. Pulls origin/main of the obs checkout and

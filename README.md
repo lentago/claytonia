@@ -100,7 +100,7 @@ At-least-once delivery — see Caveats for the idempotency boundary.
 - **Claude**: a subscription OAuth token (`claude setup-token`) in
   `/etc/claude-runner/token.env` (`CLAUDE_CODE_OAUTH_TOKEN`). Headless `claude -p`
   draws from the Agent SDK credit pool.
-- **GitHub**: a GitHub App (`pitzilabs-claude-runner`). `gh-token` mints short-lived
+- **GitHub**: a GitHub App (`lentago-claude-runner`). `gh-token` mints short-lived
   installation tokens from the App key; `gh-credential-helper` feeds git per-op so no
   token is persisted. Workers open branches + PRs and **never merge** — review is a
   human step.
