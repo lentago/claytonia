@@ -15,7 +15,7 @@ until a job arrives, then one gets the call.
   you / cron / HA / a script
         │  write a job file
         ▼
-  NAS inbox  (//neptune/PitziLabs/claude-jobs/inbox)   ← shared "queue"
+  NAS inbox  (//neptune/lentago/claude-jobs/inbox)   ← shared "queue"
         │  every worker polls every 15s
         ▼
   a worker claims it  (atomic mv inbox→processing/<runid>)   ← exactly-once
