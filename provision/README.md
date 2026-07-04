@@ -11,7 +11,7 @@ the intended sequence.
 | `03-github-app.sh` | `gh` CLI + GitHub App token plumbing (`gh-token`, credential helper, git identity). |
 | `04-project-layer.sh` | Project registry + per-project context layer + project-aware `run-job` + `cr-newproject`. |
 | `05-reaper-heartbeat.sh` | Heartbeat timer + reaper (stranded-job recovery) wired into `process-inbox`. |
-| `06-transcript-shipper.sh` | Live fleet **transcript shipper**: checks out `homelab-observability`, runs its `deploy-runner-transcript-alloy.sh`, and enables a drift-sync timer. Ships each running job's scrubbed reasoning to Grafana Cloud Loki (`job="claude_transcript"`) for the fleet dashboard's *"stream of consciousness"* panel. Config is canonical in [homelab-observability#71](https://github.com/lentago/homelab-observability/issues/71) — nothing is vendored here. |
+| `06-transcript-shipper.sh` | Live fleet **transcript shipper**: checks out `drosera`, runs its `deploy-runner-transcript-alloy.sh`, and enables a drift-sync timer. Ships each running job's scrubbed reasoning to Grafana Cloud Loki (`job="claude_transcript"`) for the fleet dashboard's *"stream of consciousness"* panel. Config is canonical in [drosera#71](https://github.com/lentago/drosera/issues/71) — nothing is vendored here. |
 
 > These are the bootstrap history. Once a worker is up and `gitops/install.sh` is run,
 > further changes to `bin/`/`systemd/`/`cron/`/`etc/` come from `main` via the gitops
