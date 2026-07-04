@@ -2,10 +2,10 @@
 # install.sh — bootstrap the bullpen gitops loop on a worker. Run ONCE as root
 # on each worker (it is deliberately not managed by the loop it installs).
 #
-#   curl -fsSL https://raw.githubusercontent.com/lentago/bullpen/main/gitops/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/lentago/claytonia/main/gitops/install.sh | bash
 #   (or run from a checkout)
 set -euo pipefail
-REPO_URL="${BULLPEN_REPO_URL:-https://github.com/lentago/bullpen.git}"
+REPO_URL="${BULLPEN_REPO_URL:-https://github.com/lentago/claytonia.git}"
 REPO_DIR="${BULLPEN_REPO_DIR:-/opt/bullpen}"
 
 if [ ! -d "$REPO_DIR/.git" ]; then

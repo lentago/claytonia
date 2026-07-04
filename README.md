@@ -1,15 +1,22 @@
-# bullpen
+# claytonia
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lentago/bullpen)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lentago/claytonia)
 
-A self-hosted **fleet of headless Claude agents** on the LAN. Drop a job onto the
-NAS, an idle worker picks it up, does the work in a clean checkout, and opens a PR
-for human review. Scheduled (cron) + triggered (drop-folder) jobs, per-project
-context, GitHub App auth, per-job metrics to Grafana, crash-safe at-least-once
-delivery.
+**Claytonia** (spring beauty — the botanical codename line alongside `lentago`,
+`solidago`, `kalmia`, and `drosera`) is the Lentago Labs agent-fleet
+orchestration system: a self-hosted **fleet of headless coding agents** on the
+LAN. Drop a job onto the NAS, an idle worker picks it up, does the work in a
+clean checkout, and opens a PR for human review. Scheduled (cron) + triggered
+(drop-folder) jobs, per-project context, GitHub App auth, per-job metrics to
+Grafana, crash-safe at-least-once delivery. Today's workers run Claude Code;
+platform-agnostic worker support (other agent CLIs behind the same queue) is
+the next scope expansion.
 
-The name: a *bullpen* is a pool of ready workers called up when needed. Agents idle
-until a job arrives, then one gets the call.
+The fleet keeps its nickname, **the bullpen**: a pool of ready workers called up
+when needed. Agents idle until a job arrives, then one gets the call. The
+on-host layer keeps the name too (`/opt/bullpen`, `bullpen-gitops.*`,
+`BULLPEN_*` env vars) — renamed from `bullpen` on 2026-07-04, live paths and
+unit names deliberately unchanged.
 
 ## How a job flows
 
