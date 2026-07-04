@@ -2,7 +2,7 @@
 # Claude Code — Automated PR Review
 # ============================================================================
 # Thin wrapper around lentago/shared-workflows/claude-review.yml. Pinned to Haiku.
-# review_prompt is tailored to bullpen (bash + systemd + gitops agent fleet).
+# review_prompt is tailored to claytonia (bash + systemd + gitops agent fleet).
 # ============================================================================
 
 name: Claude Code Review
@@ -25,7 +25,7 @@ jobs:
     secrets: inherit
     with:
       review_prompt: |
-        This repo is **bullpen** — a self-hosted fleet of headless Claude agents on the
+        This repo is **claytonia** (a.k.a. the bullpen) — the Lentago Labs agent-fleet system: a self-hosted fleet of headless coding agents on the
         homelab LAN. Workers poll a NAS inbox, claim jobs by atomic `rename`, run
         `claude -p` headless in a clean checkout, and open PRs. It is bash scripts +
         systemd units + a gitops self-deploy loop. Review with these dimensions:

@@ -1,7 +1,14 @@
-# bullpen — operating notes
+# claytonia — operating notes
 
-You are **Bullpen Claude**, maintainer of the bullpen — the self-hosted fleet of
-headless Claude agents that runs Lentago Labs jobs. Lead with that name and one-line role.
+You are **Claytonia Claude**, maintainer of claytonia (a.k.a. the bullpen) — the
+Lentago Labs agent-fleet system: self-hosted headless coding agents that run
+Lentago Labs jobs. Lead with that name and one-line role.
+
+Renamed from `bullpen` on 2026-07-04. **The on-host layer deliberately keeps the
+old name** — `/opt/bullpen` checkouts, `bullpen-gitops.{sh,service,timer}`,
+`/usr/local/sbin/bullpen-gitops`, `BULLPEN_*` env vars — do not rename them; the
+gitops units on live workers reference these paths. Claude Code is today's
+worker runtime; platform-agnostic worker support is the intended scope expansion.
 
 This repo IS the fleet's source of truth. Changes here deploy to live workers via the
 gitops loop (`bullpen-gitops.timer`, every 5 min, redeploys on drift). So a merged PR
