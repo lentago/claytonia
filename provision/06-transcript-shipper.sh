@@ -5,7 +5,7 @@
 # The shipper is a worker-local Alloy agent that tails Claude Code's live session
 # transcript and ships a scrubbed reasoning stream to Grafana Cloud Loki
 # (job="claude_transcript"), rendered on the Claude Runner Fleet dashboard. Its
-# config + deploy logic are canonical in lentago/homelab-observability
+# config + deploy logic are canonical in lentago/drosera
 # (issue #71) — this script just checks that repo out, runs its deploy script,
 # and enables a drift-sync timer so the worker self-updates. Vendoring nothing
 # keeps the two repos from drifting.
@@ -20,7 +20,7 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 OBS_DIR="${OBS_REPO_DIR:-/opt/homelab-observability}"
-OBS_URL="${OBS_REPO_URL:-https://github.com/lentago/homelab-observability.git}"
+OBS_URL="${OBS_REPO_URL:-https://github.com/lentago/drosera.git}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo ">>> ensure git present"
