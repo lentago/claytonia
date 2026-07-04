@@ -54,15 +54,15 @@ reads a half-written file — `*.partial` / `*.tmp` are ignored). Or, on a worke
 
 ```bash
 cr-submit "a quick ad-hoc prompt"                  # runs in /home/claude/work
-cr-submit -p ice-cream-book "fix broken doc links" # project job: clean checkout + PR
-cr-submit -m opus -p ice-cream-book "big refactor" # override the model for this one job
+cr-submit -p site-icecreamtofightwith-com "fix broken doc links" # project job: clean checkout + PR
+cr-submit -m opus -p site-icecreamtofightwith-com "big refactor" # override the model for this one job
 cr-submit -f /srv/jobs/scheduled/daily.json        # queue a copy of a saved spec (cron uses this)
 ```
 
 A job is **plain text** (the whole file is the prompt) or a **JSON spec**:
 
 ```json
-{ "project": "ice-cream-book", "prompt": "…", "model": "sonnet",
+{ "project": "site-icecreamtofightwith-com", "prompt": "…", "model": "sonnet",
   "max_turns": 30, "cwd": "…", "allowed_tools": "Read Bash" }
 ```
 
