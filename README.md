@@ -1,5 +1,7 @@
 # bullpen
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lentago/bullpen)
+
 A self-hosted **fleet of headless Claude agents** on the LAN. Drop a job onto the
 NAS, an idle worker picks it up, does the work in a clean checkout, and opens a PR
 for human review. Scheduled (cron) + triggered (drop-folder) jobs, per-project
