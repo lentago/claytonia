@@ -1,6 +1,6 @@
 [Unit]
 Description=Sync the live fleet transcript shipper from homelab-observability (oneshot)
-Documentation=https://github.com/lentago/homelab-observability/issues/71
+Documentation=https://github.com/lentago/drosera/issues/71
 ConditionPathIsDirectory=/opt/homelab-observability
 After=network-online.target
 Wants=network-online.target
