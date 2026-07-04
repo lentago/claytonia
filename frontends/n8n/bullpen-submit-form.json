@@ -41,7 +41,7 @@
                     "option": "homeassistant-config"
                   },
                   {
-                    "option": "foundry-platform-demo"
+                    "option": "solidago"
                   },
                   {
                     "option": "firewalla-axiom-pipeline"
