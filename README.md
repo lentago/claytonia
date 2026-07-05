@@ -119,7 +119,7 @@ Secrets (`token.env`, `gh-app.pem`) live on the workers, never in this repo.
 ## Metrics
 
 Every job emits a `job_complete` event (cost, turns, duration, status, repo, pr_url,
-worker) to the homelab Alloy Loki receiver → Grafana Cloud. Dashboard **"Claude Runner
+worker) to the Lentago lab Alloy Loki receiver → Grafana Cloud. Dashboard **"Claude Runner
 Fleet"** (uid `claude-runner-fleet`): spend, success rate, throughput, duration, and
 **open agent PRs awaiting review** — the review front door.
 

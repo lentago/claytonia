@@ -57,7 +57,7 @@ A change to `bin/` or `systemd/` affects every worker on the next 5-min poll. Pr
 
 ## Where things run
 
-Workers are unprivileged LXCs on the PVE cluster (see the homelab inventory). The NAS
-inbox is an SMB share bind-mounted to `/srv/jobs`. Metrics go to the homelab Grafana
+Workers are unprivileged LXCs on the PVE cluster (see the Lentago lab inventory). The NAS
+inbox is an SMB share bind-mounted to `/srv/jobs`. Metrics go to the Lentago lab Grafana
 Cloud stack via the Alloy Loki receiver. None of that infra is configured from this
 repo — this repo is the agent runtime only.

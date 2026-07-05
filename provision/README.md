@@ -19,7 +19,7 @@ the intended sequence.
 
 ## New worker, from zero
 
-1. **Create the LXC** (unprivileged, static IP on the LAN, `vmbr0`). See the homelab
+1. **Create the LXC** (unprivileged, static IP on the LAN, `vmbr0`). See the Lentago lab
    inventory for sizing (2 cores / 4 GiB / 20 GB is plenty).
 2. **Bind-mount the NAS job dir.** On the PVE host: CIFS-mount the `lentago` share
    with `uid/gid` mapped to the in-container `claude` user (uid 1000 → host 101000 for

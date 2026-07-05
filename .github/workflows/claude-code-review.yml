@@ -26,7 +26,7 @@ jobs:
     with:
       review_prompt: |
         This repo is **claytonia** (a.k.a. the bullpen) — the Lentago Labs agent-fleet system: a self-hosted fleet of headless coding agents on the
-        homelab LAN. Workers poll a NAS inbox, claim jobs by atomic `rename`, run
+        Lentago lab LAN. Workers poll a NAS inbox, claim jobs by atomic `rename`, run
         `claude -p` headless in a clean checkout, and open PRs. It is bash scripts +
         systemd units + a gitops self-deploy loop. Review with these dimensions:
 

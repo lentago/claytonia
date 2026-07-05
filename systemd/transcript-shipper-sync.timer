@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodically sync the fleet transcript shipper from homelab-observability
+Description=Periodically sync the fleet transcript shipper from drosera
 
 [Timer]
 OnBootSec=3min
