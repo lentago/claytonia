@@ -147,10 +147,14 @@ PR, not a hand-run script on every box.** The `bullpen-gitops.*` units are boots
 
 ## Provisioning a worker
 
-See `provision/README.md`. In short: create an unprivileged LXC, bind-mount the NAS
-`claude-jobs` dir to `/srv/jobs`, run `provision/01..05`, set the auth secrets, then
-`gitops/install.sh`. Additional workers are a `pct clone` (detach/re-attach the bind
-mount) with a fresh IP + hostname.
+See `provision/README.md`. In short: `pct create` from the kalmia runner image
+(`neptune:vztmpl/claytonia-runner-*` — the OS substrate **and** this repo's gitops
+loop are baked in), bind-mount the NAS `claude-jobs` dir to `/srv/jobs`, and inject
+the auth secrets; the worker self-converges from `main` on first boot. Guest
+existence is codified in `terraform/`. Additional workers are another image create,
+or a `pct clone` (detach/re-attach the bind mount) with a fresh IP + hostname. The
+old hand-run `provision/01–05` bootstrap is legacy — its substrate moved to kalmia's
+image forge, its runner software was always the gitops loop's.
 
 ## Failure handling
 

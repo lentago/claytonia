@@ -117,9 +117,10 @@ install dir with its own systemd service.
    (`pvesh set /pools/claytonia --vms <id>`), attach the NAS bind mount
    (`pct set <id> -mp0 /mnt/neptune-lentago/claude-jobs,mp=/srv/jobs` — see
    `provision/README.md` step 2, including the `RequiresMountsFor=` drop-in).
-3. In-guest: run `provision/` + secrets + gitops install
-   (`provision/README.md` steps 3–5) — collapses to "boot the kalmia-baked
-   image" once [kalmia#36](https://github.com/lentago/kalmia/issues/36) ships.
+3. In-guest: nothing to run — workers are cut from the kalmia runner image
+   (substrate + gitops baked; `template_file_id` in the module), so first boot
+   just needs the injected secrets and the gitops loop converges from `main`.
+   See `provision/README.md` § New worker.
 4. Firewalla: a brand-new MAC lands in Device Access Protection `learning`
    state (default-block); classify it or force FireMain re-evaluation if the
    worker can't reach the internet.
