@@ -1,0 +1,178 @@
+name: terraform
+
+on:
+  pull_request:
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform.yml"
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write # OIDC → AWS for the S3 state backend (plan + apply jobs)
+
+env:
+  # OIDC role (least-privilege: this repo's S3 state key + the lock table only).
+  AWS_ROLE: arn:aws:iam::365184644049:role/claytonia-github-actions-terraform
+  AWS_REGION: us-east-1
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.9"
+          terraform_wrapper: false
+
+      - name: fmt
+        run: terraform fmt -check -recursive
+
+      - name: init (no backend)
+        run: terraform init -backend=false -input=false
+
+      - name: validate
+        run: terraform validate -no-color
+
+  # plan + apply run on the LAN runner (LXC 115 gha-runner on pve4): the
+  # Proxmox API is LAN-only, unreachable from GitHub-hosted runners.
+  plan:
+    needs: validate
+    runs-on: [self-hosted, lan]
+    # Same-repo PRs only: fork PRs must never reach the LAN runner (defense
+    # in depth alongside the repo's require-approval-for-all-outside-
+    # collaborators Actions setting).
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      PROXMOX_VE_API_TOKEN: ${{ secrets.PROXMOX_VE_API_TOKEN }}
+      # Trust the PVE Cluster Manager CA (provider verifies the API cert;
+      # providers.tf sets insecure = false). SSL_CERT_DIR keeps system roots
+      # for the AWS S3 backend; SSL_CERT_FILE adds the committed PVE root CA.
+      SSL_CERT_DIR: /etc/ssl/certs
+      SSL_CERT_FILE: ${{ github.workspace }}/terraform/pve-root-ca.pem
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Proxmox secret
+        run: |
+          if [ -z "${PROXMOX_VE_API_TOKEN:-}" ]; then
+            echo "::error::Set repository secret PROXMOX_VE_API_TOKEN (see terraform/README.md § Auth). It was empty in this run."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC → S3 state)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.9"
+          terraform_wrapper: false
+
+      - name: init
+        run: terraform init -input=false
+
+      - name: plan
+        id: plan
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          terraform plan -no-color -input=false -lock=false \
+            -out=tfplan 2>&1 | tee plan.txt
+          PLAN_EXIT=${PIPESTATUS[0]}
+          {
+            echo 'plan<<EOF'
+            tail -c 60000 plan.txt
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          exit "$PLAN_EXIT"
+
+      - name: comment on PR
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          PLAN: ${{ steps.plan.outputs.plan }}
+          OUTCOME: ${{ steps.plan.outcome }}
+        with:
+          script: |
+            const plan = process.env.PLAN || '(no plan output captured)';
+            const outcome = process.env.OUTCOME;
+            const body = [
+              `### terraform plan (${outcome})`,
+              '```',
+              plan,
+              '```',
+            ].join('\n');
+            return github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+      - name: Fail if terraform plan failed
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+  apply:
+    needs: validate
+    runs-on: [self-hosted, lan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Serialize applies so two quick merges can't race on the same state.
+    concurrency:
+      group: terraform-apply
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      PROXMOX_VE_API_TOKEN: ${{ secrets.PROXMOX_VE_API_TOKEN }}
+      # Trust the PVE Cluster Manager CA (provider verifies the API cert;
+      # providers.tf sets insecure = false). SSL_CERT_DIR keeps system roots
+      # for the AWS S3 backend; SSL_CERT_FILE adds the committed PVE root CA.
+      SSL_CERT_DIR: /etc/ssl/certs
+      SSL_CERT_FILE: ${{ github.workspace }}/terraform/pve-root-ca.pem
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Proxmox secret
+        run: |
+          if [ -z "${PROXMOX_VE_API_TOKEN:-}" ]; then
+            echo "::error::Set repository secret PROXMOX_VE_API_TOKEN (see terraform/README.md § Auth). It was empty in this run."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC → S3 state)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.9"
+          terraform_wrapper: false
+
+      - name: init
+        run: terraform init -input=false
+
+      - name: apply
+        run: terraform apply -auto-approve -no-color -input=false
