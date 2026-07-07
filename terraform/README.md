@@ -71,14 +71,42 @@ Remote state in the shared tfstate bucket (`foundry-tfstate-365184644049`,
 key `claytonia/terraform.tfstate`, DynamoDB locking) — see `backend.tf`.
 Local runs use the `cpitzi-iac` IAM credentials already on the workstation.
 
-## CI / apply-on-merge — pending
+## CI / apply-on-merge
 
-Plan-on-PR / apply-on-merge (mirroring kalmia's `terraform.yml` on the LAN
-self-hosted runner — the PVE API is LAN-only) is a tracked follow-up on #51:
-needs a claytonia-scoped AWS OIDC role and a runner registration for this
-repo. **Until it ships, applies are run locally**; this directory is still an
-enforced surface in spirit — never mutate pool guests via `pvesh`/UI without
-codifying here in the same session.
+[`.github/workflows/terraform.yml`](../.github/workflows/terraform.yml) runs on
+changes under `terraform/**`:
+
+- **pull request** → `validate` (fmt + `init -backend=false` + validate on a
+  GitHub-hosted runner) then `plan` on the LAN runner, posted as a PR comment.
+- **push to `main`** → `validate` then **`apply -auto-approve`** — merging a
+  pool change deploys it. This directory is a fleet **enforced surface**
+  (live-state vs. code discipline: never mutate pool guests via `pvesh`/UI
+  without codifying here in the same session). The `apply` job serializes under
+  a `terraform-apply` concurrency group.
+
+`plan` and `apply` run on the **LAN self-hosted runner** (`runs-on:
+[self-hosted, lan]`) because the PVE API is LAN-only. CI reaches AWS (S3 state)
+via GitHub OIDC assuming
+`arn:aws:iam::365184644049:role/claytonia-github-actions-terraform` (this state
+key + the lock table only), and reaches PVE via the `PROXMOX_VE_API_TOKEN` repo
+secret (the `claytonia-tf@pve!terraform` token — see § Auth).
+
+### Runner notes (LXC 115, second agent)
+
+The LAN runner is a **second actions-runner agent** on LXC 115 `gha-runner`
+(pve4), alongside kalmia's. LXC 115 itself stays kalmia-owned, and claytonia's
+apply path deliberately does not depend on claytonia's own workers (bootstrap
+cycle). The agent is repo-scoped to claytonia with label `lan`, in its own
+install dir with its own systemd service.
+
+- Re-register after a rebuild: `gh api -X POST
+  repos/lentago/claytonia/actions/runners/registration-token -q .token`, then
+  `config.sh --unattended --url https://github.com/lentago/claytonia --token …
+  --name gha-runner-claytonia --labels lan`.
+- **Public-repo hardening**: workflow approval required for all external
+  contributors (repo Actions setting); secrets not exposed to fork-PR runs; the
+  OIDC role trusts only `repo:lentago/claytonia:*` subs, and the `plan` job
+  gates on same-repo PRs.
 
 ## Scale-out — adding a worker
 
