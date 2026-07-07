@@ -19,8 +19,11 @@ the intended sequence.
 
 ## New worker, from zero
 
-1. **Create the LXC** (unprivileged, static IP on the LAN, `vmbr0`). See the Lentago lab
-   inventory for sizing (2 cores / 4 GiB / 20 GB is plenty).
+1. **Create the LXC via Terraform** — one new map entry in
+   [`terraform/main.tf`](../terraform/main.tf) (guest existence is this repo's
+   `terraform/` layer since 2026-07-07, #51; sizing defaults live in the
+   module), then add the VMID to the `claytonia` PVE pool — see
+   [`terraform/README.md`](../terraform/README.md) § Scale-out.
 2. **Bind-mount the NAS job dir.** On the PVE host: CIFS-mount the `lentago` share
    with `uid/gid` mapped to the in-container `claude` user (uid 1000 → host 101000 for
    an unprivileged CT), then `pct set <id> -mp0 <hostpath>/claude-jobs,mp=/srv/jobs`.
