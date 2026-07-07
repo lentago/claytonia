@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# LEGACY / REFERENCE (2026-07-07, #54): superseded by the kalmia runner image.
+# The substrate this lays down is now baked in kalmia forge/runner/substrate.sh;
+# kept for provenance, not part of the current build path.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 

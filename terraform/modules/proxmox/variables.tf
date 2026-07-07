@@ -52,7 +52,12 @@ variable "datastore_id" {
 }
 
 variable "template_file_id" {
-  description = "LXC template new workers are cut from — becomes a kalmia-baked image once lentago/kalmia#36 ships."
+  # The kalmia-baked runner image (lentago/kalmia#36): substrate + claytonia's
+  # gitops loop, so a fresh worker needs only its NAS mount + secrets. Pinned to
+  # a version — bump deliberately when a new image ships. Create-only and in the
+  # resource's ignore_changes, so this affects NEW workers only; the imported
+  # five are untouched. See provision/README.md § New worker.
+  description = "LXC template (kalmia runner image) new workers are cut from."
   type        = string
-  default     = "local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst"
+  default     = "neptune:vztmpl/claytonia-runner-v1.tar.zst"
 }

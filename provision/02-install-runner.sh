@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# LEGACY / REFERENCE (2026-07-07, #54): the runner software this installs is
+# deployed by the gitops loop (bin/ + systemd/ + cron/); a from-image worker
+# gets it that way. Kept for provenance, not part of the current build path.
 # Installs the Claude job-runner (core + poller + cron surface) inside the container.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive

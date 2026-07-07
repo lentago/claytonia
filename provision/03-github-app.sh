@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# LEGACY / REFERENCE (2026-07-07, #54): gh + git identity are baked (kalmia
+# forge/runner/substrate.sh) and gh-token/credential-helper are gitops-deployed.
+# Kept for provenance, not part of the current build path.
 # Install gh CLI + GitHub App token plumbing in the runner. No secrets here —
 # APP_ID / INSTALLATION_ID / the .pem are filled in by Chris after App creation.
 set -euo pipefail
