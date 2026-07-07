@@ -3,6 +3,9 @@
 **/gh-app.pem
 **/gh-app.env
 *.pem
+# …except the PVE root CA: a public trust anchor (no key material), needed
+# by terraform/ for insecure=false against the cluster API.
+!terraform/pve-root-ca.pem
 *.smbcred
 .smbcred
 *.credentials
@@ -11,3 +14,10 @@
 *.log
 *.swp
 *~
+
+# Terraform (lock file IS committed; state lives in S3)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
