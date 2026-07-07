@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# LEGACY / REFERENCE (2026-07-07, #54): run-job/cr-* are gitops-deployed (bin/)
+# and the project registry lives on the NAS (runtime state, never baked). Kept
+# for provenance, not part of the current build path.
 # Add the project registry + per-project context layer + project-aware run-job.
 set -euo pipefail
 

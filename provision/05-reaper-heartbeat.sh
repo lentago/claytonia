@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# LEGACY / REFERENCE (2026-07-07, #54): the heartbeat + reaper are gitops-deployed
+# (bin/ + systemd/); a from-image worker gets them that way. Kept for provenance,
+# not part of the current build path.
 # Reaper + heartbeats for at-least-once delivery. Deploy on every worker.
 set -euo pipefail
 
