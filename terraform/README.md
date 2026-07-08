@@ -67,7 +67,7 @@ membership is what scopes the token, so it can't be owned by the token.
 
 ## State
 
-Remote state in the shared tfstate bucket (`foundry-tfstate-365184644049`,
+Remote state in the shared tfstate bucket (`solidago-tfstate-365184644049`,
 key `claytonia/terraform.tfstate`, DynamoDB locking) — see `backend.tf`.
 Local runs use the `cpitzi-iac` IAM credentials already on the workstation.
 
