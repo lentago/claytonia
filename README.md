@@ -12,6 +12,12 @@ Grafana, crash-safe at-least-once delivery. Today's workers run Claude Code;
 platform-agnostic worker support (other agent CLIs behind the same queue) is
 the next scope expansion.
 
+**Authorship:** The queue scripts, worker tooling, and documentation in this
+repo are co-written with [Claude](https://claude.ai) (Anthropic). I direct the
+work and review the output; Claude writes the code. I'm an infrastructure
+operator, not a software engineer — please don't read this repo as a portfolio
+of coding ability.
+
 The fleet keeps its nickname, **the bullpen**: a pool of ready workers called up
 when needed. Agents idle until a job arrives, then one gets the call. The
 on-host layer keeps the name too (`/opt/bullpen`, `bullpen-gitops.*`,
@@ -177,9 +183,16 @@ job outcome.  Ad-hoc jobs (no project) and prompts with no issue reference are s
 
 ## Caveats (known, deliberate)
 
+The queue core itself is no longer untested: since #61, a CI bats harness
+(`test/queue.bats`, inbox faked on tmpfs) covers claim-by-rename races,
+crash-mid-job recovery, at-least-once delivery, and write-then-rename
+discipline on every PR. The caveats below are the deliberate residual
+boundaries.
+
 - **At-least-once, not idempotent.** A worker that dies *after* opening a PR but before
   filing the result will re-run on retry and could open a second PR (capped at 1 retry).
   Repo-side idempotency (does a branch/PR already exist?) is the fix when wanted.
 - **Concurrent `memory.md` appends** from 2+ workers on CIFS can interleave. Safe for
   single-worker-per-project today; needs a lock or per-job fragments at scale.
-- **Cross-*host* SMB renames untested** — co-locating workers on one host sidesteps it.
+- **Cross-*host* SMB renames untested** — the harness runs on tmpfs, so cross-client
+  CIFS rename semantics remain unexercised; co-locating workers on one host sidesteps it.
