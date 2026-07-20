@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stub `cr-emit` for the queue-core test harness — the real one POSTs metrics to
+# Loki. Tests exercise the queue mechanics, not telemetry, so this is a no-op.
+exit 0

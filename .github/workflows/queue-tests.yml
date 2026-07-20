@@ -1,0 +1,28 @@
+# ============================================================================
+# Queue-core tests — functional companion to the ShellCheck gate (issue #61)
+# ============================================================================
+# Runs the bats harness in test/ that fakes the NAS inbox on tmpfs and exercises
+# the real bin/run-job + bin/process-inbox: atomic claim-by-rename races,
+# at-least-once delivery, crash-mid-job recovery, and write-then-rename
+# discipline. Hermetic (stubbed agent/metrics/journald, no NAS, no secrets), so
+# it runs on a GitHub-hosted runner — never the LAN runner.
+#
+# ============================================================================
+
+name: queue-tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+jobs:
+  queue-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bats + uuidgen
+        run: sudo apt-get update && sudo apt-get install -y bats uuid-runtime
+
+      - name: Run queue-core tests
+        run: bats --print-output-on-failure test/
