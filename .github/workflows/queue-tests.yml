@@ -7,10 +7,6 @@
 # discipline. Hermetic (stubbed agent/metrics/journald, no NAS, no secrets), so
 # it runs on a GitHub-hosted runner — never the LAN runner.
 #
-# NOTE: this file lives at test/ci/ (not .github/workflows/) only because the
-# runner GitHub App that opened this PR lacks the `workflows` permission and so
-# cannot push under .github/workflows/. To activate the gate, a maintainer runs:
-#     git mv test/ci/queue-tests.yml .github/workflows/queue-tests.yml
 # ============================================================================
 
 name: queue-tests
