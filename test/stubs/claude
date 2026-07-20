@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Stub `claude` for the queue-core test harness. Consumes the prompt on stdin
+# (as the real headless `claude -p` does) and prints a result JSON in the same
+# shape run-job parses (.result / .is_error / .total_cost_usd / .num_turns).
+# Behaviour is picked by FAKE_CLAUDE_MODE so tests can drive done vs failed:
+#   ok      -> valid success JSON, exit 0                (routes to done/)
+#   error   -> valid JSON with is_error=true, exit 0     (run-job sets rc=1 -> failed/)
+#   nonzero -> non-JSON on stdout, exit 7                (rc=7 -> failed/)
+set -u
+cat >/dev/null 2>&1 || true   # drain the piped prompt; never fail on a closed pipe
+
+case "${FAKE_CLAUDE_MODE:-ok}" in
+  error)
+    printf '{"result":"stub failure","is_error":true,"total_cost_usd":0,"num_turns":1}\n'
+    exit 0
+    ;;
+  nonzero)
+    printf 'stub crashed before emitting JSON\n'
+    exit 7
+    ;;
+  *)
+    printf '{"result":"stub ok","is_error":false,"total_cost_usd":0.0001,"num_turns":1}\n'
+    exit 0
+    ;;
+esac

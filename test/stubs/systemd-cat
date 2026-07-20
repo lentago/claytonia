@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Stub `systemd-cat` for the queue-core test harness — the runner logs to
+# journald via `... | systemd-cat`. Tests have no journal, so drain stdin and
+# discard, keeping the harness hermetic and quiet.
+cat >/dev/null 2>&1 || true
+exit 0

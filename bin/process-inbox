@@ -3,10 +3,10 @@
 # pending inbox job, one at a time. flock-guarded (CIFS-safe; polled).
 set -uo pipefail
 JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
-BIN=/opt/claude-runner/bin
+BIN="${CLAUDE_RUNNER_BIN:-/opt/claude-runner/bin}"   # override lets the test harness run the in-repo run-job
 HEARTBEAT_STALE="${CLAUDE_HEARTBEAT_STALE:-90}"   # worker dead if .alive older than this
 [ -d "$JOBS_ROOT/inbox" ] || exit 0
-exec 9>/tmp/claude-inbox.lock
+exec 9>"${CLAUDE_INBOX_LOCK:-/tmp/claude-inbox.lock}"   # override gives each test run its own lock
 flock -n 9 || exit 0
 shopt -s nullglob
 

@@ -18,7 +18,7 @@ CLAUDE_BIN="${CLAUDE_BIN:-/home/claude/.local/bin/claude}"
 [ -f /etc/claude-runner/token.env ] && . /etc/claude-runner/token.env
 export CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}"
 export HOME="${HOME:-/home/claude}"
-export PATH="/home/claude/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export PATH="${CLAUDE_RUNNER_PATH:-/home/claude/.local/bin:/usr/local/bin:/usr/bin:/bin}"  # override lets the test harness inject stub bins
 
 DEF_MODEL="${CLAUDE_RUNNER_MODEL:-}"
 DEF_CWD="${CLAUDE_RUNNER_CWD:-/home/claude/work}"
@@ -33,37 +33,45 @@ label="$(printf '%s' "${base%.*}" | tr -c 'A-Za-z0-9._-' '_')"
 runid="${ts}-${label}"
 sid="$(uuidgen)"
 
-prompt=""; cwd="$DEF_CWD"; model=""; max_turns="$DEF_MAXTURNS"; allowed=""; project=""
-case "$base" in
-  *.json)
-    if ! jq -e . "$jobfile" >/dev/null 2>&1; then
-      echo "run-job: invalid JSON ($base)" >&2
-      mv -f "$jobfile" "$JOBS_ROOT/failed/${runid}.badjson" 2>/dev/null || true
-      exit 3
-    fi
-    prompt="$(jq -r '.prompt // empty' "$jobfile")"
-    project="$(jq -r '.project // empty' "$jobfile")"
-    c="$(jq -r '.cwd // empty' "$jobfile")";        [ -n "$c" ]  && cwd="$c"
-    m="$(jq -r '.model // empty' "$jobfile")";       [ -n "$m" ]  && model="$m"
-    mt="$(jq -r '.max_turns // empty' "$jobfile")";  [ -n "$mt" ] && max_turns="$mt"
-    allowed="$(jq -r '.allowed_tools // empty' "$jobfile")"
-    ;;
-  *) prompt="$(cat "$jobfile")" ;;
-esac
-
-if [ -z "${prompt// /}" ]; then
-  echo "run-job: empty prompt ($base)" >&2
-  mv -f "$jobfile" "$JOBS_ROOT/failed/${runid}.emptyprompt" 2>/dev/null || true
-  exit 3
-fi
-
 mkdir -p "$JOBS_ROOT"/{processing,done,failed,logs} 2>/dev/null || true
 proc="$JOBS_ROOT/processing/$runid"
+# Claim by atomic rename BEFORE reading or validating the job. This is the
+# single-winner point: cross-worker races resolve here, and a loser finds the
+# file already gone and exits cleanly with NO side effects (no stray log, owner,
+# or failed/ record). Write the owner immediately after so a crash during the
+# validation below still leaves a reapable state. Everything past this reads
+# from $proc — never the inbox path, which another worker may already have.
 mv "$jobfile" "$proc" 2>/dev/null || exit 0
 printf 'owner=%s
 started=%s
 origname=%s
 ' "$(hostname)" "$(date -u +%s)" "$base" > "$proc.owner" 2>/dev/null || true
+
+prompt=""; cwd="$DEF_CWD"; model=""; max_turns="$DEF_MAXTURNS"; allowed=""; project=""
+case "$base" in
+  *.json)
+    if ! jq -e . "$proc" >/dev/null 2>&1; then
+      echo "run-job: invalid JSON ($base)" >&2
+      mv -f "$proc" "$JOBS_ROOT/failed/${runid}.badjson" 2>/dev/null || true
+      rm -f "$proc.owner" 2>/dev/null || true
+      exit 3
+    fi
+    prompt="$(jq -r '.prompt // empty' "$proc")"
+    project="$(jq -r '.project // empty' "$proc")"
+    c="$(jq -r '.cwd // empty' "$proc")";        [ -n "$c" ]  && cwd="$c"
+    m="$(jq -r '.model // empty' "$proc")";       [ -n "$m" ]  && model="$m"
+    mt="$(jq -r '.max_turns // empty' "$proc")";  [ -n "$mt" ] && max_turns="$mt"
+    allowed="$(jq -r '.allowed_tools // empty' "$proc")"
+    ;;
+  *) prompt="$(cat "$proc")" ;;
+esac
+
+if [ -z "${prompt// /}" ]; then
+  echo "run-job: empty prompt ($base)" >&2
+  mv -f "$proc" "$JOBS_ROOT/failed/${runid}.emptyprompt" 2>/dev/null || true
+  rm -f "$proc.owner" 2>/dev/null || true
+  exit 3
+fi
 
 errlog="$JOBS_ROOT/logs/${runid}.stderr"; : > "$errlog"
 repo=""; branch=""; user_prompt="$prompt"
