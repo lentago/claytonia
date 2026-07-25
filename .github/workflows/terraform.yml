@@ -1,10 +1,14 @@
 name: terraform
 
+# No `paths:` filter on pull_request — deliberate, and load-bearing. The `gate`
+# job below is a required status check, and a required check whose workflow never
+# triggers is held "Expected" forever, deadlocking every non-terraform PR (the hard
+# rule in lentago/.github fleet-ops/required-checks.json). Path filtering moves to
+# the `changes` detector job instead, so the workflow always reports a conclusion
+# while the expensive jobs still skip when no terraform changed. `push` keeps its
+# filter: apply is not a required check and only needs to run on real changes.
 on:
   pull_request:
-    paths:
-      - "terraform/**"
-      - ".github/workflows/terraform.yml"
   push:
     branches: [main]
     paths:
@@ -23,7 +27,36 @@ env:
   AWS_REGION: us-east-1
 
 jobs:
+  # Replaces the former `on:`-level path filter. On a PR, decide whether terraform
+  # actually changed; on push the filter above already guaranteed it, so report true.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      tf: ${{ steps.filter.outputs.tf }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect terraform changes
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "tf=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "$BASE_SHA" HEAD)
+          echo "changed files:"; echo "$changed"
+          if echo "$changed" | grep -qE '^terraform/|^\.github/workflows/terraform\.yml$'; then
+            echo "tf=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tf=false" >> "$GITHUB_OUTPUT"
+          fi
+
   validate:
+    needs: changes
+    if: needs.changes.outputs.tf == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -48,12 +81,13 @@ jobs:
   # plan + apply run on the LAN runner (LXC 115 gha-runner on pve4): the
   # Proxmox API is LAN-only, unreachable from GitHub-hosted runners.
   plan:
-    needs: validate
+    needs: [changes, validate]
     runs-on: [self-hosted, lan]
     # Same-repo PRs only: fork PRs must never reach the LAN runner (defense
     # in depth alongside the repo's require-approval-for-all-outside-
     # collaborators Actions setting).
     if: >-
+      needs.changes.outputs.tf == 'true' &&
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository
     defaults:
@@ -133,9 +167,11 @@ jobs:
         run: exit 1
 
   apply:
-    needs: validate
+    needs: [changes, validate]
     runs-on: [self-hosted, lan]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      needs.changes.outputs.tf == 'true' &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
     # Serialize applies so two quick merges can't race on the same state.
     concurrency:
       group: terraform-apply
@@ -176,3 +212,23 @@ jobs:
 
       - name: apply
         run: terraform apply -auto-approve -no-color -input=false
+
+  # Always-on fan-in so a single context can be required. NOT a no-op: it fails when
+  # any upstream job reports failure or cancelled. A skipped job counts as passing,
+  # which is what lets a non-terraform PR through while a red plan still blocks.
+  gate:
+    needs: [changes, validate, plan]
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Terraform gate
+        run: |
+          echo "changes=${{ needs.changes.result }} validate=${{ needs.validate.result }} plan=${{ needs.plan.result }}"
+          for r in "${{ needs.changes.result }}" "${{ needs.validate.result }}" "${{ needs.plan.result }}"; do
+            case "$r" in
+              failure|cancelled)
+                echo "::error::terraform gate blocked (a required job reported $r)"
+                exit 1 ;;
+            esac
+          done
+          echo "gate passed (success/skipped only)"
