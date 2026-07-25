@@ -126,6 +126,20 @@ At-least-once delivery — see Caveats for the idempotency boundary.
   token is persisted. Workers open branches + PRs and **never merge** — review is a
   human step.
 
+  The org installation grants `contents: write`, `issues: write`,
+  `pull_requests: write`, `workflows: write`, `metadata: read`. Installation tokens
+  inherit exactly these, so this list is the ceiling on what a dispatched job can do.
+  Two notes on it:
+
+  - **`workflows: write` was deliberately withheld until 2026-07-25.** Without it the
+    remote rejects any create/update under `.github/workflows/**`, and such issues had
+    to be routed to a local session. That routing rule no longer applies.
+  - **What still stops a worker rewriting its own gate:** branch rulesets require status
+    checks *by context name*, so a PR that deletes a gating workflow can never merge —
+    the context stops reporting and the PR holds at "Expected". That blocks removal, not
+    subversion: a PR keeping the job name while gutting the body would still report
+    green. The backstop is that workers never merge and every agent PR is reviewed.
+
 Secrets (`token.env`, `gh-app.pem`) live on the workers, never in this repo.
 
 ## Metrics
