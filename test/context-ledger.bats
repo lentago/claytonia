@@ -392,6 +392,8 @@ captured_events() { jq -c "select(.line.event==\"$1\")" "$LOKI_CAPTURE"; }
   LOKI_LIB_OVERRIDE="$fail_stub" run_commit
   [ "$status" -eq 0 ]
   git -C "$CLONE" log -1 --format='%s' | grep -q "ledger($CONTEXT_HOSTNAME):"
+}
+
 # --- ledger-report -----------------------------------------------------------
 # Fixture: a local clone with two hosts and two commits for alpha (one old,
 # one recent) so we can assert summary output and --since filtering.
