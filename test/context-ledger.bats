@@ -160,7 +160,10 @@ JSON
 
 seed_remote() {
   REMOTE="$TEST_TMP/myosotis.git"
-  git init -q --bare "$REMOTE"
+  # -b main: pin the bare repo's HEAD. Without it the runner's git may default
+  # HEAD to an unborn "master" while the seed pushes "main", and any
+  # `git -C $REMOTE log` assertion dies on the dangling HEAD.
+  git init -q --bare -b main "$REMOTE"
   local seed="$TEST_TMP/seed"
   git clone -q "$REMOTE" "$seed"
   ( cd "$seed"

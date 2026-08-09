@@ -96,7 +96,14 @@ for d in "$INCOMING"/*/; do
 
   dest="hosts/$h"
   mkdir -p "$dest"
-  rsync -a --delete "$host_dir/" "$dest/"
+  # Guard the copy: under `set +e` a partial rsync would otherwise be committed
+  # as if complete. Skip the host; its incoming stays queued for the next run.
+  if ! rsync -a --delete "$host_dir/" "$dest/"; then
+    err "rsync failed for host $h — skipping; incoming stays queued"
+    git checkout --quiet -- "$dest" 2>/dev/null || true
+    git clean --quiet -fd -- "$dest" 2>/dev/null || true
+    continue
+  fi
 
   git add -A -- "$dest"
   if git diff --cached --quiet -- "$dest"; then
