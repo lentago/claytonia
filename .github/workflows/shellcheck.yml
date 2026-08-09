@@ -26,6 +26,9 @@ jobs:
         bin/gh-token
         bin/gh-credential-helper
         bin/claude-set-token
+        bin/context-snapshot
+        bin/context-ledger-commit
+        bin/transcript-shipper-sync
         gitops/bullpen-gitops.sh
         gitops/install.sh
         provision/01-create-container.sh
