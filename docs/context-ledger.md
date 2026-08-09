@@ -95,6 +95,36 @@ changed`, so browsing the repo's commit history (or watching it) surfaces exactl
 what drifted on which host and when. A `QUARANTINE.txt` in a host's tree flags a
 snapshot that tripped a guard and needs a look.
 
+## ledger-report
+
+`bin/ledger-report` is a read-only CLI wrapper over a myosotis clone that replaces
+raw `git log` incantations. It defaults to the committer's clone at
+`/opt/context-ledger/myosotis`; override with `LEDGER_DEPLOY_KEY` for fetch and
+`LEDGER_CLONE_DIR` to point at any local clone (e.g. an operator workstation).
+
+```
+# Fleet summary — last snapshot time, age, files changed, status per host
+ledger-report
+
+# One host's drift commits with per-commit changed-file lists
+ledger-report --host <hostname> [--since 7d]
+
+# Actual diffs for a host (git log -p scoped to hosts/<h>/)
+ledger-report --host <hostname> --diff [--since 7d]
+
+# Every QUARANTINE.txt in history with commit hash, date, and body
+ledger-report --quarantines
+
+# Refresh the local clone from the remote before reporting
+ledger-report --fetch [other options]
+```
+
+`--since` accepts shorthand ages (`7d`, `2w`, `1m`, `12h`) or any git date string
+(`2026-07-01`, `"last week"`). Status values in the summary: `ok` (recent snapshot,
+no guard hits), `stale` (last snapshot >48 h ago), `quarantined` (QUARANTINE.txt
+present — needs attention). The script never commits, pushes, or checks out; `--fetch`
+is the only mutating git operation it ever performs.
+
 ## Primary election
 
 The committer (`../bin/context-ledger-commit`) runs on **one** worker. The
@@ -207,6 +237,7 @@ what liveness alerting keys on.
 |---|---|
 | Collector (all workers) | [`../bin/context-snapshot`](../bin/context-snapshot) |
 | Committer (primary only) | [`../bin/context-ledger-commit`](../bin/context-ledger-commit) |
+| Report CLI (operator) | [`../bin/ledger-report`](../bin/ledger-report) |
 | Provisioning | [`../provision/07-context-ledger.sh`](../provision/07-context-ledger.sh) |
 | Units | `../systemd/context-snapshot.{service,timer}`, `../systemd/context-ledger-commit.{service,timer}` |
 | Tests | [`../test/context-ledger.bats`](../test/context-ledger.bats) |
