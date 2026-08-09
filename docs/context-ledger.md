@@ -249,9 +249,9 @@ The committer is the only bridge between truth and projection: it reads the comm
 
 ## Alert runbook
 
-The four alert rules on the Claytonia — Runner Fleet dashboard map to the playbooks below. Before any deep-dive, run `ledger-report` for current fleet state — it queries git directly, so it stays useful even when the Loki projection is dark.
+The four alert rules (Grafana → Alerting, `Lentago` folder — provisioned from drosera's `terraform/alerts.tf`; headings below match the shipped rule names) map to the playbooks below. Before any deep-dive, run `ledger-report` for current fleet state — it queries git directly, so it stays useful even when the Loki projection is dark.
 
-### `context_quarantine` — quarantined snapshot
+### "Context ledger — quarantine"
 
 A host's latest slot contains `QUARANTINE.txt`. A secret (or a path-denylist hit) landed somewhere it should not be on that worker.
 
@@ -260,20 +260,20 @@ A host's latest slot contains `QUARANTINE.txt`. A secret (or a path-denylist hit
 3. **Re-run the snapshot:** `systemctl start context-snapshot.service` on the affected worker. The next committer sweep picks up the new slot, commits a clean entry (no `QUARANTINE.txt`), and the alert resolves.
 4. If path and line alone are not enough to identify the secret, inspect the surrounding diff in myosotis for the commit that introduced the file.
 
-### `context_stale_host` — fleet host not reporting (>26 h)
+### "Context ledger — stale host snapshot" (fleet, >26 h)
 
 A fleet worker's last ledger commit is more than 26 h old. The threshold is `CONTEXT_STALE_S` (default `93600` s, set in `runner.env`).
 
 1. **Check the timer** on the host: `systemctl status context-snapshot.timer` — is it active, and when did it last trigger?
 2. **Check the NAS mount:** `ls /srv/jobs/` on the worker — if the mount is absent the snapshot can find no inbox and writes nothing to `incoming/`. Re-mount with `mount -a` or investigate the SMB credential and `/etc/fstab`.
 3. **Check host power state** from pve4: `pct status <vmid>`. A crashed or shut-down LXC explains everything.
-4. If the timer and mount are both healthy but no slot has appeared, check `journalctl -u context-snapshot` on the worker and re-run manually: `systemctl start context-snapshot.service`.
+4. If the timer and mount are both healthy but no slot has appeared, check the logs — the scripts log via systemd-cat under the `claude-runner` tag: `journalctl -t claude-runner | grep context-snapshot` (plus `journalctl -u context-snapshot` for unit lifecycle) — on the worker and re-run manually: `systemctl start context-snapshot.service`.
 
-### `context_stale_laptop_96h` — workstation not reporting (>96 h)
+### "Context ledger — stale host snapshot (cpitzi-ThinkPad)" (>96 h)
 
 The operator workstation uses a longer staleness threshold (96 h) because it is a laptop — **staleness here is most often travel or the machine being powered off.** The playbook is the same as `context_stale_host` but skip the PVE power-state step; wait until the machine is on and reachable, then check the timer if the alert persists. The workstation runs `--memory=hash` mode (no memory bodies in the ledger).
 
-### `context_committer_silence` — committer has not pushed events
+### "Context ledger — committer silence"
 
 The Loki `context_sweep` event has been absent for an extended period. **While this fires, every other Grafana panel in the Context Ledger row goes dark — the projection is stale.** The ledger itself is unaffected; use `ledger-report` directly against the local clone for fleet status while you investigate.
 
@@ -283,7 +283,7 @@ Diagnostic order on the primary (LXC 110 in the claytonia pool):
 2. **Committer timer:** `systemctl status context-ledger-commit.timer` on LXC 110. Enable and start if inactive.
 3. **Deploy key:** confirm `/root/.ssh/myosotis_deploy` exists and its public half is registered as a **write** deploy key on `lentago/myosotis`. Test: `ssh -i /root/.ssh/myosotis_deploy -o BatchMode=yes git@github.com` — GitHub should return a greeting with the key identity, not a permission error.
 4. **myosotis reachability:** `curl -sf https://api.github.com/repos/lentago/myosotis` from LXC 110 confirms the GitHub API is reachable from that host.
-5. **Recent logs:** `journalctl -u context-ledger-commit -n 50` for the specific error.
+5. **Recent logs:** `journalctl -t claude-runner | grep context-ledger | tail -50` (script output) and `journalctl -u context-ledger-commit -n 20` (unit lifecycle) for the specific error.
 
 If the committer can commit to myosotis but Loki push is failing, check `LOKI_PUSH_URL` in `runner.env` and probe the Alloy receiver directly with a `curl` to the push endpoint.
 
