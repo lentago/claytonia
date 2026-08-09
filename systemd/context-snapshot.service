@@ -1,0 +1,12 @@
+[Unit]
+Description=Snapshot host-side Claude context into the fleet context ledger
+ConditionPathIsDirectory=/srv/jobs
+
+[Service]
+Type=oneshot
+User=claude
+Group=claude
+Nice=10
+# Allowlist-only collector; aborts+quarantines on any secret. See
+# docs/context-ledger.md. Runs on every worker.
+ExecStart=/opt/claude-runner/bin/context-snapshot

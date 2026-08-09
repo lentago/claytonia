@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# context-snapshot — collect this worker's host-side Claude Code context into the
+# fleet context ledger's incoming queue. Runs on EVERY worker (as the claude
+# user, daily); the primary later sweeps the queue into lentago/myosotis.
+#
+# ALLOWLIST-ONLY: this never globs ~/.claude wholesale. Every file that lands in
+# a snapshot is named below. Two independent guards run over the *staged* tree
+# before it is published — a path denylist and a content secret-scan — and EITHER
+# firing aborts the whole snapshot, publishes a QUARANTINE.txt in the host's slot,
+# and exits nonzero. Loud failure is the point: a secret in host context is a
+# finding, not a warning. See docs/context-ledger.md.
+#
+# Output is a deterministic tree (LC_ALL=C ordering, stable formatting) placed
+# atomically at $JOBS_ROOT/context-ledger/incoming/<hostname>/ — built in a
+# dot-hidden sibling then renamed, the same write-then-rename discipline the job
+# queue uses.
+#
+# Test seams (each defaults to the production value): HOME, CLAUDE_DIR,
+# CLAUDE_JSON, JOBS_ROOT, CONTEXT_HOSTNAME. Flag: --memory=full|hash.
+set -uo pipefail
+export LC_ALL=C
+
+SCRIPT_REV="1"   # bump when the snapshot layout/semantics change
+
+HOME="${HOME:-/home/claude}"
+CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
+CLAUDE_JSON="${CLAUDE_JSON:-$HOME/.claude.json}"
+JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
+HOSTNAME_="${CONTEXT_HOSTNAME:-$(hostname)}"
+
+MEMORY_MODE="full"
+for arg in "$@"; do
+  case "$arg" in
+    --memory=full) MEMORY_MODE="full" ;;
+    --memory=hash) MEMORY_MODE="hash" ;;
+    *) echo "context-snapshot: unknown arg: $arg" >&2; exit 2 ;;
+  esac
+done
+
+LEDGER_ROOT="$JOBS_ROOT/context-ledger"
+INCOMING="$LEDGER_ROOT/incoming"
+FINAL="$INCOMING/$HOSTNAME_"
+STAGE="$LEDGER_ROOT/.staging.$HOSTNAME_"        # dot-hidden: the committer's */ glob skips it
+ASIDE="$INCOMING/.$HOSTNAME_.replacing"          # dot-hidden: ditto
+
+log(){ echo "context-snapshot: $*" | systemd-cat -t claude-runner -p "${2:-info}" 2>/dev/null || echo "context-snapshot: $*" >&2; }
+
+rm -rf "$STAGE"
+mkdir -p "$STAGE" "$INCOMING" || { log "cannot create $INCOMING (NAS unmounted?)" err; exit 1; }
+
+# --- helpers ------------------------------------------------------------------
+# stage <src-file> <rel-dest>: copy a single file verbatim if it exists.
+stage(){
+  local src="$1" rel="$2" dst
+  [ -f "$src" ] || return 0
+  dst="$STAGE/$rel"
+  mkdir -p "$(dirname "$dst")"
+  cp -f "$src" "$dst"
+}
+
+# hash_manifest <dir> <dest-file> [with_mtime]: emit "relpath\tsha256\tbytes[\tmtime]"
+# for every regular file under <dir>, sorted, relative to <dir>. Never copies bodies.
+hash_manifest(){
+  local dir="$1" dest="$2" with_mtime="${3:-}" f rel sha bytes mtime
+  mkdir -p "$(dirname "$dest")"
+  : > "$dest"
+  [ -d "$dir" ] || return 0
+  while IFS= read -r f; do
+    rel="${f#"$dir"/}"
+    sha="$(sha256sum "$f" | awk '{print $1}')"
+    bytes="$(stat -c %s "$f" 2>/dev/null || echo 0)"
+    if [ -n "$with_mtime" ]; then
+      mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+      printf '%s\t%s\t%s\t%s\n' "$rel" "$sha" "$bytes" "$mtime"
+    else
+      printf '%s\t%s\t%s\n' "$rel" "$sha" "$bytes"
+    fi
+  done < <(find "$dir" -type f | LC_ALL=C sort) >> "$dest"
+}
+
+# --- 1. top-level context files ----------------------------------------------
+stage "$CLAUDE_DIR/CLAUDE.md"            "claude/CLAUDE.md"
+stage "$CLAUDE_DIR/settings.json"        "claude/settings.json"
+stage "$CLAUDE_DIR/settings.local.json"  "claude/settings.local.json"
+
+# --- 2. skills: SKILL.md verbatim + per-skill hash manifest of the rest -------
+if [ -d "$CLAUDE_DIR/skills" ]; then
+  while IFS= read -r skilldir; do
+    [ -d "$skilldir" ] || continue
+    name="$(basename "$skilldir")"
+    stage "$skilldir/SKILL.md" "claude/skills/$name/SKILL.md"
+    # manifest of every file EXCEPT SKILL.md
+    mani="$STAGE/claude/skills/$name/OTHER-FILES.sha256"
+    mkdir -p "$(dirname "$mani")"
+    : > "$mani"
+    while IFS= read -r f; do
+      rel="${f#"$skilldir"/}"
+      [ "$rel" = "SKILL.md" ] && continue
+      sha="$(sha256sum "$f" | awk '{print $1}')"
+      bytes="$(stat -c %s "$f" 2>/dev/null || echo 0)"
+      printf '%s\t%s\t%s\n' "$rel" "$sha" "$bytes"
+    done < <(find "$skilldir" -type f | LC_ALL=C sort) >> "$mani"
+  done < <(find "$CLAUDE_DIR/skills" -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort)
+fi
+
+# --- 3. per-project memory ----------------------------------------------------
+# full  -> copy each memory/ subtree verbatim (workers, the default)
+# hash  -> emit ONLY a manifest (path, sha256, bytes, mtime), no bodies
+#          (for the operator's workstation; that install is out of scope here)
+if [ -d "$CLAUDE_DIR/projects" ]; then
+  while IFS= read -r proj; do
+    memdir="$proj/memory"
+    [ -d "$memdir" ] || continue
+    pname="$(basename "$proj")"
+    if [ "$MEMORY_MODE" = hash ]; then
+      hash_manifest "$memdir" "$STAGE/claude/projects/$pname/memory.manifest" with_mtime
+    else
+      while IFS= read -r f; do
+        rel="${f#"$CLAUDE_DIR"/}"
+        stage "$f" "claude/$rel"
+      done < <(find "$memdir" -type f | LC_ALL=C sort)
+    fi
+  done < <(find "$CLAUDE_DIR/projects" -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort)
+fi
+
+# --- 4. installed plugins (names + versions/refs only) ------------------------
+# Best-effort, non-secret registration metadata. Derived from ~/.claude.json's
+# plugin/marketplace fields (also captured, sanitized, in claude-json.derived.json).
+plugins_out="$STAGE/claude/plugins.txt"
+mkdir -p "$(dirname "$plugins_out")"
+if [ -f "$CLAUDE_JSON" ] && jq -e . "$CLAUDE_JSON" >/dev/null 2>&1; then
+  jq -r -S '
+    def entries(o): (o // {}) | to_entries | map("\(.key)\t\(.value|tostring)") | .[];
+    ( ["# enabledPlugins"], [entries(.enabledPlugins)],
+      ["# installedPlugins"], [entries(.installedPlugins)],
+      ["# pluginMarketplaces"], [entries(.pluginMarketplaces)]
+    ) | flatten | .[]
+  ' "$CLAUDE_JSON" 2>/dev/null > "$plugins_out" || : > "$plugins_out"
+else
+  : > "$plugins_out"
+fi
+
+# --- 5. versions --------------------------------------------------------------
+versions_out="$STAGE/versions.txt"
+{
+  printf 'claude --version: '
+  claude --version 2>/dev/null | head -1 || true
+  printf '\n'
+  printf 'command -v claude: '
+  command -v claude 2>/dev/null || printf '(not found)'
+  printf '\n'
+} > "$versions_out"
+claude_version="$(claude --version 2>/dev/null | head -1 | tr -d '\n' || true)"
+[ -n "$claude_version" ] || claude_version="(unavailable)"
+
+# --- 6. DERIVED, sanitized view of ~/.claude.json -----------------------------
+# NEVER copy the raw file. Map mcpServers to shape+KEY NAMES only (never values),
+# and pass through plugin/marketplace registration fields. NEVER include
+# projects/history (prompt bodies) or oauth/account fields — we select by key, so
+# they are excluded by construction. On jq parse failure: PARSE_ERROR marker,
+# exclude the derived view, continue. No raw fallback, ever.
+derived_out="$STAGE/claude-json.derived.json"
+if [ -f "$CLAUDE_JSON" ]; then
+  if jq -e . "$CLAUDE_JSON" >/dev/null 2>&1; then
+    jq -S '
+      def keylist(x): (x // {}) | if type=="object" then keys else [] end;
+      def sanitize_server:
+        { type: .type, command: .command, url: .url, args: .args,
+          env: keylist(.env), headers: keylist(.headers) };
+      { mcpServers: ((.mcpServers // {}) | map_values(sanitize_server)) }
+      + (if has("enabledPlugins")      then {enabledPlugins}      else {} end)
+      + (if has("installedPlugins")    then {installedPlugins}    else {} end)
+      + (if has("pluginMarketplaces")  then {pluginMarketplaces}  else {} end)
+    ' "$CLAUDE_JSON" > "$derived_out" 2>/dev/null \
+      || { rm -f "$derived_out"; printf 'jq transform failed on ~/.claude.json\n' > "$STAGE/claude-json.PARSE_ERROR"; }
+  else
+    printf 'jq could not parse ~/.claude.json\n' > "$STAGE/claude-json.PARSE_ERROR"
+  fi
+fi
+
+# --- GUARD A: path denylist (defense in depth) --------------------------------
+# The allowlist above should never stage a sensitive path, but a memory or skill
+# file could be *named* like one. Any match aborts and quarantines.
+deny_hit=""
+while IFS= read -r f; do
+  b="$(basename "$f")"
+  case "$b" in
+    *credentials*|*.pem|*.key|id_rsa*|id_ed25519*|*token*|*.smbcred|.envrc)
+      deny_hit="${f#"$STAGE"/}"; break ;;
+  esac
+done < <(find "$STAGE" -type f | LC_ALL=C sort)
+
+reset_stage(){ rm -rf "$STAGE"; mkdir -p "$STAGE"; }
+
+quarantine(){ # <reason-line>
+  local reason="$1"
+  reset_stage
+  {
+    echo "CONTEXT SNAPSHOT QUARANTINED"
+    echo "host: $HOSTNAME_"
+    echo "reason: $reason"
+    echo "(offending file bodies are intentionally NOT included)"
+  } > "$STAGE/QUARANTINE.txt"
+  write_meta "quarantined"
+  publish
+  log "QUARANTINE ($reason) — see incoming/$HOSTNAME_/QUARANTINE.txt" err
+}
+
+write_meta(){ # <status>
+  local status="$1" ts
+  ts="$(date -u +%FT%TZ)"
+  jq -n -S \
+    --arg hostname "$HOSTNAME_" \
+    --arg timestamp_utc "$ts" \
+    --arg claude_version "$claude_version" \
+    --arg script_rev "$SCRIPT_REV" \
+    --arg memory_mode "$MEMORY_MODE" \
+    --arg status "$status" \
+    '{hostname:$hostname, timestamp_utc:$timestamp_utc, claude_version:$claude_version,
+      script_rev:$script_rev, memory_mode:$memory_mode, status:$status}' \
+    > "$STAGE/meta.json"
+}
+
+# publish: atomically swap $STAGE into $FINAL (rename within the same NAS fs).
+publish(){
+  rm -rf "$ASIDE"
+  [ -e "$FINAL" ] && mv "$FINAL" "$ASIDE"
+  mv "$STAGE" "$FINAL"
+  rm -rf "$ASIDE"
+}
+
+if [ -n "$deny_hit" ]; then
+  quarantine "staged path matches secret denylist: $deny_hit"
+  exit 1
+fi
+
+# --- GUARD B: content secret-scan --------------------------------------------
+# Any hit means a secret is somewhere it should not be. Abort, quarantine with
+# the offending path + line NUMBER only (never the matched content), exit nonzero.
+SECRET_RE='sk-ant-|ghp_|github_pat_|gho_|glpat-|AKIA[0-9A-Z]{16}|xox[baprs]-|eyJhbGciOi|-----BEGIN.*PRIVATE KEY'
+scan_hits=""
+while IFS= read -r f; do
+  # -n gives line numbers; we deliberately keep ONLY "file:line" and DROP the
+  # matched text so the secret never enters the ledger. -a forces a text scan so
+  # a binary file yields real line numbers, not a "Binary file matches" summary.
+  hits="$(grep -anE "$SECRET_RE" "$f" 2>/dev/null | cut -d: -f1 || true)"
+  if [ -n "$hits" ]; then
+    rel="${f#"$STAGE"/}"
+    while IFS= read -r ln; do
+      [ -n "$ln" ] && scan_hits="${scan_hits}${rel}:${ln}"$'\n'
+    done <<< "$hits"
+  fi
+done < <(find "$STAGE" -type f | LC_ALL=C sort)
+
+if [ -n "$scan_hits" ]; then
+  # Build a quarantine slot listing offending path:line pairs only.
+  reset_stage
+  {
+    echo "CONTEXT SNAPSHOT QUARANTINED"
+    echo "host: $HOSTNAME_"
+    echo "reason: content secret-scan matched (path:line below; matched text intentionally omitted)"
+    printf '%s' "$scan_hits" | LC_ALL=C sort -u
+  } > "$STAGE/QUARANTINE.txt"
+  write_meta "quarantined"
+  publish
+  log "QUARANTINE (secret-scan) — see incoming/$HOSTNAME_/QUARANTINE.txt" err
+  exit 1
+fi
+
+# --- clean snapshot: meta + manifest, then publish ----------------------------
+write_meta "ok"
+manifest="$STAGE/MANIFEST.sha256"
+while IFS= read -r f; do
+  rel="${f#"$STAGE"/}"
+  [ "$rel" = "MANIFEST.sha256" ] && continue
+  printf '%s  %s\n' "$(sha256sum "$f" | awk '{print $1}')" "$rel"
+done < <(find "$STAGE" -type f | LC_ALL=C sort) | LC_ALL=C sort -k2 > "$manifest"
+
+publish
+log "snapshot published to incoming/$HOSTNAME_ (memory=$MEMORY_MODE)"

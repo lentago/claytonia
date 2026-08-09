@@ -1,0 +1,12 @@
+[Unit]
+Description=Sweep context snapshots into the myosotis ledger (primary worker only)
+ConditionPathIsDirectory=/srv/jobs/context-ledger/incoming
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as root: needs the repo-scoped deploy key /root/.ssh/myosotis_deploy,
+# which never leaves the host. Self-gates on the NAS primary marker, so this is a
+# silent no-op on any worker that isn't the designated primary.
+ExecStart=/opt/claude-runner/bin/context-ledger-commit
