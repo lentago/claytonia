@@ -7,6 +7,9 @@ Type=oneshot
 User=claude
 Group=claude
 Nice=10
+# claude installs to ~/.local/bin; systemd's default PATH omits it.
+# Match the PATH that run-job sets so claude --version resolves.
+Environment=PATH=/home/claude/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Allowlist-only collector; aborts+quarantines on any secret. See
 # docs/context-ledger.md. Runs on every worker.
 ExecStart=/opt/claude-runner/bin/context-snapshot

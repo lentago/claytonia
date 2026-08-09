@@ -157,6 +157,23 @@ JSON
   [ "$(jq -r '.hostname' "$INCOMING/meta.json")" = "test-worker" ]
 }
 
+@test "versions: claude_version captured from a stub on PATH" {
+  # Verify that context-snapshot picks up the version string when claude
+  # is reachable on PATH — the fix for #89 (context-snapshot.service lacked
+  # Environment=PATH including ~/.local/bin where claude installs).
+  cat > "$TEST_TMP/bin/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "2.1.226 (Claude Code)"
+STUB
+  chmod +x "$TEST_TMP/bin/claude"
+
+  run_snapshot
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.claude_version' "$INCOMING/meta.json")" = "2.1.226 (Claude Code)" ]
+
+  rm -f "$TEST_TMP/bin/claude"
+}
+
 @test "memory=hash: emits a manifest with no bodies" {
   mkdir -p "$CLAUDE_DIR/projects/proj-d/memory"
   printf 'durable note\n' > "$CLAUDE_DIR/projects/proj-d/memory/notes.md"
