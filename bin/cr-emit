@@ -12,17 +12,13 @@
 set -uo pipefail
 JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
 [ -f /opt/claude-runner/etc/runner.env ] && . /opt/claude-runner/etc/runner.env
-LOKI_PUSH_URL="${LOKI_PUSH_URL:-http://192.168.139.20:3100/loki/api/v1/push}"
 
-# loki_push <labels-json> <line-json> — POST one stream value to Loki, stamped now.
-loki_push() {
-  local labels="$1" line="$2" ns payload
-  ns="$(date +%s%N)"
-  payload="$(jq -cn --argjson s "$labels" --arg line "$line" --arg ts "$ns" \
-    '{streams:[{stream:$s, values:[[$ts,$line]]}]}')"
-  curl -sf -m 10 -XPOST "$LOKI_PUSH_URL" -H 'Content-Type: application/json' \
-    --data-binary "$payload" >/dev/null
-}
+# Shared loki_push idiom (+ LOKI_PUSH_URL default). Sourced from beside this
+# script (readlink-resolved so a /usr/local/bin symlink invocation still finds
+# it). LOKI_LIB is a test seam.
+LOKI_LIB="${LOKI_LIB:-$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/cr-loki.sh}"
+# shellcheck source=bin/cr-loki.sh
+. "$LOKI_LIB"
 
 # Heartbeat mode: emitted repeatedly while a job runs. Keep it cheap — no file reads.
 if [ "${1:-}" = running ]; then
