@@ -20,9 +20,14 @@ br="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 [ "$br" = main ] || { log "on '$br', not main — refusing to deploy"; exit 0; }
 git fetch --quiet origin main || { log "git fetch failed"; exit 1; }
 local_sha="$(git rev-parse HEAD)"; remote_sha="$(git rev-parse origin/main)"
-[ "$local_sha" = "$remote_sha" ] && exit 0          # no change — silent no-op
-log "update ${local_sha:0:8} -> ${remote_sha:0:8}"
-git reset --hard --quiet origin/main || { log "git reset failed"; exit 1; }
+sha_changed=0
+if [ "$local_sha" != "$remote_sha" ]; then
+  log "update ${local_sha:0:8} -> ${remote_sha:0:8}"
+  git reset --hard --quiet origin/main || { log "git reset failed"; exit 1; }
+  sha_changed=1
+fi
+# SHA-equal does NOT exit — the cmp-based deploy pass always runs so the loop
+# self-heals any repo-ahead-of-deployed drift (e.g. from a manual git pull).
 
 # Validate before deploying — a broken script must not reach the worker.
 for s in bin/*; do
@@ -58,4 +63,9 @@ if [ "$units_changed" = 1 ]; then
     log "systemd daemon-reloaded (no timer changes)"
   fi
 fi
-[ "$changed" = 1 ] && log "deploy complete" || log "fetched new commit but no file drift"
+if [ "$changed" = 1 ]; then
+  log "deploy complete"
+elif [ "$sha_changed" = 1 ]; then
+  log "fetched new commit but no file drift"
+fi
+# sha_changed=0 + changed=0 → completely silent (self-heal check found nothing to do)
