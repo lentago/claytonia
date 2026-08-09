@@ -30,11 +30,14 @@ for s in bin/*; do
 done
 systemd-analyze verify systemd/*.service systemd/*.timer 2>>"$LOG" || log "warn: unit verify reported issues"
 
-changed=0; units_changed=0
+changed=0; units_changed=0; changed_timers=""
 deploy(){ # <src> <dst> <mode>
   cmp -s "$1" "$2" 2>/dev/null && return 0
   install -D -m "$3" "$1" "$2" && { changed=1; log "deployed $2"; }
-  case "$2" in /etc/systemd/system/*) units_changed=1;; esac
+  case "$2" in
+    /etc/systemd/system/*.timer) units_changed=1; changed_timers="$changed_timers $(basename "$2")";;
+    /etc/systemd/system/*)       units_changed=1;;
+  esac
 }
 for f in bin/*;    do deploy "$f" "/opt/claude-runner/bin/$(basename "$f")" 755; done
 for f in systemd/*; do deploy "$f" "/etc/systemd/system/$(basename "$f")" 644; done
@@ -47,7 +50,12 @@ done
 
 if [ "$units_changed" = 1 ]; then
   systemctl daemon-reload
-  systemctl restart claude-inbox.timer claude-heartbeat.timer 2>>"$LOG" || true
-  log "systemd daemon-reloaded + timers restarted"
+  if [ -n "$changed_timers" ]; then
+    # shellcheck disable=SC2086
+    systemctl restart $changed_timers 2>>"$LOG" || true
+    log "systemd daemon-reloaded; restarted timers:$changed_timers"
+  else
+    log "systemd daemon-reloaded (no timer changes)"
+  fi
 fi
 [ "$changed" = 1 ] && log "deploy complete" || log "fetched new commit but no file drift"
