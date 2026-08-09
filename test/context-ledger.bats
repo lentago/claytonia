@@ -28,6 +28,18 @@ setup() {
   mkdir -p "$JOBS_ROOT"
   export CONTEXT_HOSTNAME="test-worker"
   INCOMING="$JOBS_ROOT/context-ledger/incoming/$CONTEXT_HOSTNAME"
+
+  # Stub the shared loki_push (no network): record every emitted event as
+  # {labels, line} JSON to $LOKI_CAPTURE so tests can assert the JSON shape.
+  # The committer sources LOKI_LIB in place of bin/cr-loki.sh.
+  export LOKI_CAPTURE="$TEST_TMP/loki.jsonl"
+  export LOKI_STUB="$TEST_TMP/loki-stub.sh"
+  cat > "$LOKI_STUB" <<'STUB'
+loki_push() {
+  jq -cn --argjson s "$1" --arg line "$2" '{labels:$s, line:($line|fromjson)}' \
+    >> "$LOKI_CAPTURE"
+}
+STUB
 }
 
 teardown() { [ -n "${TEST_TMP:-}" ] && rm -rf "$TEST_TMP"; }
@@ -177,7 +189,12 @@ seed_remote() {
 
 run_commit() { LEDGER_REMOTE="$REMOTE" LEDGER_CLONE_DIR="$CLONE" LEDGER_DEPLOY_KEY="$KEY" \
   JOBS_ROOT="$JOBS_ROOT" CONTEXT_HOSTNAME="$CONTEXT_HOSTNAME" \
-  PRIMARY_MARKER="${MARKER:-$JOBS_ROOT/context-ledger/primary}" run "$COMMIT"; }
+  PRIMARY_MARKER="${MARKER:-$JOBS_ROOT/context-ledger/primary}" \
+  LOKI_LIB="${LOKI_LIB_OVERRIDE:-$LOKI_STUB}" LOKI_CAPTURE="$LOKI_CAPTURE" \
+  CONTEXT_STALE_S="${CONTEXT_STALE_S:-}" run "$COMMIT"; }
+
+# Collapse the captured event stream to the lines matching one event type.
+captured_events() { jq -c "select(.line.event==\"$1\")" "$LOKI_CAPTURE"; }
 
 @test "committer: non-primary host is a silent no-op" {
   seed_remote
@@ -239,4 +256,139 @@ run_commit() { LEDGER_REMOTE="$REMOTE" LEDGER_CLONE_DIR="$CLONE" LEDGER_DEPLOY_K
   after="$(git -C "$CLONE" rev-list --count HEAD)"
   [ "$before" = "$after" ]
   [ ! -d "$INCOMING" ]
+}
+
+# --- committer: visibility events (context_sweep / context_host) --------------
+# The emitted JSON is a cross-repo CONTRACT (drosera dashboards/alerts query it);
+# these assert its shape against a stubbed loki_push. See docs/context-ledger.md.
+
+@test "emit: a sweep with changes emits one context_sweep + one context_host (contract shape)" {
+  seed_remote
+  mkdir -p "$JOBS_ROOT/context-ledger"
+  printf '%s\n' "$CONTEXT_HOSTNAME" > "$JOBS_ROOT/context-ledger/primary"
+
+  mkdir -p "$INCOMING/claude/skills/demo" "$INCOMING/claude/projects/proj/memory"
+  printf '# rules\n'      > "$INCOMING/claude/CLAUDE.md"
+  printf '# demo\n'       > "$INCOMING/claude/skills/demo/SKILL.md"
+  printf 'durable note\n' > "$INCOMING/claude/projects/proj/memory/note.md"
+  now="$(date -u +%FT%TZ)"
+  jq -n --arg ts "$now" '{hostname:"test-worker", timestamp_utc:$ts,
+    claude_version:"1.2.3", script_rev:"1", memory_mode:"full", status:"ok"}' \
+    > "$INCOMING/meta.json"
+
+  run_commit
+  [ "$status" -eq 0 ]
+
+  [ "$(captured_events context_sweep | wc -l)" -eq 1 ]
+  [ "$(captured_events context_host  | wc -l)" -eq 1 ]
+
+  sweep="$(captured_events context_sweep)"
+  [ "$(jq -r '.line.swept'           <<<"$sweep")" = 1 ]
+  [ "$(jq -r '.line.changed'         <<<"$sweep")" = 1 ]
+  [ "$(jq -r '.line.quarantined'     <<<"$sweep")" = 0 ]
+  [ "$(jq -r '.line.duration_s|type' <<<"$sweep")" = number ]
+  [ "$(jq -r '.labels.job'           <<<"$sweep")" = claude_runner ]
+  [ "$(jq -r '.labels.service'       <<<"$sweep")" = context_ledger ]
+
+  host="$(captured_events context_host)"
+  [ "$(jq -r '.labels.job'               <<<"$host")" = claude_runner ]
+  [ "$(jq -r '.labels.service'           <<<"$host")" = context_ledger ]
+  [ "$(jq -r '.labels.host'              <<<"$host")" = test-worker ]
+  [ "$(jq -r '.line.host'                <<<"$host")" = test-worker ]
+  [ "$(jq -r '.line.status'              <<<"$host")" = ok ]
+  [ "$(jq -r '.line.memory_mode'         <<<"$host")" = full ]
+  [ "$(jq -r '.line.claude_version'      <<<"$host")" = 1.2.3 ]
+  [ "$(jq -r '.line.skills_count'        <<<"$host")" = 1 ]
+  [ "$(jq -r '.line.memory_files'        <<<"$host")" = 1 ]
+  [ "$(jq -r '.line.files_changed|type'  <<<"$host")" = number ]
+  [ "$(jq -r '.line.files_changed'       <<<"$host")" -gt 0 ]
+  [ "$(jq -r '.line.total_bytes'         <<<"$host")" -gt 0 ]
+  [ "$(jq -r '.line.memory_bytes'        <<<"$host")" -gt 0 ]
+  [ "$(jq -r '.line.snapshot_age_s|type' <<<"$host")" = number ]
+  [ "$(jq -r '.line.snapshot_age_s'      <<<"$host")" -ge 0 ]
+  # commit is the host's latest short sha in the ledger
+  [ "$(jq -r '.line.commit' <<<"$host")" = "$(git -C "$CLONE" log -1 --format=%h -- hosts/test-worker)" ]
+}
+
+@test "emit: a host present in the ledger but absent from incoming still emits context_host (files_changed=0)" {
+  seed_remote
+  mkdir -p "$JOBS_ROOT/context-ledger"
+  printf '%s\n' "$CONTEXT_HOSTNAME" > "$JOBS_ROOT/context-ledger/primary"
+
+  # First sweep populates hosts/test-worker in the ledger.
+  mkdir -p "$INCOMING/claude"; printf '# rules\n' > "$INCOMING/claude/CLAUDE.md"
+  now="$(date -u +%FT%TZ)"
+  jq -n --arg ts "$now" '{hostname:"test-worker", timestamp_utc:$ts,
+    claude_version:"9.9.9", script_rev:"1", memory_mode:"full", status:"ok"}' \
+    > "$INCOMING/meta.json"
+  run_commit; [ "$status" -eq 0 ]; [ ! -d "$INCOMING" ]
+
+  # Second sweep: incoming empty — the host is unswept but still in the clone.
+  : > "$LOKI_CAPTURE"
+  run_commit; [ "$status" -eq 0 ]
+
+  [ "$(captured_events context_host | wc -l)" -eq 1 ]
+  host="$(captured_events context_host)"
+  [ "$(jq -r '.line.host'                <<<"$host")" = test-worker ]
+  [ "$(jq -r '.line.files_changed'       <<<"$host")" = 0 ]
+  [ "$(jq -r '.line.claude_version'      <<<"$host")" = 9.9.9 ]
+  [ "$(jq -r '.line.snapshot_age_s|type' <<<"$host")" = number ]
+
+  sweep="$(captured_events context_sweep)"
+  [ "$(jq -r '.line.swept'   <<<"$sweep")" = 0 ]
+  [ "$(jq -r '.line.changed' <<<"$sweep")" = 0 ]
+}
+
+@test "emit: a quarantined slot yields status=quarantined" {
+  seed_remote
+  mkdir -p "$JOBS_ROOT/context-ledger"
+  printf '%s\n' "$CONTEXT_HOSTNAME" > "$JOBS_ROOT/context-ledger/primary"
+
+  mkdir -p "$INCOMING"
+  printf 'CONTEXT SNAPSHOT QUARANTINED\nhost: test-worker\n' > "$INCOMING/QUARANTINE.txt"
+  now="$(date -u +%FT%TZ)"
+  jq -n --arg ts "$now" '{hostname:"test-worker", timestamp_utc:$ts,
+    claude_version:"1.0.0", script_rev:"1", memory_mode:"full", status:"quarantined"}' \
+    > "$INCOMING/meta.json"
+
+  run_commit
+  [ "$status" -eq 0 ]
+
+  [ "$(jq -r '.line.quarantined' <<<"$(captured_events context_sweep)")" = 1 ]
+  [ "$(jq -r '.line.status'      <<<"$(captured_events context_host)")" = quarantined ]
+}
+
+@test "emit: a snapshot older than CONTEXT_STALE_S yields status=stale" {
+  seed_remote
+  mkdir -p "$JOBS_ROOT/context-ledger"
+  printf '%s\n' "$CONTEXT_HOSTNAME" > "$JOBS_ROOT/context-ledger/primary"
+
+  mkdir -p "$INCOMING/claude"; printf '# rules\n' > "$INCOMING/claude/CLAUDE.md"
+  jq -n '{hostname:"test-worker", timestamp_utc:"2000-01-01T00:00:00Z",
+    claude_version:"1.0.0", script_rev:"1", memory_mode:"full", status:"ok"}' \
+    > "$INCOMING/meta.json"
+
+  CONTEXT_STALE_S=100 run_commit
+  [ "$status" -eq 0 ]
+
+  host="$(captured_events context_host)"
+  [ "$(jq -r '.line.status'         <<<"$host")" = stale ]
+  [ "$(jq -r '.line.snapshot_age_s' <<<"$host")" -gt 100 ]
+}
+
+@test "emit: a loki push failure never fails the sweep" {
+  seed_remote
+  mkdir -p "$JOBS_ROOT/context-ledger"
+  printf '%s\n' "$CONTEXT_HOSTNAME" > "$JOBS_ROOT/context-ledger/primary"
+
+  mkdir -p "$INCOMING/claude"; printf '# rules\n' > "$INCOMING/claude/CLAUDE.md"
+  printf '{"status":"ok"}\n' > "$INCOMING/meta.json"
+
+  # A push that always fails must not change the sweep exit code or block the commit.
+  fail_stub="$TEST_TMP/loki-fail.sh"
+  printf 'loki_push(){ return 1; }\n' > "$fail_stub"
+
+  LOKI_LIB_OVERRIDE="$fail_stub" run_commit
+  [ "$status" -eq 0 ]
+  git -C "$CLONE" log -1 --format='%s' | grep -q "ledger($CONTEXT_HOSTNAME):"
 }

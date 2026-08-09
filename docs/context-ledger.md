@@ -141,6 +141,66 @@ is in place. The key is host-local, so rotation touches only the primary.
   boundary (see [`../CLAUDE.md`](../CLAUDE.md)) — that boundary governs *project*
   work, and the ledger is not project work.
 
+## Events (Loki visibility layer)
+
+After each sweep the committer ([`../bin/context-ledger-commit`](../bin/context-ledger-commit))
+pushes structured events to the fleet's Alloy Loki receiver — the same
+`loki_push` idiom the per-job emitter uses, factored into the shared helper
+[`../bin/cr-loki.sh`](../bin/cr-loki.sh). The committer is the single observer:
+its clone holds every host's `meta.json` + tree, so **one** emitter covers the
+whole fleet with zero per-host instrumentation. Sizes/counts are derived from the
+committed tree, so the snapshot side needs no changes.
+
+Events are a **projection** of the ledger (the source of truth): a Loki push
+failure is logged (`|| warn`) and **never** fails the sweep. Configure the Loki
+endpoint via `LOKI_PUSH_URL` (from `runner.env`); the stale threshold via
+`CONTEXT_STALE_S` (default `93600` = 26h).
+
+> **This event schema is a cross-repo CONTRACT.** drosera dashboards and alerts
+> query these fields; treat any field rename/removal/retype as a **breaking
+> change** and coordinate it there.
+
+### Labels (low-cardinality — Loki stream labels)
+
+| Label | Value |
+|---|---|
+| `job` | `claude_runner` (constant) |
+| `service` | `context_ledger` (constant) |
+| `host` | the host name — **`context_host` events only** |
+
+Everything else lives in the JSON log line (per the `cr-emit` convention).
+
+### `context_sweep` — one per run
+
+| Field | Type | Meaning |
+|---|---|---|
+| `event` | string | `"context_sweep"` |
+| `swept` | int | host slots seen in `incoming/` this run |
+| `changed` | int | hosts whose ledger commit was pushed this run |
+| `quarantined` | int | swept slots carrying a `QUARANTINE.txt` |
+| `duration_s` | int | wall-clock seconds for the sweep |
+
+### `context_host` — one per host dir in the clone
+
+Emitted for **every** `hosts/<host>/` in the ledger, **not** just the hosts swept
+this run — so a host that stopped snapshotting still reports its age, which is
+what liveness alerting keys on.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `event` | string | `"context_host"` |
+| `host` | string | host name (also a label) |
+| `status` | string | `ok` \| `quarantined` \| `stale`. `quarantined` (a committed `QUARANTINE.txt` / `meta.status`) wins; else `stale` when `snapshot_age_s > CONTEXT_STALE_S`; else `ok` |
+| `files_changed` | int | files changed for this host **this sweep** (`0` if unswept) |
+| `commit` | string | short SHA of the host's latest ledger commit |
+| `snapshot_age_s` | int \| null | `now − meta.timestamp_utc` (`null` if unparseable/absent) |
+| `claude_version` | string | from the host's `meta.json` |
+| `memory_mode` | string | `full` \| `hash`, from `meta.json` |
+| `total_bytes` | int | total bytes of the host's committed tree |
+| `memory_bytes` | int | bytes of per-project memory (`full`: bodies; `hash`: manifest byte column) |
+| `memory_files` | int | count of per-project memory files (or manifest entries) |
+| `skills_count` | int | installed-skill directories |
+
 ## Files
 
 | Piece | Path |
