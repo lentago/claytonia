@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# context-ledger-commit — sweep the context-ledger incoming queue into the
+# PRIVATE ledger repo lentago/myosotis. PRIMARY WORKER ONLY. Runs as root (it
+# needs the repo-scoped deploy key at /root/.ssh/myosotis_deploy, which never
+# leaves the host). See docs/context-ledger.md.
+#
+# This pushes DATA COMMITS to a data repo. It NEVER opens or merges a PR and
+# NEVER touches a bullpen project — so it does not weaken the fleet's
+# branch-and-PR-never-merge boundary.
+#
+# Primary election: a single NAS marker $LEDGER_ROOT/primary holds the hostname
+# of the designated committer. This script self-gates on it (a non-primary that
+# somehow has the timer exits 0, silently); provisioning also only enables the
+# committer timer on that host. Promotion = write the new hostname to the marker
+# and (re)provision so the new host generates its own deploy key.
+#
+# Test seams (default to production): JOBS_ROOT, LEDGER_REMOTE, LEDGER_CLONE_DIR,
+# LEDGER_DEPLOY_KEY, CONTEXT_HOSTNAME, PRIMARY_MARKER.
+set -uo pipefail
+export LC_ALL=C
+
+JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
+LEDGER_ROOT="$JOBS_ROOT/context-ledger"
+INCOMING="$LEDGER_ROOT/incoming"
+PRIMARY_MARKER="${PRIMARY_MARKER:-$LEDGER_ROOT/primary}"
+LEDGER_REMOTE="${LEDGER_REMOTE:-git@github.com:lentago/myosotis.git}"
+LEDGER_CLONE_DIR="${LEDGER_CLONE_DIR:-/opt/context-ledger/myosotis}"
+LEDGER_DEPLOY_KEY="${LEDGER_DEPLOY_KEY:-/root/.ssh/myosotis_deploy}"
+HOSTNAME_="${CONTEXT_HOSTNAME:-$(hostname)}"
+
+log(){  echo "context-ledger: $*" | systemd-cat -t claude-runner -p info    2>/dev/null || echo "context-ledger: $*" >&2; }
+warn(){ echo "context-ledger: $*" | systemd-cat -t claude-runner -p warning 2>/dev/null || echo "context-ledger: $*" >&2; }
+err(){  echo "context-ledger: $*" | systemd-cat -t claude-runner -p err     2>/dev/null || echo "context-ledger: $*" >&2; }
+
+# --- primary gate -------------------------------------------------------------
+if [ -f "$PRIMARY_MARKER" ]; then
+  want="$(tr -d '[:space:]' < "$PRIMARY_MARKER" 2>/dev/null)"
+  if [ "$want" != "$HOSTNAME_" ]; then
+    exit 0   # designated primary is elsewhere — silent no-op
+  fi
+else
+  err "no primary marker at $PRIMARY_MARKER — designate a primary (echo <host> > \"$PRIMARY_MARKER\") before enabling the committer"
+  exit 1
+fi
+
+[ -d "$INCOMING" ] || { log "no incoming queue at $INCOMING — nothing to do"; exit 0; }
+
+# --- deploy key + git identity ------------------------------------------------
+# Missing key is the EXPECTED state until the operator finishes the myosotis
+# bootstrap: loud error, exit nonzero, incoming stays queued.
+if [ ! -f "$LEDGER_DEPLOY_KEY" ]; then
+  err "deploy key missing at $LEDGER_DEPLOY_KEY — cannot reach $LEDGER_REMOTE; incoming stays queued (expected until myosotis bootstrap is complete)"
+  exit 1
+fi
+export GIT_SSH_COMMAND="ssh -i $LEDGER_DEPLOY_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+export GIT_AUTHOR_NAME="myosotis-ledger-committer"
+export GIT_AUTHOR_EMAIL="myosotis-ledger-committer@claude-runner"
+export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+
+command -v rsync >/dev/null 2>&1 || { err "rsync not installed — cannot sweep"; exit 1; }
+
+# --- clone / refresh the ledger repo -----------------------------------------
+mkdir -p "$(dirname "$LEDGER_CLONE_DIR")"
+if [ ! -d "$LEDGER_CLONE_DIR/.git" ]; then
+  rm -rf "$LEDGER_CLONE_DIR"
+  if ! git clone --quiet "$LEDGER_REMOTE" "$LEDGER_CLONE_DIR" 2>/dev/null; then
+    err "clone of $LEDGER_REMOTE failed (remote missing or key not yet a write deploy key?) — incoming stays queued"
+    exit 1
+  fi
+fi
+cd "$LEDGER_CLONE_DIR" || { err "cannot cd $LEDGER_CLONE_DIR"; exit 1; }
+
+if ! git fetch --quiet origin 2>/dev/null; then
+  err "git fetch from $LEDGER_REMOTE failed — incoming stays queued"
+  exit 1
+fi
+# Default branch of the remote (fallback: main).
+branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+[ -n "$branch" ] || branch="main"
+git checkout --quiet -B "$branch" "origin/$branch" 2>/dev/null || git checkout --quiet "$branch" 2>/dev/null || true
+git reset --hard --quiet "origin/$branch" 2>/dev/null || true
+
+# --- sweep incoming/<host> -> hosts/<host>, one commit + push per changed host
+# Swept content is INERT DATA: it is only copied and committed, never executed,
+# sourced, or templated.
+shopt -s nullglob
+swept=0; changed=0; quarantined=0
+for d in "$INCOMING"/*/; do
+  host_dir="${d%/}"
+  h="$(basename "$host_dir")"
+  case "$h" in *.replacing|*.tmp|*.prev) continue;; esac   # transient staging names
+  swept=$((swept+1))
+
+  [ -f "$host_dir/QUARANTINE.txt" ] && { quarantined=$((quarantined+1)); warn "quarantine present for host $h — committing it so the failed snapshot is visible"; }
+
+  dest="hosts/$h"
+  mkdir -p "$dest"
+  # Guard the copy: under `set +e` a partial rsync would otherwise be committed
+  # as if complete. Skip the host; its incoming stays queued for the next run.
+  if ! rsync -a --delete "$host_dir/" "$dest/"; then
+    err "rsync failed for host $h — skipping; incoming stays queued"
+    git checkout --quiet -- "$dest" 2>/dev/null || true
+    git clean --quiet -fd -- "$dest" 2>/dev/null || true
+    continue
+  fi
+
+  git add -A -- "$dest"
+  if git diff --cached --quiet -- "$dest"; then
+    # No change vs what is already in the ledger — safe to drop the incoming copy.
+    rm -rf "$host_dir"
+    continue
+  fi
+
+  n="$(git diff --cached --numstat -- "$dest" | wc -l | tr -d ' ')"
+  git commit --quiet -m "ledger($h): $n files changed"
+  # Default git push is fast-forward-only; we NEVER pass --force.
+  if git push --quiet origin "$branch" 2>/dev/null; then
+    rm -rf "$host_dir"   # delete swept incoming ONLY after the push lands
+    changed=$((changed+1))
+  else
+    err "push failed for host $h — leaving incoming queued; local commit will be re-derived next run"
+    # Leave incoming in place. Next run resets to origin/$branch (dropping this
+    # unpushed commit) and re-derives it from the still-queued incoming dir.
+  fi
+done
+
+log "swept=$swept changed=$changed quarantined=$quarantined"

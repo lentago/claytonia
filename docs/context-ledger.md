@@ -1,0 +1,152 @@
+# Context ledger — fleet-wide Claude context drift tracking
+
+## Purpose
+
+Host-side Claude Code context — the global `~/.claude/CLAUDE.md`, settings and
+hooks, installed skills and plugins, per-project memory, and the MCP server
+registration in `~/.claude.json` — shapes how every agent on a worker behaves,
+yet it lives *outside* any repo. Repo-side context (a project's own `CLAUDE.md`)
+is already versioned in the project repo; this ledger covers the host-side half.
+
+Every worker snapshots its host-side context daily into the queue share; the
+primary worker sweeps those snapshots into the **private** ledger repo
+`lentago/myosotis`, one commit per changed host. The result is a versioned,
+diffable history of the fleet's out-of-band context.
+
+Beyond hygiene this is a **security control**: memory poisoning, hook injection,
+and permission-allowlist creep on a worker stop being silent persistent state and
+become visible diffs in the ledger.
+
+## Threat model
+
+**Catches (as a diff in the ledger):**
+
+- **Memory poisoning** — an injected instruction landing in
+  `~/.claude/projects/*/memory/**` shows up as a memory diff.
+- **Hook injection** — a malicious hook added to `settings.json` /
+  `settings.local.json` shows up as a settings diff.
+- **Permission-allowlist creep** — an expanding `permissions.allow` list (or new
+  MCP servers) shows up in the settings / derived-`claude.json` diff.
+- **Stale / drifting CLI versions** — `versions.txt` records `claude --version`
+  per host, so a worker running an old or odd build is visible.
+
+**Limitation — a compromised host can lie in its own self-report.** The snapshot
+is produced *by* the worker, so a sufficiently compromised worker could doctor
+what it reports. The ledger is a tripwire for drift and low-to-mid-grade
+tampering, not a root of trust. The escalation path is an **out-of-band
+host-side spot-check from the PVE host (pve4)**: compare a suspect worker's live
+`~/.claude` against its last ledger entry from a vantage point the worker does
+not control.
+
+## What is collected (allowlist)
+
+The collector (`../bin/context-snapshot`) is **allowlist-only** — it never globs
+`~/.claude` wholesale. Exactly these are staged:
+
+- `~/.claude/CLAUDE.md`
+- `~/.claude/settings.json`, `~/.claude/settings.local.json`
+- `~/.claude/skills/*/SKILL.md` verbatim, plus a per-skill `OTHER-FILES.sha256`
+  hash manifest (path, sha256, bytes) of every *other* file in the skill dir
+- `~/.claude/projects/*/memory/**` — full bodies by default (workers). The
+  `--memory=hash` flag emits only a manifest (path, sha256, bytes, mtime) with no
+  bodies; it exists for the operator's workstation (out of scope for the fleet).
+- installed-plugins list — names + versions/refs only (`claude/plugins.txt`)
+- `claude --version` and `command -v claude` → `versions.txt`
+- a **derived**, sanitized `claude-json.derived.json` built from `~/.claude.json`
+  with `jq -S`: `mcpServers` mapped to `{type, command, url, args, env: (keys),
+  headers: (keys)}` — **key names only, never values** — plus plugin/marketplace
+  registration fields. The raw `~/.claude.json` is **never** copied; `projects`
+  (prompt history) and oauth/account fields are excluded by construction. On a jq
+  parse failure a `claude-json.PARSE_ERROR` marker is written and the derived view
+  is excluded — there is no raw fallback, ever.
+
+Each snapshot also carries a per-file `MANIFEST.sha256` and a `meta.json`
+(`hostname`, `timestamp_utc`, `claude_version`, `script_rev`, `memory_mode`,
+`status`). Because `timestamp_utc` changes each run, a host commits at least a
+daily "still reporting" liveness entry even when nothing else drifted.
+
+## Guardrails (denylist + secret-scan)
+
+Two independent guards run over the *staged* tree before it is published; either
+firing aborts the whole snapshot, publishes a `QUARANTINE.txt` in the host's
+slot, and exits nonzero:
+
+- **Path denylist** (defense in depth): any staged path matching `*credentials*`,
+  `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `*token*`, `*.smbcred`, or `.envrc`.
+- **Content secret-scan**: `grep -E` for `sk-ant-`, `ghp_`, `github_pat_`,
+  `gho_`, `glpat-`, `AKIA[0-9A-Z]{16}`, `xox[baprs]-`, `eyJhbGciOi`, and
+  `-----BEGIN.*PRIVATE KEY` over every staged file.
+
+A hit is treated as a **finding, not a warning**: a secret is somewhere it should
+not be. Loud failure is the feature.
+
+## Quarantine semantics
+
+On any guard hit the snapshot publishes a slot containing only `QUARANTINE.txt`
+(plus `meta.json` with `status: quarantined`). `QUARANTINE.txt` records the
+offending **path and line number only** — never the matched content, so the
+secret never enters the ledger. The committer still commits a quarantined slot
+(so a failed snapshot is *visible* in the ledger) and logs a warning.
+
+## Review workflow
+
+Review is the **myosotis commit feed**: each push is `ledger(<host>): N files
+changed`, so browsing the repo's commit history (or watching it) surfaces exactly
+what drifted on which host and when. A `QUARANTINE.txt` in a host's tree flags a
+snapshot that tripped a guard and needs a look.
+
+## Primary election
+
+The committer (`../bin/context-ledger-commit`) runs on **one** worker. The
+designated primary is named by a single NAS marker, `/srv/jobs/context-ledger/primary`,
+holding that worker's hostname. The committer self-gates on it (any other worker
+that somehow has the timer exits 0 silently), and provisioning
+(`../provision/07-context-ledger.sh`) only enables the committer timer on that
+host. This is the fleet's one deliberately pet-like role — justified because the
+committer holds a repo-scoped write key that must **not** be fleet-wide.
+
+To promote a new primary: write the new hostname to the marker and re-run
+provisioning on that host so it generates its own deploy key:
+
+```sh
+echo "$(hostname)" > /srv/jobs/context-ledger/primary
+sudo provision/07-context-ledger.sh
+```
+
+## Deploy key
+
+The committer authenticates to `git@github.com:lentago/myosotis.git` with a
+dedicated ed25519 key at `/root/.ssh/myosotis_deploy` (comment
+`myosotis-ledger-committer@claude-runner`), pinned via `GIT_SSH_COMMAND`. This is
+**not** the fleet GitHub App credential — the ledger writer is deliberately a
+separate, per-repo-scoped identity. Provisioning generates the key if absent; the
+**private half never leaves the host** and never lands in `/srv/jobs` or any repo.
+When the key is freshly generated, provisioning logs the **public** half loudly:
+register it as a **write** deploy key on `lentago/myosotis`. Until it is
+registered the committer fails loudly and snapshots stay queued in `incoming/` —
+that is the expected state during myosotis bootstrap.
+
+**Rotation:** delete `/root/.ssh/myosotis_deploy*` on the primary and re-run
+provisioning; a new keypair is generated and its public half logged for
+registration. Remove the old deploy key from `lentago/myosotis` once the new one
+is in place. The key is host-local, so rotation touches only the primary.
+
+## Two hard rules
+
+- **`myosotis` is NEVER a bullpen project.** It must never be registered in
+  `projects/registry.json`. It is a data sink, not a job target: no agent ever
+  checks it out or opens a PR against it.
+- **The committer NEVER touches PRs or merges.** It pushes data commits to the
+  ledger repo only. This does not weaken the fleet's branch-and-PR-never-merge
+  boundary (see [`../CLAUDE.md`](../CLAUDE.md)) — that boundary governs *project*
+  work, and the ledger is not project work.
+
+## Files
+
+| Piece | Path |
+|---|---|
+| Collector (all workers) | [`../bin/context-snapshot`](../bin/context-snapshot) |
+| Committer (primary only) | [`../bin/context-ledger-commit`](../bin/context-ledger-commit) |
+| Provisioning | [`../provision/07-context-ledger.sh`](../provision/07-context-ledger.sh) |
+| Units | `../systemd/context-snapshot.{service,timer}`, `../systemd/context-ledger-commit.{service,timer}` |
+| Tests | [`../test/context-ledger.bats`](../test/context-ledger.bats) |

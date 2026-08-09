@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily host-side Claude context snapshot
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=1800
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
