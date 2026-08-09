@@ -10,6 +10,7 @@ setup() {
   REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
   SNAP="$REPO_ROOT/bin/context-snapshot"
   COMMIT="$REPO_ROOT/bin/context-ledger-commit"
+  REPORT="$REPO_ROOT/bin/ledger-report"
 
   TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/claytonia-ledger.XXXXXX")"
 
@@ -391,4 +392,106 @@ captured_events() { jq -c "select(.line.event==\"$1\")" "$LOKI_CAPTURE"; }
   LOKI_LIB_OVERRIDE="$fail_stub" run_commit
   [ "$status" -eq 0 ]
   git -C "$CLONE" log -1 --format='%s' | grep -q "ledger($CONTEXT_HOSTNAME):"
+# --- ledger-report -----------------------------------------------------------
+# Fixture: a local clone with two hosts and two commits for alpha (one old,
+# one recent) so we can assert summary output and --since filtering.
+
+setup_report_clone() {
+  LREMOTE="$TEST_TMP/myosotis-report.git"
+  LCLONE="$TEST_TMP/myosotis-report"
+  git init -q --bare -b main "$LREMOTE"
+  git clone -q "$LREMOTE" "$LCLONE"
+  (
+    cd "$LCLONE"
+    git config user.email "t@t"
+    git config user.name "t"
+    mkdir -p hosts/alpha hosts/beta
+
+    # alpha: old commit (2026-07-01, ~39 days before test date)
+    printf '{"status":"ok","hostname":"alpha","timestamp_utc":"2026-07-01T10:00:00Z"}\n' \
+      > hosts/alpha/meta.json
+    git add hosts/alpha/meta.json
+    GIT_COMMITTER_DATE="2026-07-01T10:00:00 +0000" \
+      git commit -q --date="2026-07-01T10:00:00 +0000" -m "ledger(alpha): 1 files changed"
+
+    # beta: commit with quarantine (2026-08-08)
+    printf '{"status":"quarantined","hostname":"beta","timestamp_utc":"2026-08-08T10:00:00Z"}\n' \
+      > hosts/beta/meta.json
+    printf 'DENYLIST: hosts/beta/claude/oops.pem:1\n' > hosts/beta/QUARANTINE.txt
+    git add hosts/beta/
+    GIT_COMMITTER_DATE="2026-08-08T10:00:00 +0000" \
+      git commit -q --date="2026-08-08T10:00:00 +0000" -m "ledger(beta): 2 files changed"
+
+    # alpha: recent drift commit (2026-08-08)
+    printf '{"status":"ok","hostname":"alpha","timestamp_utc":"2026-08-08T10:00:00Z"}\n' \
+      > hosts/alpha/meta.json
+    printf '# updated rules\n' > hosts/alpha/CLAUDE.md
+    git add hosts/alpha/
+    GIT_COMMITTER_DATE="2026-08-08T10:00:00 +0000" \
+      git commit -q --date="2026-08-08T10:00:00 +0000" -m "ledger(alpha): 2 files changed"
+
+    git push -q origin main
+  )
+}
+
+run_report() { LEDGER_CLONE_DIR="$LCLONE" run "$REPORT" "$@"; }
+
+@test "ledger-report: summary shows all hosts" {
+  setup_report_clone
+  run_report
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -q 'alpha'
+  printf '%s\n' "$output" | grep -q 'beta'
+}
+
+@test "ledger-report: summary flags quarantined status for beta" {
+  setup_report_clone
+  run_report
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep 'beta' | grep -q 'quarantined'
+}
+
+@test "ledger-report: --host lists commits with changed-file lists" {
+  setup_report_clone
+  run_report --host alpha
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -q '^commit'
+  printf '%s\n' "$output" | grep -q 'hosts/alpha'
+}
+
+@test "ledger-report: --host --since filters to commits after the cutoff" {
+  setup_report_clone
+  # Cutoff 2026-07-26 excludes the 2026-07-01 commit but includes 2026-08-08.
+  run_report --host alpha --since 2026-07-26
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -q  'ledger(alpha): 2 files'
+  ! printf '%s\n' "$output" | grep -q 'ledger(alpha): 1 files'
+}
+
+@test "ledger-report: --host --diff emits patch output" {
+  setup_report_clone
+  run_report --host beta --diff
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -q '^commit'
+}
+
+@test "ledger-report: --quarantines lists beta quarantine with body" {
+  setup_report_clone
+  run_report --quarantines
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -q 'host: beta'
+  printf '%s\n' "$output" | grep -q 'DENYLIST'
+}
+
+@test "ledger-report: missing clone dir fails loudly" {
+  LEDGER_CLONE_DIR="$TEST_TMP/nonexistent" run "$REPORT"
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" | grep -q 'ledger-report:'
+}
+
+@test "ledger-report: unknown host fails loudly" {
+  setup_report_clone
+  run_report --host no-such-host
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" | grep -q 'ledger-report:'
 }
