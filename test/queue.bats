@@ -173,3 +173,124 @@ load test_helper
   [ -e "$JOBS_ROOT/processing/$runid.owner" ]
   [ "$(count_terminal)" -eq 0 ]
 }
+
+# --- completed-orphan recovery: the janitor ------------------------------------
+#
+# The reaper is keyed on *.owner files, so an entry whose owner was already
+# removed is invisible to it. run-job clears the owner as its last step even if
+# the terminal `mv -> done/` silently failed, leaving an ownerless processing
+# entry whose logs prove the job finished. That state stranded a real job in
+# processing/ for a month (issue #73); the janitor sweeps it terminally.
+
+# A stranded processing entry looks like a completed run: its runid has a .meta
+# sidecar, backdated past the janitor's stale threshold (mtime = completion time).
+seed_completed_orphan() { # <runid> <exit_rc>
+  local runid="$1" rc="$2" meta="$JOBS_ROOT/logs/$1.meta"
+  printf 'the completed work\n' > "$JOBS_ROOT/processing/$runid"
+  {
+    echo "runid=$runid"; echo "exit=$rc"; echo "duration_sec=5"
+    echo "finished=2026-07-08T21:54:18Z"
+  } > "$meta"
+  touch -d '2026-07-08 21:54:18' "$meta"   # older than JANITOR_STALE below
+}
+
+@test "janitor: an ownerless completed orphan (logs present) is terminally filed" {
+  # The exact observed bug: no .owner file, but logs/<runid>.meta exists. The
+  # reaper can't see it; the janitor files it to done/ (exit=0) with a marker and
+  # never re-runs it.
+  export CLAUDE_JANITOR_STALE=60
+  runid="20260708T215413Z-mc-personnel-pilot-01"
+  seed_completed_orphan "$runid" 0
+  # (deliberately no processing/$runid.owner — this is the ownerless case)
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+
+  [ ! -e "$JOBS_ROOT/processing/$runid" ]
+  [ -e "$JOBS_ROOT/done/$runid.janitor" ]
+  [ "$(count_in done)" -eq 1 ]
+  [ "$(count_in failed)" -eq 0 ]
+}
+
+@test "janitor: a failed completed orphan is filed to failed/ per its logged exit" {
+  export CLAUDE_JANITOR_STALE=60
+  runid="20260708T215413Z-boom"
+  seed_completed_orphan "$runid" 1
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+
+  [ ! -e "$JOBS_ROOT/processing/$runid" ]
+  [ -e "$JOBS_ROOT/failed/$runid.janitor" ]
+  [ "$(count_in failed)" -eq 1 ]
+  [ "$(count_in done)" -eq 0 ]
+}
+
+@test "janitor: a completed orphan with a DEAD owner is filed, never requeued" {
+  # A completed run whose owner is also dead: the reaper would requeue it (.retry)
+  # and re-run a job that already finished — a double-run. The janitor runs first
+  # and files it terminally, so it is never re-run.
+  export CLAUDE_JANITOR_STALE=60
+  runid="20260708T215413Z-stranded-complete"
+  seed_completed_orphan "$runid" 0
+  printf 'owner=deadworker\nstarted=1\norigname=x.txt\n' > "$JOBS_ROOT/processing/$runid.owner"
+  # (no workers/deadworker.alive -> owner is long dead)
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+
+  [ ! -e "$JOBS_ROOT/processing/$runid" ]
+  [ ! -e "$JOBS_ROOT/processing/$runid.owner" ]
+  [ -e "$JOBS_ROOT/done/$runid.janitor" ]
+  [ "$(count_in done)" -eq 1 ]
+  # Not requeued: nothing bounced back through the inbox as a .retry.
+  [ -z "$(find "$JOBS_ROOT/inbox" -name '*.retry.*' -print -quit)" ]
+}
+
+@test "janitor: a live owner's completed entry is left for run-job to file" {
+  # meta exists but the owner heartbeat is fresh — run-job may still be doing its
+  # own terminal move. The janitor must not race it.
+  export CLAUDE_JANITOR_STALE=60
+  runid="20260708T215413Z-live-cleanup"
+  seed_completed_orphan "$runid" 0
+  printf 'owner=liveworker\nstarted=1\norigname=x.txt\n' > "$JOBS_ROOT/processing/$runid.owner"
+  : > "$JOBS_ROOT/workers/liveworker.alive"   # fresh heartbeat
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+
+  [ -e "$JOBS_ROOT/processing/$runid" ]
+  [ -e "$JOBS_ROOT/processing/$runid.owner" ]
+  [ "$(count_terminal)" -eq 0 ]
+}
+
+@test "janitor: an ownerless entry with NO logs is left untouched (no completion proof)" {
+  # Conservatism: without logs/<runid>.meta we cannot prove the job ran, and the
+  # queue is at-least-once — filing it could lose a job that never actually ran.
+  # The janitor must leave it (neither done/ nor failed/).
+  export CLAUDE_JANITOR_STALE=60
+  runid="20260708T215413Z-nologs"
+  printf 'ambiguous work\n' > "$JOBS_ROOT/processing/$runid"
+  # (no owner, no logs/<runid>.meta)
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+
+  [ -e "$JOBS_ROOT/processing/$runid" ]
+  [ "$(count_terminal)" -eq 0 ]
+}
+
+@test "janitor: a fresh completed entry (within the stale window) is left alone" {
+  # A just-completed entry may still be mid-cleanup by a live run-job; only entries
+  # whose logs are older than the threshold are swept.
+  export CLAUDE_JANITOR_STALE=3600
+  runid="20260708T215413Z-fresh"
+  printf 'just finished\n' > "$JOBS_ROOT/processing/$runid"
+  { echo "runid=$runid"; echo "exit=0"; } > "$JOBS_ROOT/logs/$runid.meta"   # mtime = now
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+
+  [ -e "$JOBS_ROOT/processing/$runid" ]
+  [ "$(count_terminal)" -eq 0 ]
+}

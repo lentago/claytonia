@@ -5,6 +5,7 @@ set -uo pipefail
 JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
 BIN="${CLAUDE_RUNNER_BIN:-/opt/claude-runner/bin}"   # override lets the test harness run the in-repo run-job
 HEARTBEAT_STALE="${CLAUDE_HEARTBEAT_STALE:-90}"   # worker dead if .alive older than this
+JANITOR_STALE="${CLAUDE_JANITOR_STALE:-3600}"     # a completed orphan is swept once its logs are older than this
 [ -d "$JOBS_ROOT/inbox" ] || exit 0
 exec 9>"${CLAUDE_INBOX_LOCK:-/tmp/claude-inbox.lock}"   # override gives each test run its own lock
 flock -n 9 || exit 0
@@ -45,6 +46,57 @@ reap() {
   done
 }
 
+# The reaper above is keyed on processing/*.owner files, so it is structurally
+# blind to a processing/ entry whose owner file was already removed. That state is
+# reachable: run-job clears "$proc.owner" as its very last step even if the
+# preceding terminal `mv $proc -> done/` (or failed/) silently failed (e.g. a
+# transient NAS error under `|| true`). The entry is then left ownerless in
+# processing/ forever — the reaper never looks at it (issue #73: a month-old
+# orphan whose job had clearly run to completion, logs and all).
+#
+# The janitor closes exactly that gap WITHOUT weakening the queue's at-least-once
+# contract. It files an entry ONLY when it can prove the job already ran to
+# completion — the runid has a logs/<runid>.meta sidecar, which run-job writes
+# only at its very end, immediately before the terminal move — AND no live owner
+# still holds it. Age is measured from the meta's mtime (completion time), so an
+# entry a live worker is still cleaning up is never swept. It runs BEFORE reap()
+# so a completed-but-dead-owner entry is filed terminally here rather than blindly
+# requeued (and thus re-run) by the reaper.
+janitor() {
+  local now ent runid meta age of owner alive oage exit_rc dest
+  now="$(date -u +%s)"
+  for ent in "$JOBS_ROOT"/processing/*; do
+    [ -f "$ent" ] || continue
+    case "$(basename "$ent")" in *.owner) continue;; esac
+    runid="$(basename "$ent")"
+    meta="$JOBS_ROOT/logs/${runid}.meta"
+    [ -f "$meta" ] || continue                            # no completion proof -> not the janitor's to file
+    age=$(( now - $(stat -c %Y "$meta" 2>/dev/null || echo "$now") ))
+    [ "$age" -le "$JANITOR_STALE" ] && continue           # too fresh -> may still be mid-cleanup
+
+    of="$JOBS_ROOT/processing/${runid}.owner"
+    if [ -f "$of" ]; then
+      owner="$(sed -n 's/^owner=//p' "$of" 2>/dev/null)"
+      alive="$JOBS_ROOT/workers/${owner}.alive"
+      if [ -n "$owner" ] && [ -f "$alive" ]; then
+        oage=$(( now - $(stat -c %Y "$alive" 2>/dev/null || echo "$now") ))
+        [ "$oage" -le "$HEARTBEAT_STALE" ] && continue     # a live owner still holds it -> leave it
+      fi
+    fi
+
+    # Provably completed and unowned -> file per the recorded outcome so it can
+    # never re-run: done/ on a clean exit, failed/ otherwise. The .janitor marker
+    # records that this transition was a sweep, not a normal run-job finish.
+    exit_rc="$(sed -n 's/^exit=//p' "$meta" 2>/dev/null)"
+    if [ "$exit_rc" = "0" ]; then dest="done"; else dest="failed"; fi
+    if mv -f "$ent" "$JOBS_ROOT/$dest/${runid}.janitor" 2>/dev/null; then
+      rm -f "$of" 2>/dev/null
+      echo "janitor: swept completed orphan $runid (exit=${exit_rc:-?}, age=${age}s) -> $dest" | systemd-cat -t claude-runner -p warning
+    fi
+  done
+}
+
+janitor
 reap
 
 while :; do
