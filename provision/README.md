@@ -75,7 +75,7 @@ sudo provision/07-context-ledger.sh    # enables snapshot everywhere; committer 
 
 `07` generates `/root/.ssh/myosotis_deploy` if absent (private half never leaves
 the host) and logs the public half to register as a **write** deploy key on
-`lentago/myosotis`. On a non-primary, `07` just enables the snapshot and skips the
+`cpitzi/myosotis`. On a non-primary, `07` just enables the snapshot and skips the
 committer. Safe to re-run.
 
 ## Additional worker (clone an existing one)

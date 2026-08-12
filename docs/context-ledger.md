@@ -10,8 +10,11 @@ is already versioned in the project repo; this ledger covers the host-side half.
 
 Every worker snapshots its host-side context daily into the queue share; the
 primary worker sweeps those snapshots into the **private** ledger repo
-`lentago/myosotis`, one commit per changed host. The result is a versioned,
-diffable history of the fleet's out-of-band context.
+`cpitzi/myosotis`, one commit per changed host. (The ledger lived at
+`lentago/myosotis` until 2026-08-12, when it was transferred to a personal
+account so org membership never extends read access — the audit trail stays
+out of reach of both the agents it audits and the org it serves.) The result
+is a versioned, diffable history of the fleet's out-of-band context.
 
 Beyond hygiene this is a **security control**: memory poisoning, hook injection,
 and permission-allowlist creep on a worker stop being silent persistent state and
@@ -145,20 +148,20 @@ sudo provision/07-context-ledger.sh
 
 ## Deploy key
 
-The committer authenticates to `git@github.com:lentago/myosotis.git` with a
+The committer authenticates to `git@github.com:cpitzi/myosotis.git` with a
 dedicated ed25519 key at `/root/.ssh/myosotis_deploy` (comment
 `myosotis-ledger-committer@claude-runner`), pinned via `GIT_SSH_COMMAND`. This is
 **not** the fleet GitHub App credential — the ledger writer is deliberately a
 separate, per-repo-scoped identity. Provisioning generates the key if absent; the
 **private half never leaves the host** and never lands in `/srv/jobs` or any repo.
 When the key is freshly generated, provisioning logs the **public** half loudly:
-register it as a **write** deploy key on `lentago/myosotis`. Until it is
+register it as a **write** deploy key on `cpitzi/myosotis`. Until it is
 registered the committer fails loudly and snapshots stay queued in `incoming/` —
 that is the expected state during myosotis bootstrap.
 
 **Rotation:** delete `/root/.ssh/myosotis_deploy*` on the primary and re-run
 provisioning; a new keypair is generated and its public half logged for
-registration. Remove the old deploy key from `lentago/myosotis` once the new one
+registration. Remove the old deploy key from `cpitzi/myosotis` once the new one
 is in place. The key is host-local, so rotation touches only the primary.
 
 ## Two hard rules
@@ -237,7 +240,7 @@ The context-tracking stack has three layers with a strict authority order:
 
 | Layer | What it is | Authority |
 |---|---|---|
-| **git** — `lentago/myosotis` | The ledger repo itself | **Source of truth** |
+| **git** — `cpitzi/myosotis` | The ledger repo itself | **Source of truth** |
 | **Loki** — `context_sweep` / `context_host` events | Projection pushed by the committer after each sweep | Derived — correct when the committer is healthy |
 | **Grafana** — "Context Ledger" row on the Claytonia dashboard | Pane over the Loki projection | Display only |
 
@@ -281,8 +284,8 @@ Diagnostic order on the primary (LXC 110 in the claytonia pool):
 
 1. **LXC 110 health:** `pct status 110` from pve4. Start it if it is not running.
 2. **Committer timer:** `systemctl status context-ledger-commit.timer` on LXC 110. Enable and start if inactive.
-3. **Deploy key:** confirm `/root/.ssh/myosotis_deploy` exists and its public half is registered as a **write** deploy key on `lentago/myosotis`. Test: `ssh -i /root/.ssh/myosotis_deploy -o BatchMode=yes git@github.com` — GitHub should return a greeting with the key identity, not a permission error.
-4. **myosotis reachability:** `curl -sf https://api.github.com/repos/lentago/myosotis` from LXC 110 confirms the GitHub API is reachable from that host.
+3. **Deploy key:** confirm `/root/.ssh/myosotis_deploy` exists and its public half is registered as a **write** deploy key on `cpitzi/myosotis`. Test: `ssh -i /root/.ssh/myosotis_deploy -o BatchMode=yes git@github.com` — GitHub should return a greeting with the key identity, not a permission error.
+4. **myosotis reachability:** `curl -sf https://api.github.com/repos/cpitzi/myosotis` from LXC 110 confirms the GitHub API is reachable from that host.
 5. **Recent logs:** `journalctl -t claude-runner | grep context-ledger | tail -50` (script output) and `journalctl -u context-ledger-commit -n 20` (unit lifecycle) for the specific error.
 
 If the committer can commit to myosotis but Loki push is failing, check `LOKI_PUSH_URL` in `runner.env` and probe the Alloy receiver directly with a `curl` to the push endpoint.
