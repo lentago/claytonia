@@ -6,7 +6,7 @@
 # The snapshot (bin/context-snapshot) runs on EVERY worker: it collects host-side
 # Claude context into /srv/jobs/context-ledger/incoming/<hostname>/. The committer
 # (bin/context-ledger-commit) runs on the PRIMARY only: it sweeps that queue into
-# lentago/myosotis. See docs/context-ledger.md.
+# cpitzi/myosotis. See docs/context-ledger.md.
 #
 # Primary election is a single NAS marker, /srv/jobs/context-ledger/primary,
 # holding the primary's hostname. To designate this host:
@@ -55,7 +55,7 @@ if [ "$is_primary" = 1 ]; then
     chmod 600 "$DEPLOY_KEY"
     echo "!!! ============================================================"
     echo "!!! A NEW ledger deploy key was generated. Register its PUBLIC"
-    echo "!!! half as a WRITE deploy key on lentago/myosotis:"
+    echo "!!! half as a WRITE deploy key on cpitzi/myosotis:"
     echo "!!! ------------------------------------------------------------"
     cat "$DEPLOY_KEY.pub"
     echo "!!! ------------------------------------------------------------"
