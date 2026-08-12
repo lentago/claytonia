@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # context-snapshot — collect this worker's host-side Claude Code context into the
 # fleet context ledger's incoming queue. Runs on EVERY worker (as the claude
-# user, daily); the primary later sweeps the queue into lentago/myosotis.
+# user, daily); the primary later sweeps the queue into cpitzi/myosotis.
 #
 # ALLOWLIST-ONLY: this never globs ~/.claude wholesale. Every file that lands in
 # a snapshot is named below. Two independent guards run over the *staged* tree

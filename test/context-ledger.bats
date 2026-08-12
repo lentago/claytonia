@@ -2,7 +2,7 @@
 #
 # Context-ledger tests: the snapshot sanitizer/secret-scan and the primary-only
 # committer. Fixture-based and hermetic — a fake $HOME/.claude(.json), a tmpfs
-# JOBS_ROOT, and a local bare repo standing in for lentago/myosotis. No network,
+# JOBS_ROOT, and a local bare repo standing in for cpitzi/myosotis. No network,
 # no real secrets, no journald (a systemd-cat stub drains it). See
 # docs/context-ledger.md.
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # context-ledger-commit — sweep the context-ledger incoming queue into the
-# PRIVATE ledger repo lentago/myosotis. PRIMARY WORKER ONLY. Runs as root (it
+# PRIVATE ledger repo cpitzi/myosotis (transferred out of the org 2026-08-12
+# so org membership never extends read access). PRIMARY WORKER ONLY. Runs as root (it
 # needs the repo-scoped deploy key at /root/.ssh/myosotis_deploy, which never
 # leaves the host). See docs/context-ledger.md.
 #
@@ -25,7 +26,7 @@ JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
 LEDGER_ROOT="$JOBS_ROOT/context-ledger"
 INCOMING="$LEDGER_ROOT/incoming"
 PRIMARY_MARKER="${PRIMARY_MARKER:-$LEDGER_ROOT/primary}"
-LEDGER_REMOTE="${LEDGER_REMOTE:-git@github.com:lentago/myosotis.git}"
+LEDGER_REMOTE="${LEDGER_REMOTE:-git@github.com:cpitzi/myosotis.git}"
 LEDGER_CLONE_DIR="${LEDGER_CLONE_DIR:-/opt/context-ledger/myosotis}"
 LEDGER_DEPLOY_KEY="${LEDGER_DEPLOY_KEY:-/root/.ssh/myosotis_deploy}"
 HOSTNAME_="${CONTEXT_HOSTNAME:-$(hostname)}"
