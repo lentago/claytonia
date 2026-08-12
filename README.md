@@ -87,7 +87,7 @@ Operations patterns you can inspect end to end here — each row links to the co
         ├── output → logs/<runid>.{txt,json,meta,stderr,transcript.jsonl}
         │            (transcript.jsonl = the full reasoning: thinking + tool calls)
         ├── prompt → done/<runid>  (or failed/<runid>)
-        └── event  → Loki → Grafana ("Claude Runner Fleet" dashboard)
+        └── event  → Loki → Grafana ("Claytonia — Runner Fleet" dashboard)
 ```
 
 Three planes, deliberately separated:
@@ -260,8 +260,8 @@ here arrives as a PR opened by the `lentago-claude-runner` GitHub App and waits 
 human — the App can push branches and open PRs but **cannot merge**. That single
 constraint is the trust model: an autonomous fleet stays reviewable precisely because
 nothing it produces reaches `main` without a person reading the diff, checking the CI
-signal, and clicking merge. The "open agent PRs awaiting review" panel on the *Claude
-Runner Fleet* dashboard is the queue; the full agent transcript
+signal, and clicking merge. The "open agent PRs awaiting review" panel on the *Claytonia
+— Runner Fleet* dashboard is the queue; the full agent transcript
 (`logs/<runid>.transcript.jsonl`) is there when you want to see *why* it did what it did.
 **Proof this works:** every merged PR in the history is an agent PR a human signed off —
 e.g. [#91 — docs(context-ledger): signal model + alert runbook (issue #84)](https://github.com/lentago/claytonia/pull/91) and [#87 — feat(context-ledger): emit context_sweep/context_host events to Loki](https://github.com/lentago/claytonia/pull/87), both opened by the runner App and merged by a maintainer.
@@ -280,7 +280,7 @@ infrastructure.  Commenting is strictly best-effort: a failure to post never cha
 job outcome.  Ad-hoc jobs (no project) and prompts with no issue reference are silent.
 
 **Follow-ups not yet implemented:**
-- *Grafana alert* — a failed-job alert rule on the "Claude Runner Fleet" dashboard so
+- *Grafana alert* — a failed-job alert rule on the "Claytonia — Runner Fleet" dashboard so
   failures surface in the existing metrics view.
 - *cr-status ergonomics* — print the runid + a `cr-status <runid>` one-liner so
   dispatchers can poll job state instead of inferring it from PR presence.
