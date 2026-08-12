@@ -18,6 +18,14 @@ Grafana, crash-safe at-least-once delivery. Today's workers run Claude Code;
 platform-agnostic worker support (other agent CLIs behind the same queue) is
 the next scope expansion.
 
+This repo is also an exhibit. Lentago Labs is a shared learning lab for
+IT-operations people: the estate is real (a Proxmox homelab and a
+production-grade AWS platform), the stakes are deliberately non-critical, and
+everything is code. claytonia is the corner of that estate where a **fleet of
+agents does directed work and every merge is still a human's call** — a live,
+small-scale place to see everything-as-code and agent-ops fit together, then
+change something yourself.
+
 **Authorship:** The queue scripts, worker tooling, and documentation in this
 repo are co-written with [Claude](https://claude.ai) (Anthropic). I direct the
 work and review the output; Claude writes the code. I'm an infrastructure
@@ -29,6 +37,37 @@ when needed. Agents idle until a job arrives, then one gets the call. The
 on-host layer keeps the name too (`/opt/bullpen`, `bullpen-gitops.*`,
 `BULLPEN_*` env vars) — renamed from `bullpen` on 2026-07-04, live paths and
 unit names deliberately unchanged.
+
+## 📚 Ask this codebase (DeepWiki)
+
+<a href="https://deepwiki.com/lentago/claytonia"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" height="32"></a>
+
+> [DeepWiki](https://deepwiki.com/lentago/claytonia) maintains an AI-generated wiki over this
+> repository — architecture pages, diagrams, and a Q&A box grounded in the actual code. Every
+> public Lentago Labs repo is indexed ([deepwiki.com/lentago](https://deepwiki.com/lentago));
+> it is the fastest way to orient before reading source. It is AI-generated: trust it to orient
+> you, verify against the code before you act on it.
+
+**Good first questions:**
+
+- How does a worker atomically claim a job from the NAS inbox without two workers double-processing it?
+- What is the relationship between claytonia's Terraform root and kalmia's guest layer — which one owns which Proxmox guests?
+- How does the gitops deploy loop on each worker validate a pulled change before restarting units, and what happens if validation fails?
+
+## 🧭 What this repo demonstrates
+
+Operations patterns you can inspect end to end here — each row links to the code that proves it.
+
+| Pattern | How it shows up here |
+| --- | --- |
+| **Apply-on-merge Terraform for guest lifecycle** — change management where the merged PR *is* the change record | [`terraform.yml`](https://github.com/lentago/claytonia/blob/main/.github/workflows/terraform.yml) runs `terraform plan` on the PR and `terraform apply -auto-approve` on merge to `main`, serialized by a concurrency group so simultaneous merges can't race on state |
+| **Self-hosted LAN runner for a LAN-only API** | terraform CI is pinned to [`runs-on: [self-hosted, lan]`](https://github.com/lentago/claytonia/blob/main/.github/workflows/terraform.yml) (LXC 115) because the Proxmox API isn't reachable from GitHub-hosted runners |
+| **Least-privilege identity per system** | [`id-token: write`](https://github.com/lentago/claytonia/blob/main/.github/workflows/terraform.yml) → an AWS role for the S3 tfstate backend (OIDC, no static keys); on-prem a dedicated `claytonia-tf@pve` token scoped to one PVE resource pool ([terraform/README.md](https://github.com/lentago/claytonia/blob/main/terraform/README.md)) |
+| **Pull-based GitOps self-deploy on the workers** | [`bullpen-gitops.sh`](https://github.com/lentago/claytonia/blob/main/gitops/bullpen-gitops.sh) fetches `origin/main` every 5 min, redeploys only drifted files, and validates with `bash -n` / `systemd-analyze` before restarting anything |
+| **Required-status-check branch protection** — PR-gated change enforced by a ruleset, not convention | the `main` ruleset requires `gate`, [`shellcheck`](https://github.com/lentago/claytonia/blob/main/.github/workflows/shellcheck.yml), and [`docs-check`](https://github.com/lentago/claytonia/blob/main/.github/workflows/docs-check.yml); squash-only merges |
+| **Always-on gate job to dodge required-check deadlock** | the [`gate`](https://github.com/lentago/claytonia/blob/main/.github/workflows/terraform.yml) fan-in job runs on every PR — a required check whose workflow never triggers holds "Expected" forever and blocks every unrelated PR |
+| **Reusable/shared CI across a fleet of repos** — the paved road | [`shellcheck`](https://github.com/lentago/claytonia/blob/main/.github/workflows/shellcheck.yml), [`docs-check`](https://github.com/lentago/claytonia/blob/main/.github/workflows/docs-check.yml), and [`claude`](https://github.com/lentago/claytonia/blob/main/.github/workflows/claude.yml) are thin wrappers calling `lentago/shared-workflows` |
+| **Hermetic test harness for the queue core** | [`queue-tests.yml`](https://github.com/lentago/claytonia/blob/main/.github/workflows/queue-tests.yml) runs `bats` [`test/queue.bats`](https://github.com/lentago/claytonia/blob/main/test/queue.bats) against the real `bin/run-job` + `bin/process-inbox` on tmpfs, exercising claim-by-rename races and at-least-once delivery |
 
 ## How a job flows
 
@@ -48,7 +87,7 @@ unit names deliberately unchanged.
         ├── output → logs/<runid>.{txt,json,meta,stderr,transcript.jsonl}
         │            (transcript.jsonl = the full reasoning: thinking + tool calls)
         ├── prompt → done/<runid>  (or failed/<runid>)
-        └── event  → Loki → Grafana ("Claude Runner Fleet" dashboard)
+        └── event  → Loki → Grafana ("Claytonia — Runner Fleet" dashboard)
 ```
 
 Three planes, deliberately separated:
@@ -118,6 +157,10 @@ kernel — no dependency on cross-client SMB rename semantics. Each worker heart
 stale (>90s) and requeues them once (`.retry`), then fails them if stranded again.
 At-least-once delivery — see Caveats for the idempotency boundary.
 
+Terraform in this repo owns exactly the five `claude-runner` LXCs in the `claytonia`
+Proxmox resource pool (VMIDs 110–112, 116–117). Every *other* guest on the cluster is
+owned by kalmia's Terraform, not this repo's — products own their own capacity.
+
 ## Auth
 
 - **Claude**: a subscription OAuth token (`claude setup-token`) in
@@ -140,7 +183,9 @@ At-least-once delivery — see Caveats for the idempotency boundary.
     checks *by context name*, so a PR that deletes a gating workflow can never merge —
     the context stops reporting and the PR holds at "Expected". That blocks removal, not
     subversion: a PR keeping the job name while gutting the body would still report
-    green. The backstop is that workers never merge and every agent PR is reviewed.
+    green. This ruleset is a backstop against accidental self-sabotage, not a security
+    boundary — the real backstop is that workers never merge and every agent PR is
+    reviewed by a human.
 
 Secrets (`token.env`, `gh-app.pem`) live on the workers, never in this repo.
 
@@ -160,6 +205,7 @@ systemd/     claude-inbox.{service,timer} (poll), claude-heartbeat.{service,time
 cron/        claude-runner — scheduled jobs (re-queue saved specs)
 etc/         runner.env — non-secret config (model/cwd/turns defaults, LOKI_PUSH_URL)
 gitops/      bullpen-gitops.{sh,service,timer} + install.sh — pull main, redeploy on drift
+terraform/   the five claytonia-pool worker LXCs (plan-on-PR / apply-on-merge)
 provision/   01..05 scripts — stand up a worker from scratch (LXC, runner, App, projects, reaper)
 frontends/   alternate producers — n8n web form (frontends/n8n/), retired 2026-07-01, kept as reference
 docs/        deeper notes
@@ -182,7 +228,43 @@ the auth secrets; the worker self-converges from `main` on first boot. Guest
 existence is codified in `terraform/`. Additional workers are another image create,
 or a `pct clone` (detach/re-attach the bind mount) with a fresh IP + hostname. The
 old hand-run `provision/01–05` bootstrap is legacy — its substrate moved to kalmia's
-image forge, its runner software was always the gitops loop's.
+image forge, its runner software was always the gitops loop's. (kalmia builds and
+publishes that image; claytonia only consumes it.)
+
+## 🛠️ Make a change yourself
+
+This is a lab — the systems are real, the stakes are not. Every path below ends the
+same way: **you open a PR, required checks run, a human merges.** Pick a vector:
+
+**Add or resize the runner pool (Terraform, apply-on-merge).**
+Edit `terraform/` — the module var that sets the worker LXC count or shape — and open a
+PR. CI runs `terraform plan` on the LAN runner and posts the plan as a PR comment. Once
+the required checks pass and a human merges to `main`, the `apply` job runs
+`terraform apply -auto-approve` on that same LAN runner, serialized by a concurrency
+group so two merges can't race on state. New workers are cut from the shared kalmia
+image and self-converge from `main` on first boot — no hand-provisioning.
+Requires org membership and access to the `claytonia` Proxmox pool.
+**Proof this works:** [#52 — Adopt the worker-pool guest layer: Terraform root, Proxmox as first platform client](https://github.com/lentago/claytonia/pull/52) established the `terraform/` root; [#53 — Add terraform CI: plan-on-PR / apply-on-merge on the LAN runner](https://github.com/lentago/claytonia/pull/53) wired the plan/apply/gate CI to LXC 115; [#55 — Cut new workers from the kalmia runner image; retire provision/01–05](https://github.com/lentago/claytonia/pull/55) and [#56 — Docs: describe the image-based worker flow](https://github.com/lentago/claytonia/pull/56) moved provisioning onto the shared image.
+
+**Dispatch a job (drop-file queue, no SSH).**
+Write a JSON job spec into the NAS `inbox/` folder using write-then-rename (`*.partial`
+→ final name) so the poller never reads a partial file — or run `cr-submit` on a worker,
+which does the same. An idle worker polls every 15s, claims the job with an atomic `mv`
+to `processing/<runid>`, runs `claude -p` headless in a clean checkout, and opens a PR.
+The worker never merges; you review and merge. This is the everyday loop — no runner,
+broker, or lock service in the path, just the shared mount and `rename`.
+
+**Review an agent's PR.**
+Reviewing agent output is a first-class skill this repo is built to teach. Every change
+here arrives as a PR opened by the `lentago-claude-runner` GitHub App and waits for a
+human — the App can push branches and open PRs but **cannot merge**. That single
+constraint is the trust model: an autonomous fleet stays reviewable precisely because
+nothing it produces reaches `main` without a person reading the diff, checking the CI
+signal, and clicking merge. The "open agent PRs awaiting review" panel on the *Claytonia
+— Runner Fleet* dashboard is the queue; the full agent transcript
+(`logs/<runid>.transcript.jsonl`) is there when you want to see *why* it did what it did.
+**Proof this works:** every merged PR in the history is an agent PR a human signed off —
+e.g. [#91 — docs(context-ledger): signal model + alert runbook (issue #84)](https://github.com/lentago/claytonia/pull/91) and [#87 — feat(context-ledger): emit context_sweep/context_host events to Loki](https://github.com/lentago/claytonia/pull/87), both opened by the runner App and merged by a maintainer.
 
 ## Failure handling
 
@@ -198,7 +280,7 @@ infrastructure.  Commenting is strictly best-effort: a failure to post never cha
 job outcome.  Ad-hoc jobs (no project) and prompts with no issue reference are silent.
 
 **Follow-ups not yet implemented:**
-- *Grafana alert* — a failed-job alert rule on the "Claude Runner Fleet" dashboard so
+- *Grafana alert* — a failed-job alert rule on the "Claytonia — Runner Fleet" dashboard so
   failures surface in the existing metrics view.
 - *cr-status ergonomics* — print the runid + a `cr-status <runid>` one-liner so
   dispatchers can poll job state instead of inferring it from PR presence.
@@ -218,3 +300,10 @@ boundaries.
   single-worker-per-project today; needs a lock or per-job fragments at scale.
 - **Cross-*host* SMB renames untested** — the harness runs on tmpfs, so cross-client
   CIFS rename semantics remain unexercised; co-locating workers on one host sidesteps it.
+
+---
+
+> 🌱 **Lentago Labs** is a team learning lab — real systems, non-critical stakes, modern
+> operations patterns demonstrated in the open. Start at the
+> [org profile](https://github.com/lentago), and read this repo on
+> [DeepWiki](https://deepwiki.com/lentago/claytonia).
