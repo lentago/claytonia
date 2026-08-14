@@ -211,6 +211,11 @@ frontends/   alternate producers — n8n web form (frontends/n8n/), retired 2026
 docs/        deeper notes
 ```
 
+**Architecture decisions:** the reasoning behind the fleet's load-bearing choices
+(atomic-rename queue, never-merge, cattle workers, App-scoped tokens, capacity
+ownership, at-least-once delivery, log-native metrics, the external context ledger)
+is recorded as ADRs in [`docs/adr/`](docs/adr/README.md).
+
 ## Deploy model (gitops)
 
 `bullpen-gitops.timer` on each worker fetches `origin/main` every 5 min and redeploys
