@@ -5,3 +5,17 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # Groups collapse weekly churn into at most two PRs per ecosystem:
+    # -routine (minor/patch) is reviewable on green checks;
+    # -major is where breaking changes land and gets read deliberately.
+    # Grouping everything into one PR hides a major bump inside patches;
+    # grouping nothing produces a 28-PR flood (see lentago/.github#114).
+    groups:
+      actions-routine:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      actions-major:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["major"]
