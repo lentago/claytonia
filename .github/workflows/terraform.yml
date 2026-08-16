@@ -86,10 +86,18 @@ jobs:
     # Same-repo PRs only: fork PRs must never reach the LAN runner (defense
     # in depth alongside the repo's require-approval-for-all-outside-
     # collaborators Actions setting).
+    #
+    # Dependabot PRs are excluded because Dependabot only has access to the
+    # Dependabot secrets store, not the repository's normal secrets, so
+    # PROXMOX_VE_API_TOKEN resolves to empty and the preflight fails by
+    # design. A skipped job counts as passing for the `gate` fan-in, so
+    # excluding Dependabot here lets its PRs (action-SHA bumps, etc.) pass
+    # gate without granting the Proxmox credential to dependency bump runs.
     if: >-
       needs.changes.outputs.tf == 'true' &&
       github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
     defaults:
       run:
         working-directory: terraform
