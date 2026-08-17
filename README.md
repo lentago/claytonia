@@ -38,6 +38,37 @@ on-host layer keeps the name too (`/opt/bullpen`, `bullpen-gitops.*`,
 `BULLPEN_*` env vars) — renamed from `bullpen` on 2026-07-04, live paths and
 unit names deliberately unchanged.
 
+## Architecture at a glance
+
+```mermaid
+flowchart TD
+    subgraph agent["🤖 automated — no human in the loop"]
+        direction TB
+        SRC["you / cron / HA / a script"] -->|"write *.partial, then rename"| INBOX[("NAS inbox<br/>shared queue")]
+        INBOX -->|"atomic mv inbox → processing/&lt;runid&gt;<br/>(exactly-once claim)"| WORKER["idle worker LXC<br/>run-job: clean checkout →<br/>load CLAUDE.md + memory →<br/>claude -p (headless)"]
+        WORKER --> PR["branch pushed,<br/>PR opened"]
+        WORKER -.->|"job_complete event + logs"| LOKI[("Loki → Grafana<br/>Runner Fleet dashboard")]
+    end
+
+    PR ==>|"WORKER NEVER MERGES —<br/>human review + required checks"| HUMAN{{"a human reviews<br/>and merges the PR"}}
+
+    subgraph humanside["🧑 the only path onto main"]
+        direction TB
+        HUMAN --> MAIN[("main")]
+    end
+
+    MAIN -.->|"bullpen-gitops.timer polls every 5 min"| WORKER
+    MAIN -.->|"terraform/ changed → apply-on-merge"| POOL["Terraform-owned<br/>claude-runner LXC pool"]
+    POOL -.->|"pool capacity"| WORKER
+
+    classDef boundary fill:#fff3cd,stroke:#c0392b,stroke-width:3px,color:#000
+    class PR,HUMAN boundary
+```
+
+*Everything above the red line runs unattended; the only way anything reaches
+`main` is a human clicking merge. That single edge is the fleet's governance
+model — not an implementation detail.*
+
 ## 📚 Ask this codebase (DeepWiki)
 
 <a href="https://deepwiki.com/lentago/claytonia"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" height="32"></a>
