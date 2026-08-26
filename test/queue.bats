@@ -174,6 +174,55 @@ load test_helper
   [ "$(count_terminal)" -eq 0 ]
 }
 
+@test "crash recovery: ownerless entry with no logs, stale past heartbeat, is requeued" {
+  # An entry has no .owner and no .meta — the janitor cannot prove it finished, so
+  # it skips it. The reaper's second pass picks it up once it ages past the
+  # heartbeat-stale window and requeues it as a .retry, after which the main loop
+  # delivers it. This covers the case where .owner was lost but the job never
+  # completed (no completion proof either).
+  runid="20260101T000000Z-nologs-stale"
+  printf 'lost work\n' > "$JOBS_ROOT/processing/$runid"
+  touch -d '2026-01-01 00:00:00' "$JOBS_ROOT/processing/$runid"   # well past heartbeat-stale
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+
+  [ ! -e "$JOBS_ROOT/processing/$runid" ]
+  # Requeued and delivered by the main loop in the same process-inbox run:
+  [ "$(count_in done)" -eq 1 ]
+  delivered="$(basename "$(find "$JOBS_ROOT/done" -maxdepth 1 -type f)")"
+  [[ "$delivered" == *nologs-stale.retry* ]]
+}
+
+@test "crash recovery: ownerless entry with no logs, stale, on second attempt fails" {
+  # The entry already carries .retry — the cap applies: route to failed/ rather than
+  # requeueing again, preventing an infinite retry loop.
+  runid="20260101T000000Z-nologs-stale.retry"
+  printf 'twice lost work\n' > "$JOBS_ROOT/processing/$runid"
+  touch -d '2026-01-01 00:00:00' "$JOBS_ROOT/processing/$runid"
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+
+  [ ! -e "$JOBS_ROOT/processing/$runid" ]
+  [ -e "$JOBS_ROOT/failed/$runid.stranded" ]
+  [ "$(count_in done)" -eq 0 ]
+}
+
+@test "crash recovery: ownerless entry with no logs but still fresh is left alone" {
+  # A fresh mtime means a worker may be in the very early stages of a run (before
+  # writing any logs). The reaper must not race it.
+  runid="20260101T000000Z-nologs-fresh"
+  printf 'brand new work\n' > "$JOBS_ROOT/processing/$runid"
+  # (mtime = now, within HEARTBEAT_STALE; no .owner, no .meta)
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+
+  [ -e "$JOBS_ROOT/processing/$runid" ]
+  [ "$(count_terminal)" -eq 0 ]
+}
+
 # --- completed-orphan recovery: the janitor ------------------------------------
 #
 # The reaper is keyed on *.owner files, so an entry whose owner was already
