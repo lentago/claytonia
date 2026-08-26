@@ -12,7 +12,7 @@ flock -n 9 || exit 0
 shopt -s nullglob
 
 reap() {
-  local now of runid job owner alive age origname ext
+  local now of runid job owner alive age origname ext ent
   now="$(date -u +%s)"
   for of in "$JOBS_ROOT"/processing/*.owner; do
     [ -f "$of" ] || continue
@@ -40,6 +40,34 @@ reap() {
         if mv "$job" "$JOBS_ROOT/inbox/${runid}.retry.${ext}" 2>/dev/null; then
           rm -f "$of"
           echo "reaper: requeued $runid (owner=$owner dead) as ${runid}.retry.${ext}" | systemd-cat -t claude-runner -p warning
+        fi
+        ;;
+    esac
+  done
+
+  # Second pass: ownerless job files with no completion proof. The janitor handles
+  # the case where logs/<runid>.meta proves the job finished. This pass covers the
+  # symmetric gap — no .owner AND no .meta — by treating entries that have aged
+  # past the heartbeat-stale window as stranded and routing them via the same
+  # retry-once-then-fail path. Age is measured from the file's own mtime (the
+  # only timestamp available without an .owner or .meta).
+  for ent in "$JOBS_ROOT"/processing/*; do
+    [ -f "$ent" ] || continue
+    case "$(basename "$ent")" in *.owner) continue;; esac
+    runid="$(basename "$ent")"
+    [ -f "$JOBS_ROOT/processing/${runid}.owner" ] && continue   # has an owner -> first pass covers it
+    [ -f "$JOBS_ROOT/logs/${runid}.meta" ] && continue         # completion proof -> janitor's domain
+    age=$(( now - $(stat -c %Y "$ent" 2>/dev/null || echo "$now") ))
+    [ "$age" -le "$HEARTBEAT_STALE" ] && continue              # too fresh -> may still be starting
+    ext="${runid##*.}"; { [ -z "$ext" ] || [ "$ext" = "$runid" ]; } && ext="txt"
+    case "$runid" in
+      *.retry)
+        mv -f "$ent" "$JOBS_ROOT/failed/${runid}.stranded" 2>/dev/null
+        echo "reaper: $runid ownerless+no-logs, stale ${age}s, retried once -> failed" | systemd-cat -t claude-runner -p err
+        ;;
+      *)
+        if mv "$ent" "$JOBS_ROOT/inbox/${runid}.retry.${ext}" 2>/dev/null; then
+          echo "reaper: requeued ownerless $runid (stale ${age}s, no logs) as ${runid}.retry.${ext}" | systemd-cat -t claude-runner -p warning
         fi
         ;;
     esac
