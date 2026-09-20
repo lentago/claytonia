@@ -3,7 +3,9 @@ Description=Poll the Claude job inbox (CIFS-safe trigger)
 
 [Timer]
 OnBootSec=30s
-OnUnitActiveSec=15s
+# 60s, not 15s (#118): five idle workers polling every 15s cost ~7 SMB req/s against
+# the NAS for nothing. Pickup latency is now <= 60s; jobs run for minutes.
+OnUnitActiveSec=60s
 AccuracySec=2s
 
 [Install]

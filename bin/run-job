@@ -156,7 +156,8 @@ mkdir -p "$_sid_projdir" 2>/dev/null || true
 printf '%s\n' "$runid" > "$_sid_projdir/${sid}.runid" 2>/dev/null || true
 unset _sid_projdir
 
-echo "run-job START runid=$runid project=${project:-none} model=${model:-default} cwd=$cwd" | systemd-cat -t claude-runner -p info
+# notice, not info: claude-inbox.service sets LogLevelMax=notice (#118).
+echo "run-job START runid=$runid project=${project:-none} model=${model:-default} cwd=$cwd" | systemd-cat -t claude-runner -p notice
 cr-emit started "$runid" "${project:-}" "${model:-}" 2>/dev/null || true
 start=$(date -u +%s)
 # Heartbeat: mark this worker as underway in Loki (event=job_running) every 10s while
@@ -225,7 +226,7 @@ fi
 
 if [ "$rc" -eq 0 ]; then
   mv -f "$proc" "$JOBS_ROOT/done/$runid" 2>/dev/null || true
-  echo "run-job DONE runid=$runid project=${project:-none} dur=${dur}s cost=${cost:-?}" | systemd-cat -t claude-runner -p info
+  echo "run-job DONE runid=$runid project=${project:-none} dur=${dur}s cost=${cost:-?}" | systemd-cat -t claude-runner -p notice
 else
   mv -f "$proc" "$JOBS_ROOT/failed/$runid" 2>/dev/null || true
   echo "run-job FAIL runid=$runid project=${project:-none} rc=$rc dur=${dur}s (logs/${runid}.stderr)" | systemd-cat -t claude-runner -p err
@@ -256,7 +257,7 @@ fi
 # prurl was extracted above before the done/failed routing.
 if [ -n "${prurl:-}" ]; then
   GH_TOKEN="$(gh-token 2>/dev/null)" gh pr merge "$prurl" --disable-auto >/dev/null 2>&1 \
-    && echo "run-job: disarmed auto-merge on $prurl (bot PRs are human-reviewed)" | systemd-cat -t claude-runner -p info || true
+    && echo "run-job: disarmed auto-merge on $prurl (bot PRs are human-reviewed)" | systemd-cat -t claude-runner -p notice || true
 fi
 
 rm -f "$proc.owner" 2>/dev/null || true
