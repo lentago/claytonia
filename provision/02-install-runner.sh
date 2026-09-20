@@ -216,7 +216,7 @@ Description=Poll the Claude job inbox (CIFS-safe trigger)
 
 [Timer]
 OnBootSec=30s
-OnUnitActiveSec=15s
+OnUnitActiveSec=60s
 AccuracySec=2s
 
 [Install]

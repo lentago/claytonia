@@ -7,4 +7,8 @@ Type=oneshot
 User=claude
 Group=claude
 Nice=5
+# Don't journal systemd's per-activation Starting/Deactivated/Finished lines (#118):
+# they were journald's only idle feed and cost ~130 KiB/s of NVMe writes per worker.
+# This also drops info-level lines from our own processes, so run-job logs at notice.
+LogLevelMax=notice
 ExecStart=/opt/claude-runner/bin/process-inbox

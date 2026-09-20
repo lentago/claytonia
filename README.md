@@ -107,7 +107,7 @@ Operations patterns you can inspect end to end here — each row links to the co
         │  write a job file
         ▼
   NAS inbox  (//neptune/lentago/claude-jobs/inbox)   ← shared "queue"
-        │  every worker polls every 15s
+        │  every worker polls every 60s
         ▼
   a worker claims it  (atomic mv inbox→processing/<runid>)   ← exactly-once
         │
@@ -285,7 +285,7 @@ Requires org membership and access to the `claytonia` Proxmox pool.
 **Dispatch a job (drop-file queue, no SSH).**
 Write a JSON job spec into the NAS `inbox/` folder using write-then-rename (`*.partial`
 → final name) so the poller never reads a partial file — or run `cr-submit` on a worker,
-which does the same. An idle worker polls every 15s, claims the job with an atomic `mv`
+which does the same. An idle worker polls every 60s, claims the job with an atomic `mv`
 to `processing/<runid>`, runs `claude -p` headless in a clean checkout, and opens a PR.
 The worker never merges; you review and merge. This is the everyday loop — no runner,
 broker, or lock service in the path, just the shared mount and `rename`.

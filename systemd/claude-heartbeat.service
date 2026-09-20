@@ -6,4 +6,6 @@ ConditionPathIsDirectory=/srv/jobs
 Type=oneshot
 User=claude
 Group=claude
+# Same as claude-inbox.service (#118): keep the 30s activation chatter out of the journal.
+LogLevelMax=notice
 ExecStart=/bin/sh -c 'mkdir -p /srv/jobs/workers && touch /srv/jobs/workers/$(hostname).alive'

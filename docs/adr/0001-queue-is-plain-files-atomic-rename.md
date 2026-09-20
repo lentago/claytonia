@@ -38,7 +38,7 @@ Two supporting choices fall out of this:
   README "Caveats"). The queue-core CI harness runs on tmpfs, so cross-client
   CIFS rename atomicity is unexercised by design.
 - **Discovery is polling, not `inotify`.** `systemd/claude-inbox.timer` fires
-  every 15s; its unit description calls it a "CIFS-safe trigger" and
+  every 60s (15s until #118); its unit description calls it a "CIFS-safe trigger" and
   `bin/process-inbox` is annotated "flock-guarded (CIFS-safe; polled)". A short
   timer poll is chosen over a filesystem watch because a watch on a mounted SMB
   share does not reliably observe writes made by *other* clients — the very
