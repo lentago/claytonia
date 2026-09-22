@@ -29,4 +29,4 @@ they were weighed historically.
 | [0005](0005-products-own-capacity-terraform-from-kalmia.md) | Products own their capacity: the worker pool's Terraform adopted from kalmia | 2026-07-07 |
 | [0006](0006-at-least-once-delivery-not-idempotent.md) | Crash-safe at-least-once delivery, one retry, deliberately not idempotent | 2026-06 (inception) |
 | [0007](0007-observability-log-event-native-no-pushgateway.md) | Observability is log-event-native; Pushgateway explicitly rejected | 2026-06-15 |
-| [0008](0008-context-ledger-lives-outside-the-fleet.md) | The context ledger lives outside the fleet it audits | 2026-08-09 |
+| [0008](0008-context-ledger-lives-outside-the-fleet.md) | The context ledger lives outside the fleet it audits *(retired 2026-09-21)* | 2026-08-09 |

@@ -1,6 +1,18 @@
 # ADR-0008: The context ledger lives outside the fleet it audits
 
-**Status:** Accepted (2026-08-09; reconstructed 2026-08-13)
+**Status:** Retired (2026-09-21) — superseded by nothing; the ledger was decommissioned.
+
+> **Retired 2026-09-21.** The context ledger was turned down entirely at the
+> operator's request: all seven timers (five worker `context-snapshot`, the
+> `context-ledger-commit` committer on the primary, and the workstation user
+> timer) were stopped and disabled, and the collector/committer code, units and
+> provisioning step were removed from this repo. The Grafana dashboard row and
+> the four alert rules were removed from `lentago/drosera` in the same pass.
+> The data repo `cpitzi/myosotis` is **kept as-is** — private and intact as a
+> frozen historical record; it simply receives no further commits. The decision
+> below is preserved as the record of why the ledger was built the way it was;
+> the `docs/context-ledger.md` it cites throughout was removed in the same pass
+> and lives in git history.
 
 > Dated to PR #72 (2026-08-09), which shipped the context ledger. This entry is a
 > **pointer**: the ledger's own architecture decisions belong in its data repo,

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # cr-loki.sh — the fleet's shared Loki push idiom, SOURCED (not executed) by the
 # emitters that ship events to the Alloy Loki receiver: bin/cr-emit (per-job
-# events) and bin/context-ledger-commit (context-ledger sweep/host events).
+# events). Formerly also used by the context ledger, decommissioned 2026-09-21.
 #
 # It defines exactly one function, loki_push, plus the LOKI_PUSH_URL default.
 # Keep it dependency-light (jq + curl only) and side-effect-free on source, so a
@@ -11,7 +11,7 @@
 #
 # Not on PATH and never symlinked into /usr/local/bin — it is a library, resolved
 # by the caller relative to its own (readlink-resolved) location. See
-# docs/context-ledger.md.
+# docs/adr/0008-context-ledger-lives-outside-the-fleet.md.
 
 # Default to the fleet Loki receiver. A caller that sourced runner.env (which
 # sets LOKI_PUSH_URL) BEFORE sourcing this keeps that value; :- only fills a
