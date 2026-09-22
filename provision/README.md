@@ -23,7 +23,6 @@ shipper (below).
 | `04-project-layer.sh` | project registry + project-aware run-job | gitops-deployed (`bin/`); registry lives on the NAS |
 | `05-reaper-heartbeat.sh` | heartbeat + reaper | gitops-deployed (`bin/`/`systemd/`) |
 | `06-transcript-shipper.sh` | transcript shipper (drosera-canonical) | **current** — see § Transcript shipper |
-| `07-context-ledger.sh` | context-ledger snapshot (all) + committer (primary) | **current** — see § Context ledger |
 
 ## New worker, from the image
 
@@ -60,23 +59,14 @@ sudo env GRAFANA_CLOUD_LOGS_URL=… GRAFANA_CLOUD_LOGS_USER=… GRAFANA_CLOUD_LO
 It lands in `/etc/default/alloy-transcript` (640 root:claude) and is inherited by
 clones. Skip it if this worker shouldn't ship reasoning; safe to re-run later.
 
-### Context ledger (snapshot everywhere, committer on the primary)
+### Context ledger — RETIRED 2026-09-21
 
-The context-ledger units ride in the image (gitops-deployed from `systemd/` +
-`bin/`). The daily snapshot self-enables on every worker via `07`; the committer
-and its deploy key are set up **only** on the designated primary. See
-[`../docs/context-ledger.md`](../docs/context-ledger.md).
-
-```bash
-# on the worker you want as committer, name it primary, then run 07:
-echo "$(hostname)" > /srv/jobs/context-ledger/primary
-sudo provision/07-context-ledger.sh    # enables snapshot everywhere; committer + key here
-```
-
-`07` generates `/root/.ssh/myosotis_deploy` if absent (private half never leaves
-the host) and logs the public half to register as a **write** deploy key on
-`cpitzi/myosotis`. On a non-primary, `07` just enables the snapshot and skips the
-committer. Safe to re-run.
+The context ledger (step `07`, the `context-snapshot` / `context-ledger-commit`
+units and their `bin/` scripts) was decommissioned on 2026-09-21 and removed from
+this repo. A new worker gets nothing to do here. The decision record and the
+teardown note are in
+[`../docs/adr/0008-context-ledger-lives-outside-the-fleet.md`](../docs/adr/0008-context-ledger-lives-outside-the-fleet.md);
+the operational doc it cites lives in git history.
 
 ## Additional worker (clone an existing one)
 
