@@ -18,13 +18,14 @@ Grafana, crash-safe at-least-once delivery. Today's workers run Claude Code;
 platform-agnostic worker support (other agent CLIs behind the same queue) is
 the next scope expansion.
 
-This repo is also an exhibit. Lentago Labs is a shared learning lab for
-IT-operations people: the estate is real (a Proxmox homelab and a
-production-grade AWS platform), the stakes are deliberately non-critical, and
+This repo is also an exhibit. Lentago Labs is a pro-bono operations practice
+for organizations that run on volunteers, donations, and one overworked tech
+person, and we practice what we publish: the estate is real (a Proxmox homelab
+and a production-grade AWS platform), nothing critical rides on it, and
 everything is code. claytonia is the corner of that estate where a **fleet of
 agents does directed work and every merge is still a human's call** — a live,
 small-scale place to see everything-as-code and agent-ops fit together, then
-change something yourself.
+change something yourself before you build the same thing at home.
 
 **Authorship:** The queue scripts, worker tooling, and documentation in this
 repo are co-written with [Claude](https://claude.ai) (Anthropic). I direct the
