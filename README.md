@@ -271,7 +271,8 @@ publishes that image; claytonia only consumes it.)
 
 These systems are real, and nothing critical rides on them. That makes this a
 safe place to try a change before you make the same kind of change in your own
-shop. Pick one:
+shop. Every path below ends the same way: **you open a PR, required checks
+run, a human merges.** Pick one:
 
 **Add or resize the runner pool (Terraform, apply-on-merge).**
 Edit `terraform/` — the module var that sets the worker LXC count or shape — and open a
