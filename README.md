@@ -235,6 +235,7 @@ bin/         the runner: run-job, process-inbox, cr-submit, cr-newproject, cr-em
              gh-token, gh-credential-helper, claude-set-token
 systemd/     claude-inbox.{service,timer} (poll), claude-heartbeat.{service,timer}
 cron/        claude-runner — scheduled jobs (re-queue saved specs)
+             + the weekly `cr-update` (Claude Code stays current; idle-guarded by the inbox lock)
 etc/         runner.env — non-secret config (model/cwd/turns defaults, LOKI_PUSH_URL)
 gitops/      bullpen-gitops.{sh,service,timer} + install.sh — pull main, redeploy on drift
 terraform/   the five claytonia-pool worker LXCs (plan-on-PR / apply-on-merge)

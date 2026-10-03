@@ -49,7 +49,7 @@ for f in systemd/*; do deploy "$f" "/etc/systemd/system/$(basename "$f")" 644; d
 deploy cron/claude-runner    /etc/cron.d/claude-runner          644
 deploy etc/runner.env        /opt/claude-runner/etc/runner.env  644
 
-for f in run-job process-inbox cr-submit cr-newproject cr-emit gh-token gh-credential-helper claude-set-token; do
+for f in run-job process-inbox cr-submit cr-newproject cr-emit cr-update gh-token gh-credential-helper claude-set-token; do
   ln -sf "/opt/claude-runner/bin/$f" "/usr/local/bin/$f"
 done
 

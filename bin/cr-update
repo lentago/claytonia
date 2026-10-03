@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# cr-update — bring this runner's Claude Code up to the current release, but only
+# when no job is running.
+#
+# Why: the runners are installed with the native installer and nothing else ever
+# ran `claude update`, so on 2026-10-03 the fleet sat at 2.1.177–2.1.202 against
+# 2.1.289 current. Headless `claude -p` does not self-update.
+#
+# How it stays safe: it takes the SAME flock process-inbox holds for the whole of
+# a job run (process-inbox exits quietly when it cannot get the lock), so an
+# update can never land under a running job, and a job can never start mid-update.
+# A random jitter staggers the fleet so five workers do not all update at once.
+#
+# Scheduled from cron/claude-runner (weekly). Run by hand: cr-update [--now]
+set -uo pipefail
+LOCK="${CLAUDE_INBOX_LOCK:-/tmp/claude-inbox.lock}"
+WAIT="${CR_UPDATE_WAIT:-600}"          # seconds to wait for a running job to finish
+JITTER="${CR_UPDATE_JITTER:-1800}"     # max random delay before starting (0 with --now)
+[ "${1:-}" = "--now" ] && JITTER=0
+
+log() { logger -t claude-runner "cr-update: $*" 2>/dev/null || true; echo "cr-update: $*"; }
+
+if [ "$JITTER" -gt 0 ]; then sleep $(( RANDOM % JITTER )); fi
+
+exec 9>"$LOCK"
+if ! flock -w "$WAIT" 9; then
+  log "a job is still running after ${WAIT}s; skipping this run"
+  exit 0
+fi
+
+before="$(claude --version 2>/dev/null | head -1 || echo unknown)"
+if ! out="$(claude update 2>&1)"; then
+  log "update FAILED (was: $before): $(printf '%s' "$out" | tail -1)"
+  exit 1
+fi
+after="$(claude --version 2>/dev/null | head -1 || echo unknown)"
+if [ "$before" = "$after" ]; then
+  log "already current ($after)"
+else
+  log "updated: $before -> $after"
+fi
