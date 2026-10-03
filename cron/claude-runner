@@ -7,3 +7,10 @@
 # 0  7  *   *   *     claude  /opt/claude-runner/bin/cr-submit -f /srv/jobs/scheduled/daily-health.json
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
+
+# Weekly: bring Claude Code up to the current release when the worker is idle
+# (cr-update takes the inbox lock, so it never runs under a job; it jitters up to
+# 30 min so the fleet does not update in lockstep). Added 2026-10-03 after the
+# fleet was found at 2.1.177–2.1.202 with 2.1.289 current — nothing else updates
+# a headless runner.
+17 4  *   *   0     claude  /opt/claude-runner/bin/cr-update
