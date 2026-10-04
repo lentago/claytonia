@@ -343,3 +343,83 @@ seed_completed_orphan() { # <runid> <exit_rc>
   [ -e "$JOBS_ROOT/processing/$runid" ]
   [ "$(count_terminal)" -eq 0 ]
 }
+
+# --- per-job bounds: turn, spend and wall-clock limits (issue #114) -------------
+#
+# These drive the limits through job-spec fields rather than CLAUDE_RUNNER_*
+# env: run-job sources the deployed runner.env, which on a worker would win over
+# the test's environment, but a spec value always wins over both.
+
+drop_spec() { # <name> <json>
+  printf '%s\n' "$2" > "$JOBS_ROOT/inbox/.$1.partial"
+  mv "$JOBS_ROOT/inbox/.$1.partial" "$JOBS_ROOT/inbox/$1"
+}
+
+@test "limits: a job that outruns timeout_sec is killed, filed failed/, and frees the worker" {
+  # A wedged agent: the stub sleeps far past the job's 1s timeout. run-job must
+  # TERM it, exit with the distinct timeout code, name the limit in .meta, drop
+  # its .owner, and return so process-inbox claims the next job in the same pass.
+  export FAKE_CLAUDE_SLEEP=60
+  drop_spec "a-hang.json" '{"prompt":"FAKE_HANG please","timeout_sec":1}'
+  drop_job "b-next.txt" "the job queued behind it"
+
+  SECONDS=0
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+  [ "$SECONDS" -lt 30 ]   # bounded by the timeout, not the stub's 60s sleep
+
+  [ "$(count_in failed)" -eq 1 ]
+  [ "$(count_in done)" -eq 1 ]
+  runid="$(basename "$(find "$JOBS_ROOT/failed" -maxdepth 1 -type f)")"
+  [[ "$runid" == *a-hang* ]]
+  [ ! -e "$JOBS_ROOT/processing/$runid.owner" ]
+  [ -z "$(find "$JOBS_ROOT/processing" -mindepth 1 -print -quit)" ]
+  grep -q '^exit=7$' "$JOBS_ROOT/logs/$runid.meta"
+  grep -q '^limit=timeout$' "$JOBS_ROOT/logs/$runid.meta"
+  grep -q '^timeout_sec=1$' "$JOBS_ROOT/logs/$runid.meta"
+  tail -1 "$JOBS_ROOT/logs/$runid.stderr" | grep -q 'limit=timeout'
+  # The next job ran normally and records no limit.
+  next="$(basename "$(find "$JOBS_ROOT/done" -maxdepth 1 -type f)")"
+  grep -q '^limit=$' "$JOBS_ROOT/logs/$next.meta"
+}
+
+@test "limits: hitting max_turns fails the job even though the CLI sets no is_error" {
+  export FAKE_CLAUDE_MODE=turns
+  drop_spec "turny.json" '{"prompt":"go","max_turns":4}'
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+
+  [ "$(count_in failed)" -eq 1 ]
+  runid="$(basename "$(find "$JOBS_ROOT/failed" -maxdepth 1 -type f)")"
+  grep -q '^exit=1$' "$JOBS_ROOT/logs/$runid.meta"
+  grep -q '^limit=turns$' "$JOBS_ROOT/logs/$runid.meta"
+  [ ! -e "$JOBS_ROOT/processing/$runid.owner" ]
+}
+
+@test "limits: hitting max_budget_usd is filed failed/ with limit=budget" {
+  export FAKE_CLAUDE_MODE=budget
+  drop_spec "spendy.json" '{"prompt":"go","max_budget_usd":2}'
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+
+  [ "$(count_in failed)" -eq 1 ]
+  runid="$(basename "$(find "$JOBS_ROOT/failed" -maxdepth 1 -type f)")"
+  grep -q '^limit=budget$' "$JOBS_ROOT/logs/$runid.meta"
+  grep -q '^max_budget_usd=2$' "$JOBS_ROOT/logs/$runid.meta"
+}
+
+@test "limits: spec values reach the CLI; an invalid one is noted and ignored" {
+  export FAKE_CLAUDE_ARGS="$TEST_TMP/argv"
+  drop_spec "caps.json" '{"prompt":"go","max_turns":5,"max_budget_usd":1.5,"timeout_sec":"soon"}'
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+
+  [ "$(count_in done)" -eq 1 ]
+  grep -A1 -x -- '--max-turns' "$FAKE_CLAUDE_ARGS" | grep -qx 5
+  grep -A1 -x -- '--max-budget-usd' "$FAKE_CLAUDE_ARGS" | grep -qx 1.5
+  runid="$(basename "$(find "$JOBS_ROOT/done" -maxdepth 1 -type f)")"
+  grep -q 'ignoring invalid timeout_sec=soon' "$JOBS_ROOT/logs/$runid.stderr"
+}

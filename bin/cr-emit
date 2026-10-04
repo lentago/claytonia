@@ -14,6 +14,8 @@
 #                              ones). Emitted by claude-heartbeat.service every 30s. ALWAYS exits 0:
 #                              a Loki outage must never fail the heartbeat unit.
 # Low-cardinality fields -> Loki stream labels; full event -> the log line.
+# job_complete carries limit (timeout|budget|turns, or null) as a line field, not a
+# label — query it with `| json | limit != ""` on the existing stream.
 set -uo pipefail
 JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
 [ -f /opt/claude-runner/etc/runner.env ] && . /opt/claude-runner/etc/runner.env
@@ -81,9 +83,11 @@ event="$(jq -cn \
   --arg exit "${M[exit]:-}" --arg dur "${M[duration_sec]:-}" \
   --arg cost "${M[cost_usd]:-}" --arg turns "${M[num_turns]:-}" \
   --arg pr "$pr_url" --arg worker "$worker" --arg fin "${M[finished]:-}" \
+  --arg limit "${M[limit]:-}" \
   '{event:"job_complete", runid:$runid, project:$project, repo:$repo, model:$model,
     status:$status, exit:($exit|tonumber? // null), duration_sec:($dur|tonumber? // null),
     cost_usd:($cost|tonumber? // 0), num_turns:($turns|tonumber? // null),
+    limit:(if $limit == "" then null else $limit end),
     pr_url:$pr, worker:$worker, finished:$fin}')"
 
 labels="$(jq -cn --arg project "$project" --arg status "$status" \
