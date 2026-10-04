@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stub gh-token: a fake token, no network.
+echo "stub-token"
