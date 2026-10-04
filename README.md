@@ -228,6 +228,17 @@ worker) to the Lentago lab Alloy Loki receiver → Grafana Cloud. Dashboard **"C
 Fleet"** (uid `claude-runner-fleet`): spend, success rate, throughput, duration, and
 **open agent PRs awaiting review** — the review front door.
 
+**Worker liveness.** Besides touching `workers/<host>.alive`, `claude-heartbeat.service`
+runs `cr-emit alive` every 30s beat (one `worker_alive` event per worker per 30s), pushing
+`{"event":"worker_alive","worker":"<host>","timestamp":"<UTC ISO8601>"}` into the existing
+`{job="claude_runner"}` stream (no new labels; fields are in the log body). The push is
+best-effort and runs after the touch, so a Loki outage never fails the heartbeat. drosera's
+headcount rules use:
+
+```
+count(max by (worker) (count_over_time({job="claude_runner"} | json | event="worker_alive" [5m]) > bool 0))
+```
+
 ## Repo layout
 
 ```

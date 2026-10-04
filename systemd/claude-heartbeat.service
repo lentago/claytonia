@@ -8,4 +8,11 @@ User=claude
 Group=claude
 # Same as claude-inbox.service (#118): keep the 30s activation chatter out of the journal.
 LogLevelMax=notice
+# LOKI_PUSH_URL (non-secret, world-readable) for the worker_alive push below; cr-emit also
+# sources runner.env itself, this just makes it explicit. '-' = tolerate a missing file.
+EnvironmentFile=-/opt/claude-runner/etc/runner.env
 ExecStart=/bin/sh -c 'mkdir -p /srv/jobs/workers && touch /srv/jobs/workers/$(hostname).alive'
+# #110: also ship liveness to Loki (event=worker_alive, once per 30s beat) for drosera's
+# headcount rules. Strictly best-effort and AFTER the .alive touch: '-' ignores a non-zero
+# exit, `timeout` bounds a hung receiver, and `cr-emit alive` itself always exits 0.
+ExecStartPost=-/usr/bin/timeout 8 /usr/local/bin/cr-emit alive
