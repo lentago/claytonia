@@ -73,7 +73,7 @@ EOT
 
 @test "failure edits the claim comment with the #37 failure text" {
   export FAKE_CLAUDE_MODE=error
-  drop_project_job "Fix #42"
+  drop_project_job "Fixes #42"
   run_job
   [ "$(count_in failed)" -eq 1 ]
   grep -q -- '-X PATCH repos/acme/proj/issues/comments/4242' "$FAKE_GH_LOG"
@@ -83,7 +83,7 @@ EOT
 
 @test "limit hit names the limit in the edited comment" {
   export FAKE_CLAUDE_MODE=turns
-  drop_project_job "Fix #42"
+  drop_project_job "Fixes #42"
   run_job
   grep -q 'limit hit: turns' "$FAKE_GH_LOG"
   grep -q 'limit=turns' "$JOBS_ROOT"/logs/*.meta
@@ -110,7 +110,7 @@ EOT
 
 @test "failure with no claim comment still posts the #37 comment" {
   export FAKE_CLAUDE_MODE=error FAKE_GH_FAIL=1
-  drop_project_job "Fix #42"
+  drop_project_job "Fixes #42"
   run_job
   [ "$(count_in failed)" -eq 1 ]
   # claim failed, so the failure path posts (not PATCHes)
@@ -130,4 +130,85 @@ EOT
   run_job
   [ "$(count_in done)" -eq 1 ]
   [ ! -s "$FAKE_GH_LOG" ]
+}
+
+# --- explicit target issue (#130) ----------------------------------------------
+
+# Drop a project job with an extra jq object merged into the spec.
+drop_spec_job() {
+  jq -n --arg p "$1" --argjson x "${2:-{\}}" '{prompt:$p, project:"proj"} + $x' > "$JOBS_ROOT/inbox/.j.json.partial"
+  mv "$JOBS_ROOT/inbox/.j.json.partial" "$JOBS_ROOT/inbox/j.json"
+}
+
+# The issue the claim comment went to (or empty), and the recorded meta value.
+claimed_issue() { grep -oE 'issues/[0-9]+/comments' "$FAKE_GH_LOG" | head -1 | grep -oE '[0-9]+' || true; }
+
+@test "spec issue wins over prompt text" {
+  drop_spec_job "Work issue #42" '{"issue":7}'
+  run_job
+  [ "$(claimed_issue)" = 7 ]
+  grep -q '^issue=7$' "$JOBS_ROOT"/logs/*.meta
+}
+
+@test "'Follow-up to #37: work issue #42' targets 42" {
+  drop_project_job "Follow-up to #37: work issue #42"
+  run_job
+  [ "$(claimed_issue)" = 42 ]
+  grep -q '^issue=42$' "$JOBS_ROOT"/logs/*.meta
+}
+
+@test "references to other repos and bare #N resolve to nothing" {
+  drop_project_job "see bpg#2983 and drosera#176, also #5"
+  run_job
+  [ -z "$(claimed_issue)" ]
+  grep -q '^issue=$' "$JOBS_ROOT"/logs/*.meta
+}
+
+@test "<owner>/<repo>#N naming the job's own repo is recognised" {
+  drop_project_job "Do acme/proj#55 now"
+  run_job
+  [ "$(claimed_issue)" = 55 ]
+}
+
+@test "two distinct candidates resolve to nothing" {
+  drop_project_job "issue #42 and Closes #43"
+  run_job
+  [ -z "$(claimed_issue)" ]
+  [ "$(count_in done)" -eq 1 ]
+}
+
+@test "repeats of the same candidate still resolve" {
+  drop_project_job "issue #42, Fixes #42, proj#42"
+  run_job
+  [ "$(claimed_issue)" = 42 ]
+}
+
+@test "cr-submit -i writes the issue field" {
+  run "$REPO_ROOT/bin/cr-submit" -i 130 -p proj "do it"
+  [ "$status" -eq 0 ]
+  f="$(ls "$JOBS_ROOT"/inbox/*.json)"
+  [ "$(jq -r '.issue' "$f")" = 130 ]
+  [ "$(jq -r '.project' "$f")" = proj ]
+}
+
+@test "cr-submit -i rejects a non-integer" {
+  run "$REPO_ROOT/bin/cr-submit" -i abc "do it"
+  [ "$status" -ne 0 ]
+}
+
+@test "a present but empty/null spec issue means no issue (no prompt fallback)" {
+  for v in null '""'; do
+    rm -f "$JOBS_ROOT"/logs/*.meta; : > "$FAKE_GH_LOG"
+    drop_spec_job "Work issue #42" "{\"issue\":$v}"
+    run_job
+    [ -z "$(claimed_issue)" ]
+    grep -q '^issue=$' "$JOBS_ROOT"/logs/*.meta
+  done
+}
+
+@test "cr-submit rejects -i combined with -f" {
+  printf '{"prompt":"x"}\n' > "$TEST_TMP/spec.json"
+  run "$REPO_ROOT/bin/cr-submit" -i 130 -f "$TEST_TMP/spec.json"
+  [ "$status" -ne 0 ]
+  [ -z "$(ls "$JOBS_ROOT"/inbox/ 2>/dev/null)" ]
 }

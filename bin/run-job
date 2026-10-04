@@ -2,7 +2,7 @@
 # run-job <jobfile> — execute ONE Claude job headless and file its output.
 # Job = plain text (whole file is the prompt) OR a .json spec:
 #   {"prompt":"...", "project":"name", "model":"...", "cwd":"...",
-#    "max_turns":N, "max_budget_usd":N, "timeout_sec":N, "allowed_tools":"..."}
+#    "max_turns":N, "issue":N, "max_budget_usd":N, "timeout_sec":N, "allowed_tools":"..."}
 # If "project" is set it is resolved via projects/registry.json: a CLEAN checkout
 # of the repo is prepared (repo CLAUDE.md applies), per-project memory is loaded,
 # and the agent is told to branch + open a PR (never merge).
@@ -54,7 +54,7 @@ started=%s
 origname=%s
 ' "$(hostname)" "$(date -u +%s)" "$base" > "$proc.owner" 2>/dev/null || true
 
-prompt=""; cwd="$DEF_CWD"; model=""; max_turns=""; max_budget=""; timeout_sec=""; allowed=""; project=""
+prompt=""; cwd="$DEF_CWD"; model=""; max_turns=""; max_budget=""; timeout_sec=""; allowed=""; project=""; spec_issue=""; spec_issue_set=0
 case "$base" in
   *.json)
     if ! jq -e . "$proc" >/dev/null 2>&1; then
@@ -71,6 +71,11 @@ case "$base" in
     max_budget="$(jq -r '.max_budget_usd // empty' "$proc")"
     timeout_sec="$(jq -r '.timeout_sec // empty' "$proc")"
     allowed="$(jq -r '.allowed_tools // empty' "$proc")"
+    # Presence, not value, makes the spec authoritative: "issue": null / "" / "x" means
+    # "no issue" and must not fall back to parsing the prompt (#130).
+    if jq -e 'has("issue")' "$proc" >/dev/null 2>&1; then
+      spec_issue_set=1; spec_issue="$(jq -r '.issue // empty' "$proc")"
+    fi
     ;;
   *) prompt="$(cat "$proc")" ;;
 esac
@@ -172,9 +177,24 @@ timeout_sec="$(_limit timeout_sec "$timeout_sec" "$DEF_TIMEOUT" int)"
 GH_API_TIMEOUT="${CLAUDE_RUNNER_GH_TIMEOUT:-15}"
 GRAFANA_URL="${CLAUDE_RUNNER_GRAFANA_URL:-}"
 
-# issue_of_prompt <text> — first `issue #N` / `#N` reference, or nothing.
+# issue_of_prompt <text> <repo> — the job's own issue, from the prompt (#130).
+# Only explicit forms count: `issue #N`, `Closes|Fixes #N`, and `<owner>/<repo>#N` or
+# `<repo>#N` naming <repo> itself (full name or basename). Bare `#N` and references to
+# other repos are ignored. Prints N only when exactly one distinct candidate remains;
+# zero or several print nothing (no claim comment rather than a guess).
 issue_of_prompt() {
-  printf '%s' "$1" | grep -oiE '(issue[[:space:]]+#|#)[0-9]+' | grep -oE '[0-9]+' | head -1
+  local _text="$1" _repo="${2,,}" _base _ref _name
+  _base="${_repo##*/}"
+  {
+    printf '%s' "$_text" | grep -oiE '(^|[^[:alnum:]_])(issue[[:space:]]+|closes[[:space:]]+|fixes[[:space:]]+)#[0-9]+' \
+      | grep -oE '[0-9]+$'
+    printf '%s' "$_text" | grep -oE '(^|[^[:alnum:]._/-])([[:alnum:]._-]+/)?[[:alnum:]._-]+#[0-9]+' \
+      | sed -E 's/^[^[:alnum:]._-]//' \
+      | while IFS= read -r _ref; do
+          _name="${_ref%#*}"; _name="${_name,,}"
+          if [ "$_name" = "$_repo" ] || [ "$_name" = "$_base" ]; then printf '%s\n' "${_ref##*#}"; fi
+        done
+  } | sort -un | awk 'NF{n++; v=$0} END{if(n==1) print v}'
 }
 
 # gh_issue_api <repo> <gh api args...> — repo-scoped App token, bounded call; the
@@ -192,10 +212,16 @@ gh_issue_api() {
   printf '%s' "$_out"
 }
 
-# Issue named by the prompt, in the project repo only (ad-hoc jobs have no repo).
+# Target issue, in the project repo only (ad-hoc jobs have no repo). The spec's
+# `issue` is authoritative (a non-integer value means none, never a prompt guess);
+# otherwise fall back to the strict prompt parse.
 issue=""
 if [ -n "${project:-}" ] && [ -n "${repo:-}" ]; then
-  issue="$(issue_of_prompt "$user_prompt")"
+  if [ "$spec_issue_set" = 1 ]; then
+    case "$spec_issue" in ''|*[!0-9]*|0*) ;; *) issue="$spec_issue" ;; esac
+  else
+    issue="$(issue_of_prompt "$user_prompt" "$repo")"
+  fi
 fi
 
 outjson="$JOBS_ROOT/logs/${runid}.json"
@@ -320,7 +346,7 @@ fi
   echo "cost_usd=${cost}"; echo "num_turns=${turns}"; echo "session_id=${sid:-}"
   echo "limit=${limit}"; echo "max_turns=${max_turns}"
   echo "max_budget_usd=${max_budget}"; echo "timeout_sec=${timeout_sec}"
-  echo "claim_comment_id=${claim_id}"
+  echo "claim_comment_id=${claim_id}"; echo "issue=${issue}"
   echo "finished=$(date -u +%FT%TZ)"
 } > "$meta"
 
