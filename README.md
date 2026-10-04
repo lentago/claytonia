@@ -139,6 +139,7 @@ reads a half-written file — `*.partial` / `*.tmp` are ignored). Or, on a worke
 cr-submit "a quick ad-hoc prompt"                  # runs in /home/claude/work
 cr-submit -p site-icecreamtofightwith-com "fix broken doc links" # project job: clean checkout + PR
 cr-submit -m opus -p site-icecreamtofightwith-com "big refactor" # override the model for this one job
+cr-submit -i 130 -p claytonia "work this issue"     # name the target issue explicitly (see below)
 cr-submit -f /srv/jobs/scheduled/daily.json        # queue a copy of a saved spec (cron uses this)
 ```
 
@@ -146,13 +147,27 @@ A job is **plain text** (the whole file is the prompt) or a **JSON spec**:
 
 ```json
 { "project": "site-icecreamtofightwith-com", "prompt": "…", "model": "sonnet",
-  "max_turns": 30, "max_budget_usd": 5, "timeout_sec": 1800,
+  "issue": 130, "max_turns": 30, "max_budget_usd": 5, "timeout_sec": 1800,
   "cwd": "…", "allowed_tools": "Read Bash" }
 ```
 
 **Model resolution**, most-specific wins: the job spec's `model` (or `cr-submit -m`)
 → the project registry's `model` → the global `CLAUDE_RUNNER_MODEL` in `runner.env`
 → the account default.
+
+**Target issue** (#130). For a project job, the worker posts a claim comment on the
+job's issue and edits it at completion. Name the issue with the spec's optional integer
+`issue` field (`cr-submit -i <N>` writes it); when present it is authoritative and the
+prompt is not parsed. A non-integer value means no issue. Without it, a strict fallback
+reads the prompt and recognises only:
+
+- `issue #N`, `Closes #N`, `Fixes #N` (case-insensitive)
+- `<owner>/<repo>#N` or `<repo>#N` when it names the job's own repo (for the `.github`
+  repo, the name `.github`)
+
+Bare `#N` and references to other repos (`bpg#2983`) are ignored. If more than one
+distinct candidate remains, no issue is resolved and no comment is posted, rather than
+guessing. The result is recorded as `issue=` in `logs/<runid>.meta`.
 
 **Every job is bounded** (#114) by three limits, resolved the same way as `model`
 (job spec → project registry → `runner.env` default):

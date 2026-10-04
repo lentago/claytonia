@@ -3,6 +3,7 @@
 # echo "prompt" | cr-submit [-m <model>]       from stdin
 # cr-submit [-m <model>] -p <project> "task"   project job (resolves repo/context/memory)
 # cr-submit -f spec.json                       queue a copy of a spec (original kept; used by cron)
+# -i <N> names the job's target issue (written as "issue" in the spec; authoritative).
 # -m sets the job's model (opus|sonnet|haiku|fable or a full id); it wins over the
 # project/global defaults. Omit -m to use the project (or account) default.
 set -euo pipefail
@@ -15,11 +16,12 @@ usage() {
 Usage:
   cr-submit [-m <model>] "prompt"
   echo "prompt" | cr-submit [-m <model>]
-  cr-submit [-m <model>] -p <project> "task"
+  cr-submit [-m <model>] [-i <N>] -p <project> "task"
   cr-submit -f spec.json
 
 Options:
   -m <model>    job model (opus|sonnet|haiku|fable or a full id); wins over project/global defaults
+  -i <N>        target issue number (authoritative; the prompt is not parsed for it)
   -p <project>  project name (resolves repo/context/memory)
   -f spec.json  queue a verbatim copy of an existing spec (original kept; used by cron)
   -h, --help    show this help and exit
@@ -28,11 +30,14 @@ EOF
 
 model=""
 project=""
+issue=""
 
 while true; do
   case "${1:-}" in
     -h|--help) usage; exit 0 ;;
     -m) model="${2:?usage: cr-submit -m <model> ...}"; shift 2 ;;
+    -i) issue="${2:?usage: cr-submit -i <issue-number> ...}"; shift 2
+        case "$issue" in ''|*[!0-9]*|0*) echo "cr-submit: -i needs a positive integer" >&2; exit 1 ;; esac ;;
     -p) project="${2:?usage: cr-submit [-m model] -p <project> \"task\"}"; shift 2 ;;
     -f) break ;;
     -*) echo "cr-submit: unknown option: ${1}" >&2; usage >&2; exit 1 ;;
@@ -62,17 +67,18 @@ fi
 task="$*"; [ -n "$task" ] || task="$(cat)"
 [ -n "${task// /}" ] || { echo "cr-submit: empty task" >&2; exit 1; }
 
-if [ -n "$project" ] || [ -n "$model" ]; then
+if [ -n "$project" ] || [ -n "$model" ] || [ -n "$issue" ]; then
   # JSON spec when a project and/or an explicit model is in play
   dest="$JOBS_ROOT/inbox/${ts}-${project:-adhoc}-$$-$RANDOM.json"
-  jq -n --arg p "$project" --arg t "$task" --arg m "$model" \
+  jq -n --arg p "$project" --arg t "$task" --arg m "$model" --arg i "$issue" \
     '{prompt:$t}
      + (if $p != "" then {project:$p} else {} end)
-     + (if $m != "" then {model:$m} else {} end)' \
+     + (if $m != "" then {model:$m} else {} end)
+     + (if $i != "" then {issue:($i|tonumber)} else {} end)' \
     > "$dest.partial" && mv "$dest.partial" "$dest"
 else
   # plain ad-hoc text prompt
   dest="$JOBS_ROOT/inbox/${ts}-adhoc-$$-$RANDOM.txt"
   printf '%s\n' "$task" > "$dest.partial" && mv "$dest.partial" "$dest"
 fi
-echo "queued: $dest${project:+ (project=$project)}${model:+ (model=$model)}"
+echo "queued: $dest${project:+ (project=$project)}${model:+ (model=$model)}${issue:+ (issue=$issue)}"
