@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Stub `gh`: records every call (argv, one line per call) to FAKE_GH_LOG and
+# answers `api` calls. FAKE_GH_FAIL=1 makes `api` exit 1; FAKE_GH_SLEEP=N hangs it.
+# Comment creation (POST .../comments) prints the id 4242 (what --jq .id yields).
+# PATCH bodies are appended to FAKE_GH_BODIES, separated by a NUL-free marker line.
+set -u
+[ -n "${FAKE_GH_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+[ "${1:-}" = api ] || exit 0
+[ -n "${FAKE_GH_SLEEP:-}" ] && sleep "$FAKE_GH_SLEEP"
+[ "${FAKE_GH_FAIL:-0}" = 1 ] && { echo "gh: HTTP 500" >&2; exit 1; }
+case " $* " in *" PATCH "*) ;; *) echo 4242 ;; esac
+exit 0

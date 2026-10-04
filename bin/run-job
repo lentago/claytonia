@@ -165,6 +165,39 @@ max_turns="$(_limit max_turns "$max_turns" "$DEF_MAXTURNS" int)"
 max_budget="$(_limit max_budget_usd "$max_budget" "$DEF_BUDGET" num)"
 timeout_sec="$(_limit timeout_sec "$timeout_sec" "$DEF_TIMEOUT" int)"
 
+# --- GitHub issue signalling (#37 failure note, #128 claim/outcome comment) -------
+# Everything here is strictly best-effort: every call is time-bounded, errors go to
+# journald (never $errlog, whose last line is quoted as the failure reason), and no
+# outcome of any call changes the job's result.
+GH_API_TIMEOUT="${CLAUDE_RUNNER_GH_TIMEOUT:-15}"
+GRAFANA_URL="${CLAUDE_RUNNER_GRAFANA_URL:-}"
+
+# issue_of_prompt <text> — first `issue #N` / `#N` reference, or nothing.
+issue_of_prompt() {
+  printf '%s' "$1" | grep -oiE '(issue[[:space:]]+#|#)[0-9]+' | grep -oE '[0-9]+' | head -1
+}
+
+# gh_issue_api <repo> <gh api args...> — repo-scoped App token, bounded call; the
+# response is on stdout, failures return non-zero after a one-line journald note.
+gh_issue_api() {
+  local _repo="$1" _tok _out; shift
+  if ! _tok="$(timeout -k 2 "$GH_API_TIMEOUT" gh-token "$_repo" 2>/dev/null)" || [ -z "$_tok" ]; then
+    echo "run-job: gh-token failed for $_repo ($runid); issue comment skipped" | systemd-cat -t claude-runner -p warning
+    return 1
+  fi
+  if ! _out="$(GH_TOKEN="$_tok" timeout -k 2 "$GH_API_TIMEOUT" gh api "$@" 2>&1)"; then
+    echo "run-job: gh api failed ($runid): $(printf '%s' "$_out" | head -c 200 | tr '\n' ' ')" | systemd-cat -t claude-runner -p warning
+    return 1
+  fi
+  printf '%s' "$_out"
+}
+
+# Issue named by the prompt, in the project repo only (ad-hoc jobs have no repo).
+issue=""
+if [ -n "${project:-}" ] && [ -n "${repo:-}" ]; then
+  issue="$(issue_of_prompt "$user_prompt")"
+fi
+
 outjson="$JOBS_ROOT/logs/${runid}.json"
 outtxt="$JOBS_ROOT/logs/${runid}.txt"
 meta="$JOBS_ROOT/logs/${runid}.meta"
@@ -182,6 +215,19 @@ _sid_projdir="$HOME/.claude/projects/$(printf '%s' "$cwd" | tr '/' '-')"
 mkdir -p "$_sid_projdir" 2>/dev/null || true
 printf '%s\n' "$runid" > "$_sid_projdir/${sid}.runid" 2>/dev/null || true
 unset _sid_projdir
+
+# Claim comment (#128): tell the issue a worker has it, so nobody double-dispatches.
+# Edited in place at completion; the id is recorded in the .meta for that update.
+claim_id=""; claim_head=""
+if [ -n "$issue" ]; then
+  _live=""
+  [ -n "$GRAFANA_URL" ] && _live=" Live: ${GRAFANA_URL%/}/d/claude-runner-fleet?var-runid=${runid}."
+  claim_head="run \`${runid}\` on ${HOSTNAME:-$(hostname)} (${model:-default}), started $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  claim_id="$(gh_issue_api "$repo" "repos/$repo/issues/$issue/comments" \
+    -f body="🤖 claytonia is working this — ${claim_head}.${_live}" --jq .id)" || claim_id=""
+  case "$claim_id" in ''|*[!0-9]*) claim_id="" ;; esac
+  unset _live
+fi
 
 # notice, not info: claude-inbox.service sets LogLevelMax=notice (#118).
 echo "run-job START runid=$runid project=${project:-none} model=${model:-default} cwd=$cwd" | systemd-cat -t claude-runner -p notice
@@ -274,36 +320,42 @@ fi
   echo "cost_usd=${cost}"; echo "num_turns=${turns}"; echo "session_id=${sid:-}"
   echo "limit=${limit}"; echo "max_turns=${max_turns}"
   echo "max_budget_usd=${max_budget}"; echo "timeout_sec=${timeout_sec}"
+  echo "claim_comment_id=${claim_id}"
   echo "finished=$(date -u +%FT%TZ)"
 } > "$meta"
 
 if [ "$rc" -eq 0 ]; then
   mv -f "$proc" "$JOBS_ROOT/done/$runid" 2>/dev/null || true
   echo "run-job DONE runid=$runid project=${project:-none} dur=${dur}s cost=${cost:-?}" | systemd-cat -t claude-runner -p notice
+  if [ -n "$claim_id" ]; then
+    if [ -n "${prurl:-}" ]; then _outcome="opened ${prurl}"; else _outcome="no PR opened"; fi
+    gh_issue_api "$repo" -X PATCH "repos/$repo/issues/comments/$claim_id" \
+      -f body="🤖 claytonia ${claim_head} — ✅ finished; ${_outcome}." >/dev/null || true
+    unset _outcome
+  fi
 else
   mv -f "$proc" "$JOBS_ROOT/failed/$runid" 2>/dev/null || true
   echo "run-job FAIL runid=$runid project=${project:-none} rc=$rc${limit:+ limit=$limit} dur=${dur}s (logs/${runid}.stderr)" | systemd-cat -t claude-runner -p err
   # Option 1 (issue #37): comment on the originating GitHub issue so dispatchers see
-  # failures where they already look.  Strictly best-effort — suppressed errors never
-  # change the job outcome or crash this path.  Only fires for project jobs (repo is
-  # known) whose original prompt references a GitHub issue number.
-  if [ -n "${project:-}" ] && [ -n "${repo:-}" ]; then
-    _issue="$(printf '%s' "$user_prompt" \
-      | grep -oiE '(issue[[:space:]]+#|#)[0-9]+' \
-      | grep -oE '[0-9]+' | head -1)"
-    if [ -n "${_issue:-}" ]; then
-      _reason="$(tail -1 "$errlog" 2>/dev/null | head -c 500)"
-      [ -z "${_reason:-}" ] && _reason="(no stderr note)"
-      _logtail="$(tail -20 "$errlog" 2>/dev/null)"
-      _limitline=""
-      [ -n "$limit" ] && _limitline="**Limit hit:** $limit  "$'\n'
-      _body="$(printf '## Job failed: %s\n\n**Exit code:** %s  \n%s**Failure reason:** %s\n\n<details>\n<summary>Last 20 lines of job log</summary>\n\n```\n%s\n```\n</details>' \
-        "$runid" "$rc" "$_limitline" "$_reason" "$_logtail")"
-      GH_TOKEN="$(gh-token "$repo" 2>/dev/null)" \
-        gh api "repos/$repo/issues/$_issue/comments" \
-        -f body="$_body" >/dev/null 2>&1 || true
-      unset _issue _reason _logtail _body _limitline
+  # failures where they already look. If a claim comment exists (#128) it is edited
+  # in place rather than adding a second comment; otherwise a new one is posted.
+  # Strictly best-effort — never changes the job outcome.
+  if [ -n "$issue" ]; then
+    _reason="$(tail -1 "$errlog" 2>/dev/null | head -c 500)"
+    [ -z "${_reason:-}" ] && _reason="(no stderr note)"
+    _logtail="$(tail -20 "$errlog" 2>/dev/null)"
+    _limitline=""
+    [ -n "$limit" ] && _limitline="**Limit hit:** $limit  "$'\n'
+    _body="$(printf '## Job failed: %s\n\n**Exit code:** %s  \n%s**Failure reason:** %s\n\n<details>\n<summary>Last 20 lines of job log</summary>\n\n```\n%s\n```\n</details>' \
+      "$runid" "$rc" "$_limitline" "$_reason" "$_logtail")"
+    if [ -n "$claim_id" ]; then
+      _body="🤖 claytonia ${claim_head} — ❌ failed${limit:+ (limit hit: $limit)}."$'\n\n'"$_body"
+      gh_issue_api "$repo" -X PATCH "repos/$repo/issues/comments/$claim_id" -f body="$_body" >/dev/null \
+        || gh_issue_api "$repo" "repos/$repo/issues/$issue/comments" -f body="$_body" >/dev/null || true
+    else
+      gh_issue_api "$repo" "repos/$repo/issues/$issue/comments" -f body="$_body" >/dev/null || true
     fi
+    unset _reason _logtail _body _limitline
   fi
 fi
 # Enforce the no-auto-merge rule: a runner-bot PR is ALWAYS left for a human, so if

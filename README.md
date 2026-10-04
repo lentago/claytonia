@@ -347,8 +347,21 @@ event in the `{job="claude_runner"}` stream (a line field, not a label — filte
 `| json | limit != ""`), the journald FAIL line, and a **Limit hit:** line in the
 issue comment below. A timeout exits with code 7.
 
+**Claim comment (#128):** when a project job's prompt names an issue (`issue #N` or
+`#N`) in the job's repo, the runner posts one comment as the App at claim time —
+`🤖 claytonia is working this — run <runid> on <worker> (<model>), started <UTC>` plus a
+link to the *Claytonia — Runner Fleet* dashboard filtered to the runid (when
+`CLAUDE_RUNNER_GRAFANA_URL` is set in `etc/runner.env`) — so a dispatcher looking at the
+issue can see it is in flight. That **same comment is edited, not appended to**, when the
+run ends: success links the opened PR (or says "no PR opened"); failure folds in the
+#37 note below; a limit hit names `limit=turns|budget|timeout`. The comment id is kept as
+`claim_comment_id=` in `logs/<runid>.meta`. All of it is best-effort: every GitHub call is
+bounded (`CLAUDE_RUNNER_GH_TIMEOUT`, default 15s) and a failure is only logged to journald,
+never changing the job outcome. Jobs with no resolvable issue make no GitHub calls.
+
 **Issue comments (Option 1 of #37):** for project jobs whose prompt references a GitHub
-issue (`issue #N` or `#N`), the runner posts a comment on that issue containing the
+issue (`issue #N` or `#N`), the runner comments on that issue (editing the claim comment above
+when one exists, otherwise posting) with the
 failure reason, exit code, runid, and the last 20 lines of the job log — the two places
 a dispatcher watches are the PR queue and the issue, so this closes the loop with no new
 infrastructure.  Commenting is strictly best-effort: a failure to post never changes the
