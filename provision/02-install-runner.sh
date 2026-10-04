@@ -249,6 +249,11 @@ if [ ! -f /etc/claude-runner/token.env ]; then
   chmod 640 /etc/claude-runner/token.env
 fi
 
+# PVE-template / first-boot artifacts that never run in these LXCs; masking stops
+# systemd logging their condition-skip on every timer activation (#120). The
+# gitops loop ships the same mask as zero-length files in systemd/.
+systemctl mask proxmox-regenerate-snakeoil.service first-boot-complete.target >/dev/null 2>&1
+
 systemctl daemon-reload
 systemctl enable --now claude-inbox.timer >/dev/null 2>&1
 echo SETUP_DONE

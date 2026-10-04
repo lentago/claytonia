@@ -5,6 +5,8 @@
 #
 # Deploys: bin/ -> /opt/claude-runner/bin, systemd/ -> /etc/systemd/system,
 #          cron/claude-runner -> /etc/cron.d, etc/runner.env -> /opt/claude-runner/etc.
+# Zero-length files under systemd/ are deliberate masks (systemd treats an empty
+# unit in /etc/systemd/system as masked); they deploy like any other unit.
 # Does NOT manage its own units (bullpen-gitops.*) — those are bootstrap-only,
 # so a broken update can't leave the worker unable to fix itself.
 set -uo pipefail
@@ -33,7 +35,10 @@ fi
 for s in bin/*; do
   bash -n "$s" 2>>"$LOG" || { log "FATAL bash -n failed: $s — aborting deploy"; exit 1; }
 done
-systemd-analyze verify systemd/*.service systemd/*.timer 2>>"$LOG" || log "warn: unit verify reported issues"
+# Zero-length units are masks (e.g. proxmox-regenerate-snakeoil.service, #120);
+# `verify` rejects them as "masked", so only feed it real unit files.
+verify=(); for u in systemd/*.service systemd/*.timer; do [ -s "$u" ] && verify+=("$u"); done
+systemd-analyze verify "${verify[@]}" 2>>"$LOG" || log "warn: unit verify reported issues"
 
 changed=0; units_changed=0; changed_timers=""
 deploy(){ # <src> <dst> <mode>

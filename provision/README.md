@@ -93,3 +93,18 @@ The **transcript shipper** comes along for free on a clone: its Alloy service, t
 `/etc/default/alloy-transcript` push token are all copied. Because the shipper
 labels its stream with `constants.hostname` (not a baked value), the clone
 self-labels with its own new hostname — no per-clone reconfiguration needed.
+
+## Masked first-boot units
+
+`proxmox-regenerate-snakeoil.service` and `first-boot-complete.target` are PVE-template
+artifacts that never run in these LXCs; left unmasked, systemd logs a condition-skip
+line for each on every timer activation ([#120](https://github.com/lentago/claytonia/issues/120)).
+They are masked by zero-length files in `systemd/` (deployed by gitops, so image-built
+and live workers both get them) and by `systemctl mask` in `02-install-runner.sh`.
+
+**Verify on a worker after deploy:**
+
+```bash
+systemctl is-enabled proxmox-regenerate-snakeoil.service first-boot-complete.target   # → masked, masked
+journalctl --since -3min | grep -E 'snakeoil|first-boot-complete'                     # → no output
+```
