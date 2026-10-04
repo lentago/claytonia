@@ -26,6 +26,7 @@ bats --print-output-on-failure test/
 | **At-least-once delivery** — a dropped job reaches exactly one of `done/`/`failed/` with its logs, win or lose | at-least-once (×2: success + failure) |
 | **Crash-mid-job recovery** — a job whose owner died is requeued (`.retry`) then delivered; a second strand fails instead of looping; a live owner is left alone | crash recovery (×3) |
 | **Write-then-rename discipline** — `*.partial` / `*.tmp` / dotfiles / `.owner` / `.swp` are never claimed | discipline |
+| **Per-job bounds** (#114) — a job that outruns `timeout_sec` is killed, lands in `failed/` (exit 7, `limit=timeout`) with its `.owner` gone, and the worker claims the next job in the same pass; turn and budget hits are filed `failed/` with `limit=turns`/`budget`; spec limits reach the CLI | limits (×4) |
 
 ## How it stays hermetic
 
@@ -40,4 +41,6 @@ value, so nothing here changes how a real worker behaves):
 
 `test/stubs/` holds no-op / canned-output stand-ins for `claude`, `cr-emit`, and
 `systemd-cat`. The fake `claude` picks its result from `FAKE_CLAUDE_MODE`
-(`ok` / `error` / `nonzero`) so a test can drive the done vs failed routing.
+(`ok` / `error` / `nonzero` / `turns` / `budget`) so a test can drive the done vs
+failed routing. A prompt containing `FAKE_HANG` makes it sleep `FAKE_CLAUDE_SLEEP`
+seconds first (to trip a timeout), and `FAKE_CLAUDE_ARGS` captures its argv.

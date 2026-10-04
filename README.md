@@ -146,12 +146,28 @@ A job is **plain text** (the whole file is the prompt) or a **JSON spec**:
 
 ```json
 { "project": "site-icecreamtofightwith-com", "prompt": "…", "model": "sonnet",
-  "max_turns": 30, "cwd": "…", "allowed_tools": "Read Bash" }
+  "max_turns": 30, "max_budget_usd": 5, "timeout_sec": 1800,
+  "cwd": "…", "allowed_tools": "Read Bash" }
 ```
 
 **Model resolution**, most-specific wins: the job spec's `model` (or `cr-submit -m`)
 → the project registry's `model` → the global `CLAUDE_RUNNER_MODEL` in `runner.env`
 → the account default.
+
+**Every job is bounded** (#114) by three limits, resolved the same way as `model`
+(job spec → project registry → `runner.env` default):
+
+| spec field | `runner.env` default | effect |
+|---|---|---|
+| `max_turns` | `CLAUDE_RUNNER_MAX_TURNS=150` | `--max-turns` — agentic turns |
+| `max_budget_usd` | `CLAUDE_RUNNER_MAX_BUDGET_USD=15` | `--max-budget-usd` — spend cap |
+| `timeout_sec` | `CLAUDE_RUNNER_TIMEOUT_SEC=3600` | wall clock: `timeout --signal=TERM --kill-after=30`, so a worker is held at most `timeout_sec + 30` s |
+
+Set a field higher in the spec for a job you expect to run heavy (a bulk batch, a
+big refactor). Overrides must be positive numbers; an invalid one is noted in
+`logs/<runid>.stderr` and the default applies. A job that hits a limit lands in
+`failed/` with `limit=turns|budget|timeout` in its `.meta`. A timeout also exits with
+code **7**.
 
 With `"project"`, the worker resolves the registry, prepares a clean checkout
 (warm-but-reset), auto-loads the repo `CLAUDE.md`, injects that project's memory, and
@@ -173,7 +189,7 @@ memory that jobs read and append to.
 cr-newproject <name> <owner/repo> [model] [branch]   # register + scaffold context
 ```
 
-- `projects/registry.json` — `name → {repo, default_branch, model, context_dir, setup}`
+- `projects/registry.json` — `name → {repo, default_branch, model, max_turns, max_budget_usd, timeout_sec, context_dir, setup}` (limits optional; they sit between the job spec and the `runner.env` defaults)
 - `projects/<name>/memory.md` — dated, durable learnings (conventions, gotchas)
 
 Durable conventions live in the **repo's own `CLAUDE.md`** (reviewed, versioned, loaded
@@ -311,6 +327,12 @@ e.g. [#91 — docs(context-ledger): signal model + alert runbook (issue #84)](ht
 When a job exits non-zero it lands in `failed/<runid>` and the worker logs a `run-job
 FAIL` line to journald. The stderr note (if any) and the exit code are in
 `logs/<runid>.stderr`.
+
+**Limit hits** (see *Every job is bounded* above) are named, not just counted as
+failures: `limit=timeout|budget|turns` goes into `logs/<runid>.meta`, the `job_complete`
+event in the `{job="claude_runner"}` stream (a line field, not a label — filter with
+`| json | limit != ""`), the journald FAIL line, and a **Limit hit:** line in the
+issue comment below. A timeout exits with code 7.
 
 **Issue comments (Option 1 of #37):** for project jobs whose prompt references a GitHub
 issue (`issue #N` or `#N`), the runner posts a comment on that issue containing the

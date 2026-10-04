@@ -2,10 +2,13 @@
 # run-job <jobfile> — execute ONE Claude job headless and file its output.
 # Job = plain text (whole file is the prompt) OR a .json spec:
 #   {"prompt":"...", "project":"name", "model":"...", "cwd":"...",
-#    "max_turns":N, "allowed_tools":"..."}
+#    "max_turns":N, "max_budget_usd":N, "timeout_sec":N, "allowed_tools":"..."}
 # If "project" is set it is resolved via projects/registry.json: a CLEAN checkout
 # of the repo is prepared (repo CLAUDE.md applies), per-project memory is loaded,
 # and the agent is told to branch + open a PR (never merge).
+# Every run is bounded (issue #114): turns, spend and wall-clock each resolve
+# spec > project registry > runner.env default, like model. A limit hit routes
+# to failed/ and is named as limit=turns|budget|timeout in the .meta.
 set -uo pipefail
 
 JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
@@ -23,6 +26,10 @@ export PATH="${CLAUDE_RUNNER_PATH:-/home/claude/.local/bin:/usr/local/bin:/usr/b
 DEF_MODEL="${CLAUDE_RUNNER_MODEL:-}"
 DEF_CWD="${CLAUDE_RUNNER_CWD:-/home/claude/work}"
 DEF_MAXTURNS="${CLAUDE_RUNNER_MAX_TURNS:-}"
+DEF_BUDGET="${CLAUDE_RUNNER_MAX_BUDGET_USD:-}"
+DEF_TIMEOUT="${CLAUDE_RUNNER_TIMEOUT_SEC:-}"
+KILL_AFTER=30        # grace after TERM before KILL: a worker is held at most timeout+30s
+RC_TIMEOUT=7         # distinct exit for a wall-clock limit hit (run-job's own codes are 0-6)
 
 jobfile="${1:-}"
 [ -n "$jobfile" ] && [ -f "$jobfile" ] || { echo "run-job: no such jobfile: $jobfile" >&2; exit 2; }
@@ -47,7 +54,7 @@ started=%s
 origname=%s
 ' "$(hostname)" "$(date -u +%s)" "$base" > "$proc.owner" 2>/dev/null || true
 
-prompt=""; cwd="$DEF_CWD"; model=""; max_turns="$DEF_MAXTURNS"; allowed=""; project=""
+prompt=""; cwd="$DEF_CWD"; model=""; max_turns=""; max_budget=""; timeout_sec=""; allowed=""; project=""
 case "$base" in
   *.json)
     if ! jq -e . "$proc" >/dev/null 2>&1; then
@@ -60,7 +67,9 @@ case "$base" in
     project="$(jq -r '.project // empty' "$proc")"
     c="$(jq -r '.cwd // empty' "$proc")";        [ -n "$c" ]  && cwd="$c"
     m="$(jq -r '.model // empty' "$proc")";       [ -n "$m" ]  && model="$m"
-    mt="$(jq -r '.max_turns // empty' "$proc")";  [ -n "$mt" ] && max_turns="$mt"
+    max_turns="$(jq -r '.max_turns // empty' "$proc")"
+    max_budget="$(jq -r '.max_budget_usd // empty' "$proc")"
+    timeout_sec="$(jq -r '.timeout_sec // empty' "$proc")"
     allowed="$(jq -r '.allowed_tools // empty' "$proc")"
     ;;
   *) prompt="$(cat "$proc")" ;;
@@ -87,6 +96,9 @@ if [ -n "$project" ]; then
   repo="$(printf '%s' "$pj" | jq -r '.repo // empty')"
   branch="$(printf '%s' "$pj" | jq -r '.default_branch // "main"')"
   [ -z "$model" ] && model="$(printf '%s' "$pj" | jq -r '.model // empty')"
+  [ -z "$max_turns" ]   && max_turns="$(printf '%s' "$pj" | jq -r '.max_turns // empty')"
+  [ -z "$max_budget" ]  && max_budget="$(printf '%s' "$pj" | jq -r '.max_budget_usd // empty')"
+  [ -z "$timeout_sec" ] && timeout_sec="$(printf '%s' "$pj" | jq -r '.timeout_sec // empty')"
   context_dir="$(printf '%s' "$pj" | jq -r '.context_dir // empty')"
   [ -z "$context_dir" ] && context_dir="$JOBS_ROOT/projects/$project"
   setup="$(printf '%s' "$pj" | jq -r '.setup // empty')"
@@ -139,14 +151,29 @@ fi
 # Model precedence: spec > project registry > global default ($DEF_MODEL) > account default.
 [ -z "$model" ] && model="$DEF_MODEL"
 
+# Limits, same precedence: spec > project registry > runner.env default (blank
+# default = uncapped). An override must be a positive number (integers for turns
+# and timeout); anything else is noted in the stderr log and the default applies,
+# so a typo can't silently lift a cap — or make `timeout` refuse to start.
+_limit() { # <name> <value> <default> <int|num>
+  local re='^[0-9]+$'; [ "$4" = num ] && re='^[0-9]+([.][0-9]+)?$'
+  if [ -n "$2" ] && [[ $2 =~ $re ]] && [[ $2 =~ [1-9] ]]; then printf '%s' "$2"; return; fi
+  [ -n "$2" ] && echo "run-job: ignoring invalid $1=$2; using default '${3}'" >>"$errlog"
+  printf '%s' "$3"
+}
+max_turns="$(_limit max_turns "$max_turns" "$DEF_MAXTURNS" int)"
+max_budget="$(_limit max_budget_usd "$max_budget" "$DEF_BUDGET" num)"
+timeout_sec="$(_limit timeout_sec "$timeout_sec" "$DEF_TIMEOUT" int)"
+
 outjson="$JOBS_ROOT/logs/${runid}.json"
 outtxt="$JOBS_ROOT/logs/${runid}.txt"
 meta="$JOBS_ROOT/logs/${runid}.meta"
 
 args=( -p --dangerously-skip-permissions --output-format json --session-id "$sid" )
-[ -n "$model" ]     && args+=( --model "$model" )
-[ -n "$max_turns" ] && args+=( --max-turns "$max_turns" )
-[ -n "$allowed" ]   && args+=( --allowedTools "$allowed" )
+[ -n "$model" ]      && args+=( --model "$model" )
+[ -n "$max_turns" ]  && args+=( --max-turns "$max_turns" )
+[ -n "$max_budget" ] && args+=( --max-budget-usd "$max_budget" )
+[ -n "$allowed" ]    && args+=( --allowedTools "$allowed" )
 
 # Write <sid>.runid sidecar next to the live transcript so the worker Alloy can
 # attach a runid label to the transcript stream without waiting for the run to end.
@@ -166,19 +193,43 @@ start=$(date -u +%s)
 # even sub-10s jobs register. Best-effort; killed as soon as the job returns.
 ( while :; do cr-emit running "$runid" "${project:-}" "${model:-}" 2>/dev/null; sleep 10; done ) &
 hb_pid=$!
-( cd "$cwd" && printf '%s' "$prompt" | "$CLAUDE_BIN" "${args[@]}" ) >"$outjson" 2>>"$errlog"
+# Wall-clock bound: TERM at timeout_sec, KILL $KILL_AFTER s later. Without it a
+# wedged CLI holds this worker forever — its heartbeat stays fresh, so the reaper
+# never reclaims the job, and process-inbox is serial behind its flock.
+tmo=()
+[ -n "$timeout_sec" ] && tmo=( timeout --signal=TERM --kill-after="$KILL_AFTER" "$timeout_sec" )
+( cd "$cwd" && printf '%s' "$prompt" | "${tmo[@]}" "$CLAUDE_BIN" "${args[@]}" ) >"$outjson" 2>>"$errlog"
 rc=$?
 kill "$hb_pid" 2>/dev/null; wait "$hb_pid" 2>/dev/null
 dur=$(( $(date -u +%s) - start ))
 
-cost=""; turns=""
+cost=""; turns=""; subtype=""; limit=""
 if jq -e . "$outjson" >/dev/null 2>&1; then
   jq -r '.result // .text // ""' "$outjson" > "$outtxt" 2>/dev/null || true
   [ "$(jq -r '.is_error // false' "$outjson" 2>/dev/null)" = "true" ] && rc=1
   cost="$(jq -r '.total_cost_usd // empty' "$outjson" 2>/dev/null)"
   turns="$(jq -r '.num_turns // empty' "$outjson" 2>/dev/null)"
+  subtype="$(jq -r '.subtype // empty' "$outjson" 2>/dev/null)"
 else
   cp "$outjson" "$outtxt" 2>/dev/null || true
+fi
+
+# Name a limit hit. timeout exits 124 (TERM worked) or 137 (needed the KILL);
+# the elapsed check keeps an unrelated SIGKILL (e.g. OOM) from reading as one.
+# The CLI reports its own caps as result subtypes, not always with is_error set,
+# so any error_* subtype is forced to a failure. The last errlog line is what
+# the failure issue comment quotes as the reason.
+if [ -n "$timeout_sec" ] && { [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; } && [ "$dur" -ge "$timeout_sec" ]; then
+  limit=timeout; rc=$RC_TIMEOUT
+  echo "run-job: limit=timeout — killed after ${dur}s (timeout_sec=$timeout_sec, TERM then KILL after ${KILL_AFTER}s)" >>"$errlog"
+else
+  case "$subtype" in
+    error_max_turns)      limit=turns
+      echo "run-job: limit=turns — stopped at ${turns:-?} turns (max_turns=$max_turns)" >>"$errlog" ;;
+    error_max_budget_usd) limit=budget
+      echo "run-job: limit=budget — stopped at \$${cost:-?} (max_budget_usd=$max_budget)" >>"$errlog" ;;
+  esac
+  case "$subtype" in error_*) [ "$rc" -eq 0 ] && rc=1 ;; esac
 fi
 
 # Extract PR URL from output now — used for both the no-PR check and the
@@ -221,6 +272,8 @@ fi
   echo "project=${project:-}"; echo "repo=${repo:-}"
   echo "model=${model:-default}"; echo "cwd=$cwd"
   echo "cost_usd=${cost}"; echo "num_turns=${turns}"; echo "session_id=${sid:-}"
+  echo "limit=${limit}"; echo "max_turns=${max_turns}"
+  echo "max_budget_usd=${max_budget}"; echo "timeout_sec=${timeout_sec}"
   echo "finished=$(date -u +%FT%TZ)"
 } > "$meta"
 
@@ -229,7 +282,7 @@ if [ "$rc" -eq 0 ]; then
   echo "run-job DONE runid=$runid project=${project:-none} dur=${dur}s cost=${cost:-?}" | systemd-cat -t claude-runner -p notice
 else
   mv -f "$proc" "$JOBS_ROOT/failed/$runid" 2>/dev/null || true
-  echo "run-job FAIL runid=$runid project=${project:-none} rc=$rc dur=${dur}s (logs/${runid}.stderr)" | systemd-cat -t claude-runner -p err
+  echo "run-job FAIL runid=$runid project=${project:-none} rc=$rc${limit:+ limit=$limit} dur=${dur}s (logs/${runid}.stderr)" | systemd-cat -t claude-runner -p err
   # Option 1 (issue #37): comment on the originating GitHub issue so dispatchers see
   # failures where they already look.  Strictly best-effort — suppressed errors never
   # change the job outcome or crash this path.  Only fires for project jobs (repo is
@@ -242,12 +295,14 @@ else
       _reason="$(tail -1 "$errlog" 2>/dev/null | head -c 500)"
       [ -z "${_reason:-}" ] && _reason="(no stderr note)"
       _logtail="$(tail -20 "$errlog" 2>/dev/null)"
-      _body="$(printf '## Job failed: %s\n\n**Exit code:** %s  \n**Failure reason:** %s\n\n<details>\n<summary>Last 20 lines of job log</summary>\n\n```\n%s\n```\n</details>' \
-        "$runid" "$rc" "$_reason" "$_logtail")"
+      _limitline=""
+      [ -n "$limit" ] && _limitline="**Limit hit:** $limit  "$'\n'
+      _body="$(printf '## Job failed: %s\n\n**Exit code:** %s  \n%s**Failure reason:** %s\n\n<details>\n<summary>Last 20 lines of job log</summary>\n\n```\n%s\n```\n</details>' \
+        "$runid" "$rc" "$_limitline" "$_reason" "$_logtail")"
       GH_TOKEN="$(gh-token "$repo" 2>/dev/null)" \
         gh api "repos/$repo/issues/$_issue/comments" \
         -f body="$_body" >/dev/null 2>&1 || true
-      unset _issue _reason _logtail _body
+      unset _issue _reason _logtail _body _limitline
     fi
   fi
 fi
