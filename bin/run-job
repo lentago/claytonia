@@ -71,7 +71,11 @@ case "$base" in
     max_budget="$(jq -r '.max_budget_usd // empty' "$proc")"
     timeout_sec="$(jq -r '.timeout_sec // empty' "$proc")"
     allowed="$(jq -r '.allowed_tools // empty' "$proc")"
-    spec_issue="$(jq -r '.issue // empty' "$proc")"; [ -n "$spec_issue" ] && spec_issue_set=1
+    # Presence, not value, makes the spec authoritative: "issue": null / "" / "x" means
+    # "no issue" and must not fall back to parsing the prompt (#130).
+    if jq -e 'has("issue")' "$proc" >/dev/null 2>&1; then
+      spec_issue_set=1; spec_issue="$(jq -r '.issue // empty' "$proc")"
+    fi
     ;;
   *) prompt="$(cat "$proc")" ;;
 esac

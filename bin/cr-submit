@@ -54,6 +54,8 @@ fi
 # -f: queue a verbatim copy of an existing spec (it carries its own model).
 if [ "${1:-}" = "-f" ]; then
   [ -z "$model" ] || echo "cr-submit: -m ignored with -f (the spec carries its own model)" >&2
+  # A silently dropped -i would comment on the wrong issue (or none); refuse instead.
+  [ -z "$issue" ] || { echo "cr-submit: -i can't be combined with -f (the spec is copied verbatim; set \"issue\" in it)" >&2; exit 1; }
   [ -f "${2:-}" ] || { echo "cr-submit: no such file: ${2:-}" >&2; exit 1; }
   _base="$(basename "$2")"
   _ext="${_base##*.}"

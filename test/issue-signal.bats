@@ -195,3 +195,20 @@ claimed_issue() { grep -oE 'issues/[0-9]+/comments' "$FAKE_GH_LOG" | head -1 | g
   run "$REPO_ROOT/bin/cr-submit" -i abc "do it"
   [ "$status" -ne 0 ]
 }
+
+@test "a present but empty/null spec issue means no issue (no prompt fallback)" {
+  for v in null '""'; do
+    rm -f "$JOBS_ROOT"/logs/*.meta; : > "$FAKE_GH_LOG"
+    drop_spec_job "Work issue #42" "{\"issue\":$v}"
+    run_job
+    [ -z "$(claimed_issue)" ]
+    grep -q '^issue=$' "$JOBS_ROOT"/logs/*.meta
+  done
+}
+
+@test "cr-submit rejects -i combined with -f" {
+  printf '{"prompt":"x"}\n' > "$TEST_TMP/spec.json"
+  run "$REPO_ROOT/bin/cr-submit" -i 130 -f "$TEST_TMP/spec.json"
+  [ "$status" -ne 0 ]
+  [ -z "$(ls "$JOBS_ROOT"/inbox/ 2>/dev/null)" ]
+}
