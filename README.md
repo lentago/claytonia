@@ -2,7 +2,7 @@
      Regenerate there; do not hand-edit the banner or badge URLs. -->
 <a href="https://lentago.dev"><img src="./assets/banner.svg" alt="claytonia — Agent fleet · drop a job, get a reviewed PR" width="100%"></a>
 
-[![main](https://img.shields.io/github/check-runs/lentago/claytonia/main?style=flat-square&labelColor=0e2b1a&color=1b4b2e&label=main)](https://github.com/lentago/claytonia/actions) [![License](https://img.shields.io/github/license/lentago/claytonia?style=flat-square&labelColor=0e2b1a&color=1b4b2e)](https://github.com/lentago/claytonia/blob/main/LICENSE) [![Ask DeepWiki](https://img.shields.io/badge/Ask-DeepWiki-1b4b2e?style=flat-square&labelColor=0e2b1a&logo=readthedocs&logoColor=E0A81C)](https://deepwiki.com/lentago/claytonia)
+[![main](https://img.shields.io/github/check-runs/lentago/claytonia/main?style=flat-square&labelColor=0e2b1a&color=1b4b2e&label=main)](https://github.com/lentago/claytonia/actions) [![License](https://img.shields.io/github/license/lentago/claytonia?style=flat-square&labelColor=0e2b1a&color=1b4b2e)](https://github.com/lentago/claytonia/blob/main/LICENSE)
 
 ![Claude](https://img.shields.io/badge/Claude-1b4b2e?style=flat-square&labelColor=0e2b1a&logo=anthropic&logoColor=E0A81C) ![Terraform](https://img.shields.io/badge/Terraform-1b4b2e?style=flat-square&labelColor=0e2b1a&logo=terraform&logoColor=E0A81C) ![Bash](https://img.shields.io/badge/Bash-1b4b2e?style=flat-square&labelColor=0e2b1a&logo=gnubash&logoColor=E0A81C) ![GitOps](https://img.shields.io/badge/GitOps-1b4b2e?style=flat-square&labelColor=0e2b1a)
 
@@ -69,22 +69,6 @@ flowchart TD
 *Everything above the red line runs unattended; the only way anything reaches
 `main` is a human clicking merge. That single edge is the fleet's governance
 model — not an implementation detail.*
-
-## 📚 Ask this codebase (DeepWiki)
-
-<a href="https://deepwiki.com/lentago/claytonia"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" height="32"></a>
-
-> [DeepWiki](https://deepwiki.com/lentago/claytonia) maintains an AI-generated wiki over this
-> repository — architecture pages, diagrams, and a Q&A box grounded in the actual code. Every
-> public Lentago Labs repo is indexed ([deepwiki.com/lentago](https://deepwiki.com/lentago));
-> it is the fastest way to orient before reading source. It is AI-generated: trust it to orient
-> you, verify against the code before you act on it.
-
-**Good first questions:**
-
-- How does a worker atomically claim a job from the NAS inbox without two workers double-processing it?
-- What is the relationship between claytonia's Terraform root and kalmia's guest layer — which one owns which Proxmox guests?
-- How does the gitops deploy loop on each worker validate a pulled change before restarting units, and what happens if validation fails?
 
 ## 🧭 What this repo demonstrates
 
@@ -409,5 +393,4 @@ boundaries.
 > 🌱 **Lentago Labs** is a pro-bono operations practice for organizations that
 > run on volunteers, donations, and one overworked tech person. Everything here
 > is free to take, and we practice what we publish: our own estate runs this
-> way, in the open. Start at the [org profile](https://github.com/lentago), and
-> read this repo on [DeepWiki](https://deepwiki.com/lentago/claytonia).
+> way, in the open. Start at the [org profile](https://github.com/lentago).
