@@ -3,5 +3,14 @@
 # Loki. Tests exercise the queue mechanics, not telemetry, so this is a no-op.
 # FAKE_CREMIT_LOG, if set, gets one line per call (argv, tab-separated) so a test
 # can assert what run-job hands the emitter (e.g. the submitter field, #21).
+# FAKE_CREMIT_EXPECT_SUBMITTER, if set, makes the one-argument job_complete call
+# behave like the real emitter about ordering: it must find logs/<runid>.meta already
+# written, with that submitter in it, or it exits 1 before logging (so a run-job that
+# emitted completion before writing the .meta leaves no "<runid>" line for the test).
+if [ "$#" -eq 1 ] && [ -n "${FAKE_CREMIT_EXPECT_SUBMITTER:-}" ]; then
+  meta="${JOBS_ROOT:?}/logs/$1.meta"
+  [ -f "$meta" ] || exit 1
+  grep -qxF "submitter=${FAKE_CREMIT_EXPECT_SUBMITTER}" "$meta" || exit 1
+fi
 [ -n "${FAKE_CREMIT_LOG:-}" ] && { (IFS=$'\t'; printf '%s\n' "$*") >> "$FAKE_CREMIT_LOG"; }
 exit 0

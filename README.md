@@ -124,7 +124,7 @@ cr-submit "a quick ad-hoc prompt"                  # runs in /home/claude/work
 cr-submit -p site-icecreamtofightwith-com "fix broken doc links" # project job: clean checkout + PR
 cr-submit -m opus -p site-icecreamtofightwith-com "big refactor" # override the model for this one job
 cr-submit -i 130 -p claytonia "work this issue"     # name the target issue explicitly (see below)
-cr-submit -o batch-7 -p claytonia "fan-out chunk 3"  # tag who submitted it (default below)
+cr-submit -o batch-7 -p claytonia "batch chunk 3"    # tag who submitted it (default below)
 cr-submit -w -p claytonia "run when a worker frees up" # at a terminal: wait for a free worker first
 cr-submit -f /srv/jobs/scheduled/daily.json        # queue a copy of a saved spec (cron uses this)
 ```
@@ -176,12 +176,13 @@ cr-submit:   busy claude-runner-2: project=- runid=20261013T201500Z-adhoc-…
 ```
 
 A worker is *alive* when `workers/<host>.alive` is fresher than
-`CLAUDE_HEARTBEAT_STALE` (default 90s, the reaper's threshold). It is *busy* when a
+`CLAUDE_HEARTBEAT_STALE` (default 90s, the same threshold the reaper uses; the reaper is
+the pass in `process-inbox` that requeues a job whose worker has stopped heartbeating). It is *busy* when a
 `processing/<runid>.owner` names it; the project and submitter come from the claimed
 spec when it is JSON (`-` for a plain-text job). A claim held by a dead worker is the
 reaper's, so it is not counted. *Waiting* counts the `inbox/` entries `process-inbox`
 would claim (not `*.partial`, `*.tmp`, dotfiles). The read uses globs and `stat` only
-(never `ls -t`, which stalls on the CIFS share) and is capped at
+(never `ls -t`, which stalls on the queue's network share, an SMB/CIFS mount) and is capped at
 `CLAUDE_SUBMIT_PROBE_TIMEOUT` (default 5s). If it can't finish in time, `cr-submit`
 says so and queues with no capacity check. It never fails the submit.
 
@@ -194,8 +195,9 @@ seconds (default 15) until the guard clears, then queues. After
 `CLAUDE_SUBMIT_WAIT_TIMEOUT` seconds (default 1800) it queues anyway with a warning.
 The guard never prompts. `-w` only waits when stdin is a terminal. Piped, cron, and
 agent callers get the warning and an immediate queue, and `-f` skips the check
-entirely. The account-level session quota (the limit that failed the 2026-07-08
-fan-out) is not visible from the queue, so the guard does not try to detect it.
+entirely. The account-level session quota (the limit that failed the eleven-job batch of
+2026-07-08, recorded in [#21's 2026-08-26 comment](https://github.com/lentago/claytonia/issues/21#issuecomment-5431831307)) is not visible from the queue,
+so the guard does not try to detect it.
 
 **Every job is bounded** (#114) by three limits, resolved the same way as `model`
 (job spec → project registry → `runner.env` default):

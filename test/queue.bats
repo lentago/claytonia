@@ -431,6 +431,7 @@ drop_spec() { # <name> <json>
 
 @test "submitter: a spec's submitter lands in the .meta and reaches cr-emit" {
   export FAKE_CREMIT_LOG="$TEST_TMP/cremit.log"
+  export FAKE_CREMIT_EXPECT_SUBMITTER="alice@laptop"   # the stub refuses a completion emitted before the .meta exists
   drop_spec "attr.json" '{"prompt":"go","project":"","submitter":"alice@laptop"}'
 
   run "$REPO_ROOT/bin/process-inbox"
