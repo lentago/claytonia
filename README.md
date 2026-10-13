@@ -310,6 +310,11 @@ kernel — no dependency on cross-client SMB rename semantics. Each worker heart
 stale (>90s) and requeues them once (`.retry`), then fails them if stranded again.
 At-least-once delivery — see Caveats for the idempotency boundary.
 
+Workers run **Node 22 LTS** (pinned in `provision/01-create-container.sh`; the old
+default, 18.20, is below what Astro 7 requires, and the 2026-10-12 monarda and
+2026-10-13 uvularia jobs had to switch versions by hand). There is no per-project
+version switching: a project that needs a different Node says so in its own `CLAUDE.md`.
+
 Terraform in this repo owns exactly the five `claude-runner` LXCs in the `claytonia`
 Proxmox resource pool (VMIDs 110–112, 116–117). Every *other* guest on the cluster is
 owned by kalmia's Terraform, not this repo's — products own their own capacity.

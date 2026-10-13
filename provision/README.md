@@ -17,7 +17,7 @@ shipper (below).
 
 | Script | What it did | Now |
 |---|---|---|
-| `01-create-container.sh` | base pkgs, `claude` user, ssh key, Claude Code | baked → kalmia `forge/runner/substrate.sh` |
+| `01-create-container.sh` | base pkgs, Node 22 LTS, `claude` user, ssh key, Claude Code | baked → kalmia `forge/runner/substrate.sh` |
 | `02-install-runner.sh` | runner core + poller + cron | gitops-deployed (`bin/`/`systemd/`/`cron/`) |
 | `03-github-app.sh` | gh CLI + App token plumbing + git identity | gh + identity baked; `gh-token`/helper gitops-deployed |
 | `04-project-layer.sh` | project registry + project-aware run-job | gitops-deployed (`bin/`); registry lives on the NAS |
