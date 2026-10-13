@@ -17,7 +17,7 @@ shipper (below).
 
 | Script | What it did | Now |
 |---|---|---|
-| `01-create-container.sh` | base pkgs, Node 22 LTS, `claude` user, ssh key, Claude Code | baked → kalmia `forge/runner/substrate.sh` |
+| `01-create-container.sh` | base pkgs, Node 22 LTS, `claude` user, ssh key, Claude Code | baked → kalmia `forge/runner/substrate.sh` (Node 22 not yet in the image build: lentago/kalmia#156; the reference step here is what the running workers got by hand on 2026-10-13) |
 | `02-install-runner.sh` | runner core + poller + cron | gitops-deployed (`bin/`/`systemd/`/`cron/`) |
 | `03-github-app.sh` | gh CLI + App token plumbing + git identity | gh + identity baked; `gh-token`/helper gitops-deployed |
 | `04-project-layer.sh` | project registry + project-aware run-job | gitops-deployed (`bin/`); registry lives on the NAS |

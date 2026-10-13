@@ -310,9 +310,13 @@ kernel — no dependency on cross-client SMB rename semantics. Each worker heart
 stale (>90s) and requeues them once (`.retry`), then fails them if stranded again.
 At-least-once delivery — see Caveats for the idempotency boundary.
 
-Workers run **Node 22 LTS** (pinned in `provision/01-create-container.sh`; the old
-default, 18.20, is below what Astro 7 requires, and the 2026-10-12 monarda and
-2026-10-13 uvularia jobs had to switch versions by hand). There is no per-project
+The fleet's Node is **22 LTS**: the 18.20 the runner image shipped is below what
+Astro 7 requires, and the 2026-10-12 monarda and 2026-10-13 uvularia jobs had to switch
+versions by hand (#140). The five running workers were brought to 22 by hand on
+2026-10-13 with the step in `provision/01-create-container.sh`; the image build that
+makes a *rebuilt* worker start on 22 is kalmia's `forge/runner/substrate.sh`, tracked in
+[lentago/kalmia#156](https://github.com/lentago/kalmia/issues/156). Until that lands, a
+rebuilt worker starts on 18 and needs the same step run once. There is no per-project
 version switching: a project that needs a different Node says so in its own `CLAUDE.md`.
 
 Terraform in this repo owns exactly the five `claude-runner` LXCs in the `claytonia`
