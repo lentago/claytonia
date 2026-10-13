@@ -35,7 +35,8 @@ bats --print-output-on-failure test/
   idle / busy / inbox depth from fake `workers/*.alive` + `processing/*.owner`), a
   stalled listing staying bounded, the default and explicit `submitter`, the capacity
   guard warning, and `-w` (never blocks without a terminal; waits then queues, or
-  times out and queues, under a `script` pty). Also the overlap check (#22): an open
+  times out and queues, under a `script` pty; `-W` / `CLAUDE_SUBMIT_WAIT_UNATTENDED=1`
+  wait and queue with no terminal, and `-W` with `-f` is refused). Also the overlap check (#22): an open
   fleet PR (with its capped path list) and same-project waiting/in-flight specs are
   named while the job still queues, Dependabot PRs and other projects are not, a quiet
   project prints nothing, ad-hoc and `-f` jobs make no `gh` call, and a failing or hung
