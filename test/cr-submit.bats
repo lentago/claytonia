@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 #
 # cr-submit admission control (#21): the fleet occupancy summary, the submitter
-# tag, and the soft capacity guard (+ -w); and the dispatch-time overlap check (#22),
+# tag, and the soft capacity guard (+ -w/-W); and the dispatch-time overlap check (#22),
 # against the stub gh in test/stubs. Drives the real bin/cr-submit against
 # the tmpfs JOBS_ROOT from test_helper, with fake workers/*.alive heartbeats and
 # processing/*.owner claims standing in for the fleet.
@@ -216,6 +216,67 @@ _on_tty() { script -qec "$*" /dev/null </dev/null; }
   [ "$status" -eq 0 ]
   [[ "$output" == *"no free worker after 2s; queueing anyway"* ]]
   [ -n "$(queued_spec)" ]
+}
+
+@test "guard: -W waits without a terminal for a free worker, then queues" {
+  alive w1; claim R1 w1 '{"prompt":"x"}'
+  export CLAUDE_SUBMIT_WAIT_POLL=1 CLAUDE_SUBMIT_WAIT_TIMEOUT=30
+  ( sleep 2; rm -f "$JOBS_ROOT/processing/R1.owner"; touch "$JOBS_ROOT/workers/w1.alive" ) &
+  run timeout 25 "$REPO_ROOT/bin/cr-submit" -W "a" </dev/null
+  wait
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"waiting up to 30s for a free worker"* ]]
+  [[ "$output" == *"a worker is free"* ]]
+  [[ "$output" != *"ignored"* ]]
+  [[ "$output" != *"queueing anyway"* ]]
+  [ -n "$(queued_spec)" ]
+}
+
+@test "guard: --wait-unattended gives up after its timeout and queues anyway" {
+  alive w1; claim R1 w1 '{"prompt":"x"}'
+  export CLAUDE_SUBMIT_WAIT_POLL=1 CLAUDE_SUBMIT_WAIT_TIMEOUT=2
+  run timeout 20 "$REPO_ROOT/bin/cr-submit" --wait-unattended "a" </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no free worker after 2s; queueing anyway"* ]]
+  [ -n "$(queued_spec)" ]
+}
+
+@test "guard: CLAUDE_SUBMIT_WAIT_UNATTENDED=1 waits without a terminal and without a flag" {
+  alive w1; claim R1 w1 '{"prompt":"x"}'
+  export CLAUDE_SUBMIT_WAIT_UNATTENDED=1 CLAUDE_SUBMIT_WAIT_POLL=1 CLAUDE_SUBMIT_WAIT_TIMEOUT=30
+  ( sleep 2; rm -f "$JOBS_ROOT/processing/R1.owner"; touch "$JOBS_ROOT/workers/w1.alive" ) &
+  run timeout 25 "$REPO_ROOT/bin/cr-submit" "a" </dev/null
+  wait
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"waiting up to 30s for a free worker"* ]]
+  [[ "$output" == *"a worker is free"* ]]
+  [ -n "$(queued_spec)" ]
+}
+
+@test "guard: without the opt-in, an env value other than 1 changes nothing" {
+  alive w1; claim R1 w1 '{"prompt":"x"}'
+  export CLAUDE_SUBMIT_WAIT_UNATTENDED=0 CLAUDE_SUBMIT_WAIT_POLL=60
+  SECONDS=0
+  run timeout 20 "$REPO_ROOT/bin/cr-submit" -w "a" </dev/null
+  [ "$status" -eq 0 ]
+  [ "$SECONDS" -lt 10 ]
+  [[ "$output" == *"-w ignored: stdin is not a terminal"* ]]
+}
+
+@test "-f with -W is refused; the env var does not make -f wait" {
+  alive w1; claim R1 w1 '{"prompt":"x"}'
+  printf '{"prompt":"cron"}\n' > "$TEST_TMP/spec.json"
+  run "$REPO_ROOT/bin/cr-submit" -W -f "$TEST_TMP/spec.json" </dev/null
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"-W can't be combined with -f"* ]]
+  [ -z "$(queued_spec)" ]
+  export CLAUDE_SUBMIT_WAIT_UNATTENDED=1 CLAUDE_SUBMIT_WAIT_POLL=60
+  SECONDS=0
+  run timeout 20 "$REPO_ROOT/bin/cr-submit" -f "$TEST_TMP/spec.json" </dev/null
+  [ "$status" -eq 0 ]
+  [ "$SECONDS" -lt 10 ]
+  [[ "$output" != *"waiting"* ]]
+  cmp "$TEST_TMP/spec.json" "$(queued_spec)"
 }
 
 # --- dispatch-time overlap check (#22) ---------------------------------------------

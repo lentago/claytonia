@@ -9,7 +9,9 @@
 # -o/--owner <tag> stamps the job's "submitter" (#21); default $CLAUDE_SESSION, else
 # <user>@<host>. Before queueing, a one-glance fleet occupancy summary goes to stderr
 # and a soft capacity guard warns when the job will only deepen the backlog;
-# -w/--wait holds the submit (bounded) until a worker is free instead.
+# -w/--wait holds the submit (bounded) until a worker is free instead, but only at a
+# terminal. -W/--wait-unattended (or CLAUDE_SUBMIT_WAIT_UNATTENDED=1, exported once by
+# an agent session) opts a caller without a terminal in to the same bounded wait (#143).
 # For a project job (-p) it also warns (#22) when that project already has an open
 # fleet PR or a waiting/in-flight job, naming each one and the paths it touches, so
 # the submitter can keep one writer per file or panel. Warn only; never blocks.
@@ -36,9 +38,9 @@ stdin_tty=0; [ -t 0 ] && stdin_tty=1
 usage() {
   cat <<'EOF'
 Usage:
-  cr-submit [-m <model>] [-o <tag>] [-w] "prompt"
+  cr-submit [-m <model>] [-o <tag>] [-w|-W] "prompt"
   echo "prompt" | cr-submit [-m <model>] [-o <tag>]
-  cr-submit [-m <model>] [-i <N>] [-o <tag>] [-w] -p <project> "task"
+  cr-submit [-m <model>] [-i <N>] [-o <tag>] [-w|-W] -p <project> "task"
   cr-submit -f spec.json
 
 Options:
@@ -50,6 +52,9 @@ Options:
                 (default: $CLAUDE_SESSION, else <user>@<host>)
   -w, --wait    if no worker is free, wait for one (up to $CLAUDE_SUBMIT_WAIT_TIMEOUT s,
                 default 1800) before queueing; only when stdin is a terminal
+  -W, --wait-unattended
+                like -w, but also without a terminal (agents, pipes); same bounds.
+                CLAUDE_SUBMIT_WAIT_UNATTENDED=1 is equivalent. Refused with -f
   -f spec.json  queue a verbatim copy of an existing spec (original kept; used by cron)
   -h, --help    show this help and exit
 EOF
@@ -241,6 +246,8 @@ project=""
 issue=""
 submitter=""
 wait=0
+unattended=0   # -W / CLAUDE_SUBMIT_WAIT_UNATTENDED=1: wait even when stdin is not a terminal
+wait_flag=0    # -W given as a flag (the env var is never refused with -f; -f just ignores it)
 
 while true; do
   case "${1:-}" in
@@ -256,6 +263,7 @@ while true; do
         case "$submitter" in *[![:space:]]*) ;; *) echo "cr-submit: -o needs a non-empty tag" >&2; exit 1 ;; esac
         case "$submitter" in *$'\n'*|*$'\r'*) echo "cr-submit: -o tag must be one line" >&2; exit 1 ;; esac ;;
     -w|--wait) wait=1; shift ;;
+    -W|--wait-unattended) wait_flag=1; shift ;;
     -p) project="${2:?usage: cr-submit [-m model] -p <project> \"task\"}"; shift 2 ;;
     -f) break ;;
     -*) echo "cr-submit: unknown option: ${1}" >&2; usage >&2; exit 1 ;;
@@ -274,6 +282,7 @@ fi
 # cron's path, so it stays exactly as it was: no occupancy read, no guard, no wait.
 if [ "${1:-}" = "-f" ]; then
   [ -z "$model" ] || echo "cr-submit: -m ignored with -f (the spec carries its own model)" >&2
+  [ "$wait_flag" = 0 ] || { echo "cr-submit: -W can't be combined with -f (the copy path never waits)" >&2; exit 1; }
   [ "$wait" = 0 ] || echo "cr-submit: -w ignored with -f (the copy path never waits)" >&2
   # A silently dropped -i would comment on the wrong issue (or none); refuse instead.
   [ -z "$issue" ] || { echo "cr-submit: -i can't be combined with -f (the spec is copied verbatim; set \"issue\" in it)" >&2; exit 1; }
@@ -292,6 +301,8 @@ fi
 task="$*"; [ -n "$task" ] || task="$(cat)"
 [ -n "${task// /}" ] || { echo "cr-submit: empty task" >&2; exit 1; }
 [ -n "$submitter" ] || submitter="$(default_submitter)"
+# The opt-in implies waiting; it only lifts the terminal requirement below.
+if [ "$wait_flag" = 1 ] || [ "${CLAUDE_SUBMIT_WAIT_UNATTENDED:-}" = 1 ]; then unattended=1; wait=1; fi
 
 # Overlap first: it is "what's already writing to this project" and its gh calls can
 # take up to OVERLAP_TIMEOUT, so the occupancy read (which feeds the guard and -w)
@@ -310,13 +321,14 @@ if [ "$occ_ok" = 1 ] && guard_trips; then
   else
     _why="inbox/ already holds $OCC_WAIT waiting job(s) for $OCC_ALIVE alive worker(s)"
   fi
-  if [ "$wait" = 1 ] && [ "$stdin_tty" = 0 ]; then
-    # Unattended callers (cron, pipes, agents) must never hang on the guard.
+  if [ "$wait" = 1 ] && [ "$stdin_tty" = 0 ] && [ "$unattended" = 0 ]; then
+    # By default unattended callers (cron, pipes, agents) must never hang on the guard;
+    # -W / CLAUDE_SUBMIT_WAIT_UNATTENDED=1 is the explicit, still-bounded opt-in.
     echo "cr-submit: -w ignored: stdin is not a terminal, so cr-submit will not block" >&2
     wait=0
   fi
   if [ "$wait" = 0 ]; then
-    echo "cr-submit: warning: $_why; this job deepens the backlog (queued anyway; -w waits for a free worker)" >&2
+    echo "cr-submit: warning: $_why; this job deepens the backlog (queued anyway; -w waits for a free worker, -W also without a terminal)" >&2
   else
     echo "cr-submit: $_why; waiting up to ${WAIT_TIMEOUT}s for a free worker (Ctrl-C aborts; nothing is queued yet)" >&2
     _deadline=$(( $(date -u +%s) + WAIT_TIMEOUT ))

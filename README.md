@@ -126,6 +126,7 @@ cr-submit -m opus -p site-icecreamtofightwith-com "big refactor" # override the 
 cr-submit -i 130 -p claytonia "work this issue"     # name the target issue explicitly (see below)
 cr-submit -o batch-7 -p claytonia "batch chunk 3"    # tag who submitted it (default below)
 cr-submit -w -p claytonia "run when a worker frees up" # at a terminal: wait for a free worker first
+cr-submit -W -p claytonia "fan-out chunk"            # same wait without a terminal (agents; bounded)
 cr-submit -f /srv/jobs/scheduled/daily.json        # queue a copy of a saved spec (cron uses this)
 ```
 
@@ -195,7 +196,16 @@ seconds (default 15) until the guard clears, then queues. After
 `CLAUDE_SUBMIT_WAIT_TIMEOUT` seconds (default 1800) it queues anyway with a warning.
 The guard never prompts. `-w` only waits when stdin is a terminal. Piped, cron, and
 agent callers get the warning and an immediate queue, and `-f` skips the check
-entirely. The account-level session quota (the limit that failed the eleven-job batch of
+entirely.
+
+**Waiting without a terminal** (#143). An unattended caller that should hold back
+rather than deepen the backlog, typically an agent session fanning out jobs, can opt
+in with `-W`/`--wait-unattended` or by exporting `CLAUDE_SUBMIT_WAIT_UNATTENDED=1`
+once; the two are equivalent and imply `-w`. The wait is exactly as bounded as `-w`:
+the same `CLAUDE_SUBMIT_WAIT_POLL` interval, queueing anyway after
+`CLAUDE_SUBMIT_WAIT_TIMEOUT`, and Ctrl-C aborts with nothing queued. Without the opt-in
+nothing changes, and `-f` still never waits (`-W` with `-f` is refused, like `-i` and
+`-o`; the environment variable is simply ignored there). The account-level session quota (the limit that failed the eleven-job batch of
 2026-07-08, recorded in [#21's 2026-08-26 comment](https://github.com/lentago/claytonia/issues/21#issuecomment-5431831307)) is not visible from the queue,
 so the guard does not try to detect it.
 
