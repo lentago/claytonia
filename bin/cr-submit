@@ -10,6 +10,9 @@
 # <user>@<host>. Before queueing, a one-glance fleet occupancy summary goes to stderr
 # and a soft capacity guard warns when the job will only deepen the backlog;
 # -w/--wait holds the submit (bounded) until a worker is free instead.
+# For a project job (-p) it also warns (#22) when that project already has an open
+# fleet PR or a waiting/in-flight job, naming each one and the paths it touches, so
+# the submitter can keep one writer per file or panel. Warn only; never blocks.
 set -euo pipefail
 JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
 export JOBS_ROOT   # the occupancy probe re-runs this script and must see the same root
@@ -20,6 +23,13 @@ HEARTBEAT_STALE="$(_posint "${CLAUDE_HEARTBEAT_STALE:-}" 90)"     # same name/de
 PROBE_TIMEOUT="$(_posint "${CLAUDE_SUBMIT_PROBE_TIMEOUT:-}" 5)"   # hard cap on the occupancy read; a stalled CIFS listing must not hold the submit
 WAIT_TIMEOUT="$(_posint "${CLAUDE_SUBMIT_WAIT_TIMEOUT:-}" 1800)"  # -w gives up (and queues anyway) after this many seconds
 WAIT_POLL="$(_posint "${CLAUDE_SUBMIT_WAIT_POLL:-}" 15)"          # -w re-reads occupancy this often
+OVERLAP_TIMEOUT="$(_posint "${CLAUDE_SUBMIT_OVERLAP_TIMEOUT:-}" 10)"  # hard cap on the whole overlap check (share scan + every gh call)
+# The fleet's GitHub App as `gh pr list --author` spells it. Filtering by author keeps
+# human and Dependabot PRs out: only fleet-written branches are lanes the fleet owns.
+FLEET_AUTHOR="${CLAUDE_SUBMIT_FLEET_AUTHOR:-app/lentago-claude-runner}"
+OVERLAP_MAX_PRS=20     # open fleet PRs listed per project; more than this is its own problem
+OVERLAP_MAX_PATHS=15   # paths shown per PR, then "(+N more)"; enough to spot a shared file
+US=$'\x1f'            # field separator for the internal --overlap lines; never in a title or path
 # Captured before anything reads stdin: -w may only block a human at a terminal.
 stdin_tty=0; [ -t 0 ] && stdin_tty=1
 
@@ -45,6 +55,19 @@ Options:
 EOF
 }
 
+# queue_name_ok <basename> — false for what process-inbox never claims (the
+# write-then-rename halves, dotfiles, editor swaps, claim records).
+queue_name_ok() { case "$1" in .*|*.partial|*.tmp|*.swp|*.owner) return 1 ;; esac; }
+
+# claimed_is_json <runid> — is processing/<runid> a JSON spec? The claim renames the
+# file to its bare runid, so the original name (origname= in the .owner) is what tells;
+# a missing origname is treated as JSON and left to jq. Keeps text prompts unparsed.
+claimed_is_json() {
+  case "$(sed -n 's/^origname=//p' "$JOBS_ROOT/processing/$1.owner" 2>/dev/null)" in
+    *.json|'') return 0 ;; *) return 1 ;;
+  esac
+}
+
 # probe — read fleet occupancy from the queue's own files, the way process-inbox
 # does (workers/*.alive heartbeats, processing/*.owner claims, inbox/ entries).
 # Prints "<alive> <idle> <waiting>" on line 1, then the human summary lines.
@@ -53,7 +76,7 @@ EOF
 probe() {
   set +e   # best-effort: an odd entry is skipped, never fatal
   shopt -s nullglob
-  local now f host age of runid owner orig info proj sub n_alive=0 n_idle=0 n_busy=0 n_wait=0 busy_lines=""
+  local now f host age of runid owner info proj sub n_alive=0 n_idle=0 n_busy=0 n_wait=0 busy_lines=""
   local -A alive=() busy=()
   now="$(date -u +%s)"
   for f in "$JOBS_ROOT"/workers/*.alive; do
@@ -70,23 +93,20 @@ probe() {
     { [ -n "$owner" ] && [ -n "${alive[$owner]:-}" ]; } || continue
     busy[$owner]=1; n_busy=$((n_busy + 1))
     # Project (and submitter) come from the claimed spec when it is JSON; a plain
-    # text job has neither. origname= gates the read so text prompts aren't parsed.
+    # text job has neither.
     proj="-"; sub=""
-    orig="$(sed -n 's/^origname=//p' "$of" 2>/dev/null)"
-    case "$orig" in
-      *.json|'')
-        info="$(jq -r 'if type == "object" then [(.project // "-"), (.submitter // "")] | @tsv else empty end' \
-          "$JOBS_ROOT/processing/$runid" 2>/dev/null)"
-        [ -n "$info" ] && IFS=$'\t' read -r proj sub <<<"$info"
-        ;;
-    esac
+    if claimed_is_json "$runid"; then
+      info="$(jq -r 'if type == "object" then [(.project // "-"), (.submitter // "")] | @tsv else empty end' \
+        "$JOBS_ROOT/processing/$runid" 2>/dev/null)"
+      [ -n "$info" ] && IFS=$'\t' read -r proj sub <<<"$info"
+    fi
     busy_lines+="  busy ${owner}: project=${proj:--} runid=${runid}${sub:+ submitter=$sub}"$'\n'
   done
   for host in "${!alive[@]}"; do [ -n "${busy[$host]:-}" ] || n_idle=$((n_idle + 1)); done
   # Waiting = what process-inbox would claim next (same skip list).
   for f in "$JOBS_ROOT"/inbox/*; do
     [ -f "$f" ] || continue
-    case "$(basename "$f")" in .*|*.partial|*.tmp|*.swp|*.owner) continue ;; esac
+    queue_name_ok "$(basename "$f")" || continue
     n_wait=$((n_wait + 1))
   done
   printf '%s %s %s\n' "$n_alive" "$n_idle" "$n_wait"
@@ -110,6 +130,96 @@ occupancy() {
     case "$n" in ''|*[!0-9]*) OCC_ALIVE=0; OCC_IDLE=0; OCC_WAIT=0; return 1 ;; esac
   done
   [ "${1:-}" = quiet ] || printf '%s\n' "${out#*$'\n'}" | sed 's/^/cr-submit: /' >&2
+}
+
+# overlap <project> — what else is writing to <project> right now (#22). Run only via
+# `--overlap` under `timeout` (see overlap_warn), so a stalled share or a slow gh
+# costs at most OVERLAP_TIMEOUT; timeout signals the whole process group, gh included.
+# Emits US-separated lines, flushed as found so a timeout still keeps what was read:
+#   job<US><text>              a waiting (inbox/) or in-flight (processing/) spec for it
+#   pr<US><n><US><branch><US><title>   an open PR by the fleet App
+#   files<US><n><US><paths>    that PR's changed paths (second pass, after every pr line)
+#   note<US><text>             why part of the check was skipped
+# The share is read first: it's cheap and needs no network. Globs only, never `ls -t`.
+overlap() {
+  set +e   # best-effort, like probe: an odd entry or a failed call is skipped
+  shopt -s nullglob
+  local project="$1" f base runid where info sub iss gist repo prs n paths
+  [ -n "$project" ] || return 0
+  for f in "$JOBS_ROOT"/processing/* "$JOBS_ROOT"/inbox/*; do
+    [ -f "$f" ] || continue
+    base="$(basename "$f")"
+    queue_name_ok "$base" || continue
+    case "$f" in
+      */processing/*)
+        runid="$base"
+        claimed_is_json "$runid" || continue
+        where="in flight: runid=$runid worker=$(sed -n 's/^owner=//p' "$f.owner" 2>/dev/null)"
+        where="${where% worker=}" ;;           # ownerless: the janitor's, but still not done
+      *)
+        case "$base" in *.json) ;; *) continue ;; esac   # text jobs carry no project
+        where="waiting: inbox/$base" ;;
+    esac
+    # A prompt excerpt stands in for paths: a queued job hasn't touched any yet.
+    info="$(jq -r --arg p "$project" '
+      if type == "object" and .project == $p then
+        [(.submitter // "" | tostring), (.issue // "" | tostring),
+         (.prompt // "" | tostring | gsub("\\s+"; " ") | .[0:80])] | join("\u001f")
+      else empty end' "$f" 2>/dev/null)"
+    [ -n "$info" ] || continue
+    IFS="$US" read -r sub iss gist <<<"$info"
+    printf 'job%s%s%s%s "%s"\n' "$US" "$where" "${sub:+ submitter=$sub}" "${iss:+ issue=#$iss}" "$gist"
+  done
+
+  repo="$(jq -r --arg p "$project" '.[$p].repo // empty' "$JOBS_ROOT/projects/registry.json" 2>/dev/null)"
+  [ -n "$repo" ] || { printf 'note%sproject %s is not in projects/registry.json; open fleet PRs not checked\n' "$US" "$project"; return 0; }
+  command -v gh >/dev/null 2>&1 || { printf 'note%sgh not found; open fleet PRs in %s not checked\n' "$US" "$repo"; return 0; }
+  # Uses whatever gh auth the submitter has; listing open PRs needs read access only.
+  if ! prs="$(gh pr list --repo "$repo" --author "$FLEET_AUTHOR" --state open \
+      --limit "$OVERLAP_MAX_PRS" --json number,headRefName,title,author 2>/dev/null)" \
+     || ! prs="$(printf '%s' "$prs" | jq -r '.[]
+          | select((.author.login // "") | test("dependabot") | not)
+          | [(.number | tostring), .headRefName, (.title | gsub("[\n\r\u001f]"; " "))] | join("\u001f")' 2>/dev/null)"; then
+    printf 'note%sgh pr list failed; open fleet PRs in %s not checked\n' "$US" "$repo"
+    return 0
+  fi
+  [ -n "$prs" ] || return 0
+  printf 'pr%s%s\n' "$US" "${prs//$'\n'/$'\n'pr$US}"
+  while IFS="$US" read -r n _; do
+    paths="$(gh api "repos/$repo/pulls/$n/files?per_page=100" 2>/dev/null | jq -r --argjson k "$OVERLAP_MAX_PATHS" '
+      map(.filename) as $f | ($f[0:$k] | join(", "))
+      + (if ($f | length) > $k then " (+\(($f | length) - $k) more)" else "" end)' 2>/dev/null)" \
+      || paths=""
+    printf 'files%s%s%s%s\n' "$US" "$n" "$US" "${paths:-(paths unavailable)}"
+  done <<<"$prs"
+}
+
+# overlap_warn <project> — run the bounded overlap read and, when the project already
+# has fleet work open or queued, print one warning naming each item to stderr. The
+# job is queued either way: whether the new job writes the same file or panel is the
+# submitter's call (README § Lane discipline). A slow or failed read is a note, never
+# a failure.
+overlap_warn() {
+  local project="$1" out rc=0 kind a b c n
+  local -a prs=() jobs=() notes=()
+  local -A head=() files=()
+  out="$(timeout -k 1 "$OVERLAP_TIMEOUT" "$BASH" "$0" --overlap "$project" 2>/dev/null)" || rc=$?
+  while IFS="$US" read -r kind a b c; do
+    case "$kind" in
+      job)   jobs+=("$a") ;;
+      pr)    prs+=("$a"); head[$a]="PR #$a ($b) \"$c\"" ;;
+      files) files[$a]="$b" ;;
+      note)  notes+=("$a") ;;
+    esac
+  done <<<"$out"
+  [ "$rc" -eq 0 ] || notes+=("check incomplete (no full answer within ${OVERLAP_TIMEOUT}s); what was read is shown")
+  if [ "${#prs[@]}" -gt 0 ] || [ "${#jobs[@]}" -gt 0 ]; then
+    echo "cr-submit: warning: project $project already has fleet work open or queued; check this job won't write the same file or panel (one writer at a time; queued anyway):" >&2
+    for n in "${prs[@]}"; do echo "cr-submit:   ${head[$n]} touches: ${files[$n]:-(paths unavailable)}" >&2; done
+    for a in "${jobs[@]}"; do echo "cr-submit:   $a" >&2; done
+  fi
+  for a in "${notes[@]}"; do echo "cr-submit: overlap: $a" >&2; done
+  return 0
 }
 
 # The soft guard trips when the new job can't start now: no alive worker is idle,
@@ -136,6 +246,7 @@ while true; do
   case "${1:-}" in
     -h|--help) usage; exit 0 ;;
     --probe) probe; exit 0 ;;   # internal: the bounded occupancy read (see occupancy())
+    --overlap) overlap "${2:-}"; exit 0 ;;   # internal: the bounded overlap read (see overlap_warn())
     -m) model="${2:?usage: cr-submit -m <model> ...}"; shift 2 ;;
     -i) issue="${2:?usage: cr-submit -i <issue-number> ...}"; shift 2
         case "$issue" in ''|*[!0-9]*|0*) echo "cr-submit: -i needs a positive integer" >&2; exit 1 ;; esac ;;
@@ -185,7 +296,11 @@ task="$*"; [ -n "$task" ] || task="$(cat)"
 # Occupancy + soft capacity guard. Advisory only: it warns and (with -w, at a
 # terminal) waits, but never refuses a job. Account-level session quota is not
 # visible from the queue, so it is deliberately not guessed at here.
-if occupancy && guard_trips; then
+occ_ok=0; occupancy && occ_ok=1
+# Overlap sits beside the occupancy summary: both are "what's already running"
+# before this job joins it. Project jobs only; ad-hoc jobs have no repo to collide in.
+[ -z "$project" ] || overlap_warn "$project"
+if [ "$occ_ok" = 1 ] && guard_trips; then
   if [ "$OCC_ALIVE" -eq 0 ]; then
     _why="no worker is alive"
   elif [ "$OCC_IDLE" -eq 0 ]; then
@@ -217,6 +332,7 @@ if occupancy && guard_trips; then
   fi
   unset _why _deadline
 fi
+unset occ_ok
 
 # Always the JSON form now: a plain-text prompt can't carry the submitter field.
 # (run-job still accepts hand-dropped .txt/.md jobs; they just have no submitter.)

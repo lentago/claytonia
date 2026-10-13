@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 #
 # cr-submit admission control (#21): the fleet occupancy summary, the submitter
-# tag, and the soft capacity guard (+ -w). Drives the real bin/cr-submit against
+# tag, and the soft capacity guard (+ -w); and the dispatch-time overlap check (#22),
+# against the stub gh in test/stubs. Drives the real bin/cr-submit against
 # the tmpfs JOBS_ROOT from test_helper, with fake workers/*.alive heartbeats and
 # processing/*.owner claims standing in for the fleet.
 
@@ -36,6 +37,9 @@ setup() {
   mkdir -p "$JOBS_ROOT"/{inbox,processing,done,failed,logs,workers}
   unset CLAUDE_SESSION
   touch -d '-1 min' "$TEST_TMP/mark"
+  # The stub gh, never the real one: the overlap check calls gh for project jobs.
+  export PATH="$STUBS_DIR:$PATH"
+  export FAKE_GH_LOG="$TEST_TMP/gh.log"; : > "$FAKE_GH_LOG"
 }
 
 # --- occupancy printout -------------------------------------------------------
@@ -211,5 +215,125 @@ _on_tty() { script -qec "$*" /dev/null </dev/null; }
   run _on_tty "'$REPO_ROOT/bin/cr-submit' -w 'a'"
   [ "$status" -eq 0 ]
   [[ "$output" == *"no free worker after 2s; queueing anyway"* ]]
+  [ -n "$(queued_spec)" ]
+}
+
+# --- dispatch-time overlap check (#22) ---------------------------------------------
+
+# Register project "proj" -> acme/proj and have the stub gh answer `pr list` with
+# the given JSON array; FAKE_GH_FILES_DIR/<n>.json answers pulls/<n>/files.
+fleet_prs() { # <pr-list-json>
+  mkdir -p "$JOBS_ROOT/projects" "$TEST_TMP/files"
+  printf '{"proj":{"repo":"acme/proj","default_branch":"main"},"other":{"repo":"acme/other"}}\n' \
+    > "$JOBS_ROOT/projects/registry.json"
+  printf '%s\n' "$1" > "$TEST_TMP/prs.json"
+  export FAKE_GH_PRS="$TEST_TMP/prs.json" FAKE_GH_FILES_DIR="$TEST_TMP/files"
+}
+pr_files() { # <n> <path>...
+  local n="$1"; shift
+  printf '%s\n' "$@" | jq -R '{filename: .}' | jq -s . > "$TEST_TMP/files/$n.json"
+}
+FLEET_PR='{"number":88,"headRefName":"agent/rekey-runners-panel","title":"Rekey Runners underway panel","author":{"login":"app/lentago-claude-runner"}}'
+BOT_PR='{"number":90,"headRefName":"dependabot/x","title":"Bump x","author":{"login":"app/dependabot"}}'
+
+@test "overlap: names the open fleet PR and its paths, plus same-project jobs, and still queues" {
+  alive w1; alive w2
+  fleet_prs "[$FLEET_PR,$BOT_PR]"
+  pr_files 88 dashboards/fleet.json README.md
+  pr_files 90 go.mod
+  claim R1 w1 '{"prompt":"fix the\npanel","project":"proj","submitter":"alice@laptop","issue":7}'
+  claim R2 w2 '{"prompt":"unrelated","project":"other","submitter":"bob"}'
+  printf '{"prompt":"queued one","project":"proj","submitter":"carol"}\n' > "$JOBS_ROOT/inbox/q1.json"
+  printf '{"prompt":"half","project":"proj"}\n' > "$JOBS_ROOT/inbox/q2.json.partial"
+
+  run "$REPO_ROOT/bin/cr-submit" -p proj "edit the panel" </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"warning: project proj already has fleet work open or queued"* ]]
+  [[ "$output" == *'PR #88 (agent/rekey-runners-panel) "Rekey Runners underway panel" touches: dashboards/fleet.json, README.md'* ]]
+  [[ "$output" == *'in flight: runid=R1 worker=w1 submitter=alice@laptop issue=#7 "fix the panel"'* ]]
+  [[ "$output" == *'waiting: inbox/q1.json submitter=carol "queued one"'* ]]
+  [[ "$output" != *"#90"* ]]          # Dependabot is not a fleet writer
+  [[ "$output" != *"go.mod"* ]]
+  [[ "$output" != *"runid=R2 worker"* ]]   # another project's job is no overlap
+  [[ "$output" != *"q2"* ]]           # nor a half-written spec
+  grep -q -- '--author app/lentago-claude-runner' "$FAKE_GH_LOG"
+  grep -q -- '--repo acme/proj' "$FAKE_GH_LOG"
+  [ "$(jq -r .project "$(queued_spec)")" = proj ]
+}
+
+@test "overlap: a long file list is capped, and an unreadable one says so" {
+  alive w1
+  fleet_prs "[$FLEET_PR,${FLEET_PR//88/89}]"
+  pr_files 88 $(seq -f 'f%g' 1 18)
+  run "$REPO_ROOT/bin/cr-submit" -p proj "x" </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"f15 (+3 more)"* ]]
+  [[ "$output" != *"f16"* ]]
+  [[ "$output" == *"PR #89 "*"touches: (paths unavailable)"* ]]
+  [ -n "$(queued_spec)" ]
+}
+
+@test "overlap: no open fleet PR and no in-flight job -> no warning" {
+  alive w1; alive w2
+  fleet_prs "[$BOT_PR]"
+  claim R2 w2 '{"prompt":"unrelated","project":"other"}'
+  run "$REPO_ROOT/bin/cr-submit" -p proj "x" </dev/null
+  [ "$status" -eq 0 ]
+  grep -q '^pr list' "$FAKE_GH_LOG"   # the check ran ...
+  [[ "$output" != *"warning"* ]]      # ... and found nothing to say
+  [[ "$output" != *"overlap"* ]]
+  [ -n "$(queued_spec)" ]
+}
+
+@test "overlap: ad-hoc jobs and -f (cron) skip the check entirely" {
+  alive w1
+  fleet_prs "[$FLEET_PR]"; pr_files 88 a.txt
+  claim R1 w1 '{"prompt":"x","project":"proj"}'
+  run "$REPO_ROOT/bin/cr-submit" "ad-hoc" </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"fleet work"* ]]
+  printf '{"prompt":"cron","project":"proj"}\n' > "$TEST_TMP/spec.json"
+  run "$REPO_ROOT/bin/cr-submit" -f "$TEST_TMP/spec.json" </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"fleet work"* ]]
+  [[ "$output" != *"overlap"* ]]
+  [ ! -s "$FAKE_GH_LOG" ]
+  [ "$(ls "$JOBS_ROOT"/inbox/*.json | wc -l)" -eq 2 ]
+}
+
+@test "overlap: a gh failure is a note, never a failed submit" {
+  alive w1
+  fleet_prs "[$FLEET_PR]"
+  export FAKE_GH_FAIL=1
+  claim R1 w1 '{"prompt":"x","project":"proj"}'
+  run "$REPO_ROOT/bin/cr-submit" -p proj "x" </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"overlap: gh pr list failed; open fleet PRs in acme/proj not checked"* ]]
+  [[ "$output" == *"in flight: runid=R1 worker=w1"* ]]   # the share half still reports
+  [[ "$output" != *"PR #88"* ]]
+  [ -n "$(queued_spec)" ]
+}
+
+@test "overlap: a hung gh is bounded; what was read is still shown and the job queues" {
+  alive w1
+  fleet_prs "[$FLEET_PR]"
+  export FAKE_GH_SLEEP=30 CLAUDE_SUBMIT_OVERLAP_TIMEOUT=2
+  printf '{"prompt":"queued","project":"proj"}\n' > "$JOBS_ROOT/inbox/q1.json"
+  SECONDS=0
+  run "$REPO_ROOT/bin/cr-submit" -p proj "x" </dev/null
+  [ "$status" -eq 0 ]
+  [ "$SECONDS" -lt 10 ]
+  [[ "$output" == *"overlap: check incomplete (no full answer within 2s)"* ]]
+  [[ "$output" == *"waiting: inbox/q1.json"* ]]
+  [ -n "$(queued_spec)" ]
+}
+
+@test "overlap: a project missing from the registry is a note, not a gh call" {
+  alive w1
+  run "$REPO_ROOT/bin/cr-submit" -p nosuch "x" </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"overlap: project nosuch is not in projects/registry.json"* ]]
+  [[ "$output" != *"warning"* ]]
+  [ ! -s "$FAKE_GH_LOG" ]
   [ -n "$(queued_spec)" ]
 }
