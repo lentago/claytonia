@@ -199,6 +199,28 @@ entirely. The account-level session quota (the limit that failed the eleven-job 
 2026-07-08, recorded in [#21's 2026-08-26 comment](https://github.com/lentago/claytonia/issues/21#issuecomment-5431831307)) is not visible from the queue,
 so the guard does not try to detect it.
 
+**Overlap check** (#22). For a project job (`-p`), `cr-submit` also looks for fleet
+work already aimed at the same project, and warns on stderr before queueing:
+
+```
+cr-submit: warning: project claytonia already has fleet work open or queued; check this job won't write the same file or panel (one writer at a time; queued anyway):
+cr-submit:   PR #88 (agent/rekey-runners-panel) "Rekey Runners underway panel" touches: dashboards/fleet.json, README.md
+cr-submit:   in flight: runid=20261013T202825Z-… worker=claude-runner-1 submitter=alice@laptop issue=#7 "fix the panel …"
+cr-submit:   waiting: inbox/20261013T203001Z-claytonia-….json submitter=batch-7 "…"
+```
+
+It lists open PRs in the project's repo authored by the fleet's GitHub App
+(`gh pr list --author app/lentago-claude-runner`; Dependabot and human PRs are not fleet
+lanes), each with up to 15 changed paths from the `pulls/<n>/files` API, and the JSON
+specs in `inbox/` and `processing/` whose `project` matches, with runid, worker,
+submitter, issue and a prompt excerpt (a queued job has touched no paths yet). Whether
+the new job would write the same file or panel is the submitter's call, so it only
+warns; the job is queued either way. It is best effort: `gh` runs with the submitter's
+own auth, the share is read with globs only (never `ls -t`), and the whole check is
+capped at `CLAUDE_SUBMIT_OVERLAP_TIMEOUT` (default 10s). A `gh` failure, a timeout, or
+a project missing from the registry prints an `overlap:` note and the submit carries
+on. Ad-hoc jobs and `-f` (cron) skip it.
+
 **Every job is bounded** (#114) by three limits, resolved the same way as `model`
 (job spec → project registry → `runner.env` default):
 
@@ -223,6 +245,34 @@ workflow that wrote the same job files to the inbox (same spec + write-then-rena
 SSH). The reference deployment was torn down 2026-07-01; `cr-submit` and direct
 NAS-inbox writes are the standing dispatch paths. The directory is kept as a working
 recipe — see its README if a form front-end is ever wanted again.
+
+### Lane discipline: one writer per file or panel at a time
+
+Two writers on one file race, and the loser's work is thrown away. So:
+
+- **Don't dispatch a fleet job for work a local session is actively doing**, and
+  **don't start local work on a file an open fleet PR is touching**, until the first
+  change merges. The overlap check above shows what the fleet already has in flight;
+  `gh pr list --author app/lentago-claude-runner` shows the same from anywhere.
+- **Fleet PRs open up to date.** Just before `gh pr create`, a worker fetches and
+  rebases its branch onto the base branch (falling back to a merge, noted in the PR
+  body, when the rebase conflicts), so a PR does not open already behind `main`.
+- **Update before merging.** The human or session merging a fleet PR checks
+  `gh pr view <n> --json mergeStateStatus`; when it says `BEHIND`, run
+  `gh pr update-branch <n>` and let CI re-run before merging or arming auto-merge.
+  Workers never merge (ADR-0002), so this half is the merger's.
+
+Hard enforcement, blocking a merge while the branch is behind `main`, is the branch
+ruleset's "require branches to be up to date" setting. That ruleset is owned by
+lentago/.github's Terraform, not by this repo, and is not changed from here.
+
+Why: on 2026-06-19, fleet PRs [drosera#88](https://github.com/lentago/drosera/pull/88) and
+[drosera#92](https://github.com/lentago/drosera/pull/92) (the repo was still
+`homelab-observability`) both rekeyed the same "Runners underway" Grafana panel while a
+local session was assigned that panel too. The same day, fleet PR
+[#19](https://github.com/lentago/claytonia/pull/19) went `CONFLICTING` when
+[#17](https://github.com/lentago/claytonia/pull/17) landed after it branched, and was
+abandoned and redone from scratch as [#20](https://github.com/lentago/claytonia/pull/20).
 
 ## Projects (routing + context)
 

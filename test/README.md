@@ -35,7 +35,11 @@ bats --print-output-on-failure test/
   idle / busy / inbox depth from fake `workers/*.alive` + `processing/*.owner`), a
   stalled listing staying bounded, the default and explicit `submitter`, the capacity
   guard warning, and `-w` (never blocks without a terminal; waits then queues, or
-  times out and queues, under a `script` pty).
+  times out and queues, under a `script` pty). Also the overlap check (#22): an open
+  fleet PR (with its capped path list) and same-project waiting/in-flight specs are
+  named while the job still queues, Dependabot PRs and other projects are not, a quiet
+  project prints nothing, ad-hoc and `-f` jobs make no `gh` call, and a failing or hung
+  `gh` is a note, never a failed or delayed submit.
 - `test/cr-emit.bats` — `submitter` is a log-line field on job_started / job_running /
   job_complete and never a Loki label.
 - `test/cr-emit-alive.bats`, `test/issue-signal.bats` — liveness event; issue claim
@@ -52,8 +56,10 @@ value, so nothing here changes how a real worker behaves):
 - `CLAUDE_INBOX_LOCK` — a per-run flock path, never the prod singleton
 - `CLAUDE_BIN` — points at `test/stubs/claude`
 
-`test/stubs/` holds no-op / canned-output stand-ins for `claude`, `cr-emit`, and
-`systemd-cat`. The `cr-emit` stub appends its argv to `FAKE_CREMIT_LOG` when set.
+`test/stubs/` holds no-op / canned-output stand-ins for `claude`, `cr-emit`, `gh`,
+`gh-token`, and `systemd-cat`. The `gh` stub logs its argv to `FAKE_GH_LOG`; with
+`FAKE_GH_PRS` set, `gh pr list` prints that file and `gh api …/pulls/<n>/files` prints
+`FAKE_GH_FILES_DIR/<n>.json` (`FAKE_GH_FAIL` / `FAKE_GH_SLEEP` apply to both). The `cr-emit` stub appends its argv to `FAKE_CREMIT_LOG` when set.
 The fake `claude` picks its result from `FAKE_CLAUDE_MODE` (`ok` / `error` / `nonzero` / `turns` / `budget`) so a test can drive the done vs
 failed routing. A prompt containing `FAKE_HANG` makes it sleep `FAKE_CLAUDE_SLEEP`
 seconds first (to trip a timeout), and `FAKE_CLAUDE_ARGS` captures its argv.

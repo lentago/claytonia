@@ -41,6 +41,10 @@ to `main` changes production. Treat it that way.
 - **Secrets never enter this repo.** `token.env`, `gh-app.pem`, `*.smbcred`, `*.pem`
   are gitignored and live only on the workers. If you need a new secret, document where
   it lives on the box; don't commit it or an example with a real value.
+- **One writer per file or panel at a time.** Don't dispatch a fleet job for work a
+  local session is doing, or start local work on a file an open fleet PR touches, until
+  the first change merges; update a `BEHIND` PR before merging. See README § Submitting
+  a job → *Lane discipline*.
 - `etc/runner.env` is the source of truth for runtime config and is deployed verbatim —
   keep it non-secret.
 - The `bullpen-gitops.*` units are **bootstrap-only** (installed by `gitops/install.sh`),
