@@ -2,7 +2,11 @@
 # run-job <jobfile> — execute ONE Claude job headless and file its output.
 # Job = plain text (whole file is the prompt) OR a .json spec:
 #   {"prompt":"...", "project":"name", "model":"...", "cwd":"...",
-#    "max_turns":N, "issue":N, "max_budget_usd":N, "timeout_sec":N, "allowed_tools":"..."}
+#    "max_turns":N, "issue":N, "max_budget_usd":N, "timeout_sec":N, "allowed_tools":"...",
+#    "submitter":"..."}
+# "submitter" (#21, stamped by cr-submit) names who queued the job; it is recorded
+# in the .meta and carried on the metrics events. Distinct from processing/<runid>.owner,
+# which names the WORKER that claimed the job.
 # If "project" is set it is resolved via projects/registry.json: a CLEAN checkout
 # of the repo is prepared (repo CLAUDE.md applies), per-project memory is loaded,
 # and the agent is told to branch + open a PR (never merge).
@@ -54,7 +58,7 @@ started=%s
 origname=%s
 ' "$(hostname)" "$(date -u +%s)" "$base" > "$proc.owner" 2>/dev/null || true
 
-prompt=""; cwd="$DEF_CWD"; model=""; max_turns=""; max_budget=""; timeout_sec=""; allowed=""; project=""; spec_issue=""; spec_issue_set=0
+prompt=""; cwd="$DEF_CWD"; model=""; max_turns=""; max_budget=""; timeout_sec=""; allowed=""; project=""; spec_issue=""; spec_issue_set=0; submitter=""
 case "$base" in
   *.json)
     if ! jq -e . "$proc" >/dev/null 2>&1; then
@@ -71,6 +75,8 @@ case "$base" in
     max_budget="$(jq -r '.max_budget_usd // empty' "$proc")"
     timeout_sec="$(jq -r '.timeout_sec // empty' "$proc")"
     allowed="$(jq -r '.allowed_tools // empty' "$proc")"
+    # One line, no tabs: it lands in the key=value .meta and the Loki line as-is.
+    submitter="$(jq -r '.submitter // empty | tostring | gsub("[\n\r\t]"; " ")' "$proc")"
     # Presence, not value, makes the spec authoritative: "issue": null / "" / "x" means
     # "no issue" and must not fall back to parsing the prompt (#130).
     if jq -e 'has("issue")' "$proc" >/dev/null 2>&1; then
@@ -257,13 +263,13 @@ fi
 
 # notice, not info: claude-inbox.service sets LogLevelMax=notice (#118).
 echo "run-job START runid=$runid project=${project:-none} model=${model:-default} cwd=$cwd" | systemd-cat -t claude-runner -p notice
-cr-emit started "$runid" "${project:-}" "${model:-}" 2>/dev/null || true
+cr-emit started "$runid" "${project:-}" "${model:-}" "${submitter:-}" 2>/dev/null || true
 start=$(date -u +%s)
 # Heartbeat: mark this worker as underway in Loki (event=job_running) every 10s while
 # the job is in flight, so the "Runners underway" dashboard panel has an in-flight
 # signal (the job_complete event only lands at the end). One beat fires immediately so
 # even sub-10s jobs register. Best-effort; killed as soon as the job returns.
-( while :; do cr-emit running "$runid" "${project:-}" "${model:-}" 2>/dev/null; sleep 10; done ) &
+( while :; do cr-emit running "$runid" "${project:-}" "${model:-}" "${submitter:-}" 2>/dev/null; sleep 10; done ) &
 hb_pid=$!
 # Wall-clock bound: TERM at timeout_sec, KILL $KILL_AFTER s later. Without it a
 # wedged CLI holds this worker forever — its heartbeat stays fresh, so the reaper
@@ -347,6 +353,7 @@ fi
   echo "limit=${limit}"; echo "max_turns=${max_turns}"
   echo "max_budget_usd=${max_budget}"; echo "timeout_sec=${timeout_sec}"
   echo "claim_comment_id=${claim_id}"; echo "issue=${issue}"
+  echo "submitter=${submitter}"
   echo "finished=$(date -u +%FT%TZ)"
 } > "$meta"
 
