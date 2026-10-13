@@ -187,7 +187,7 @@ overlap() {
   printf 'pr%s%s\n' "$US" "${prs//$'\n'/$'\n'pr$US}"
   while IFS="$US" read -r n _; do
     paths="$(gh api "repos/$repo/pulls/$n/files?per_page=100" 2>/dev/null | jq -r --argjson k "$OVERLAP_MAX_PATHS" '
-      map(.filename) as $f | ($f[0:$k] | join(", "))
+      map(.filename | gsub("[\n\r\u001f]"; " ")) as $f | ($f[0:$k] | join(", "))
       + (if ($f | length) > $k then " (+\(($f | length) - $k) more)" else "" end)' 2>/dev/null)" \
       || paths=""
     printf 'files%s%s%s%s\n' "$US" "$n" "$US" "${paths:-(paths unavailable)}"

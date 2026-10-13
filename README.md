@@ -266,10 +266,13 @@ Hard enforcement, blocking a merge while the branch is behind `main`, is the bra
 ruleset's "require branches to be up to date" setting. That ruleset is owned by
 lentago/.github's Terraform, not by this repo, and is not changed from here.
 
-Why: on 2026-06-19, fleet PRs #88 and #92 in homelab-observability both rekeyed the same
-"Runners underway" Grafana panel while a local session was assigned that panel too. The
-same day, fleet PR #19 went `CONFLICTING` when #17 landed after it branched, and was
-abandoned and redone from scratch as #20.
+Why: on 2026-06-19, fleet PRs [drosera#88](https://github.com/lentago/drosera/pull/88) and
+[drosera#92](https://github.com/lentago/drosera/pull/92) (the repo was still
+`homelab-observability`) both rekeyed the same "Runners underway" Grafana panel while a
+local session was assigned that panel too. The same day, fleet PR
+[#19](https://github.com/lentago/claytonia/pull/19) went `CONFLICTING` when
+[#17](https://github.com/lentago/claytonia/pull/17) landed after it branched, and was
+abandoned and redone from scratch as [#20](https://github.com/lentago/claytonia/pull/20).
 
 ## Projects (routing + context)
 

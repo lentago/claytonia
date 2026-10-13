@@ -152,7 +152,7 @@ if [ -n "$project" ]; then
     # Branch freshness (#22): workers never merge (ADR-0002), so the fleet's half of
     # "rebase before merge" is to open the PR current with the base. main often moves
     # during a long job; a PR opened behind it is the #19->#20 clobber waiting to happen.
-    printf -- '- Immediately before `gh pr create`: run `git fetch origin` and rebase your branch onto `origin/%s` (then `git push --force-with-lease`), so the PR opens up to date even if `%s` moved during the job. If the rebase conflicts, `git rebase --abort`, merge `origin/%s` into your branch instead, resolve the conflicts, and say so in the PR body.\n' "$branch" "$branch" "$branch"
+    printf -- '- Immediately before `gh pr create`: run `git fetch origin` and rebase your branch onto `origin/%s` (then `git push --force-with-lease`), so the PR opens up to date even if `%s` moved during the job. If the rebase conflicts, `git rebase --abort`, merge `origin/%s` into your branch instead, resolve the conflicts, `git push`, and say so in the PR body.\n' "$branch" "$branch" "$branch"
     printf -- '- `gh` is pre-authenticated and `git push` is pre-credentialed. If a gh call returns an auth error, run: `gh-token | gh auth login --with-token`.\n'
     printf -- '- If (and only if) you learn something DURABLE about this project (a convention, gotcha, or build quirk), append ONE concise dated bullet to `%s`. Do not log routine task details.\n\n' "$memfile"
     printf '## Accumulated project memory\n\n'
