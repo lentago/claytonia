@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # cr-emit <runid>            — push the final job_complete event to Loki (reads .meta).
 #                              Builds the event from logs/<runid>.meta (+ .txt for a PR url).
-# cr-emit running <runid> [project] [model]
+# cr-emit running <runid> [project] [model] [submitter]
 #                            — push a lightweight job_running heartbeat (no .meta needed),
 #                              emitted by run-job every ~10s while a job is in flight so the
 #                              "Runners underway" dashboard panel has an in-flight signal.
-# cr-emit started <runid> [project] [model]
+# cr-emit started <runid> [project] [model] [submitter]
 #                            — push a one-shot job_started event at job pickup (no .meta needed),
 #                              so the fleet dashboard can draw task-start markers.
 # cr-emit alive
@@ -16,6 +16,9 @@
 # Low-cardinality fields -> Loki stream labels; full event -> the log line.
 # job_complete carries limit (timeout|budget|turns, or null) as a line field, not a
 # label — query it with `| json | limit != ""` on the existing stream.
+# job_started, job_running and job_complete carry submitter (#21: who queued the
+# job; "" when unknown) as a line field too — NEVER a label: it is per-session,
+# so as a label it would mint a new stream per submitter (cardinality).
 set -uo pipefail
 JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
 [ -f /opt/claude-runner/etc/runner.env ] && . /opt/claude-runner/etc/runner.env
@@ -39,13 +42,14 @@ fi
 
 # Heartbeat mode: emitted repeatedly while a job runs. Keep it cheap — no file reads.
 if [ "${1:-}" = running ]; then
-  runid="${2:?usage: cr-emit running <runid> [project] [model]}"
+  runid="${2:?usage: cr-emit running <runid> [project] [model] [submitter]}"
   project="${3:-none}"; [ -z "$project" ] && project="none"
   model="${4:-default}"; [ -z "$model" ] && model="default"
+  submitter="${5:-}"
   worker="$(hostname)"
   line="$(jq -cn --arg runid "$runid" --arg project "$project" \
-    --arg model "$model" --arg worker "$worker" \
-    '{event:"job_running", runid:$runid, project:$project, model:$model, worker:$worker}')"
+    --arg model "$model" --arg worker "$worker" --arg submitter "$submitter" \
+    '{event:"job_running", runid:$runid, project:$project, model:$model, worker:$worker, submitter:$submitter}')"
   labels="$(jq -cn --arg project "$project" --arg model "$model" --arg worker "$worker" \
     '{job:"claude_runner", service:"claude_runner", project:$project, model:$model, worker:$worker}')"
   loki_push "$labels" "$line" && exit 0 || { echo "cr-emit: heartbeat push failed" >&2; exit 1; }
@@ -53,19 +57,20 @@ fi
 
 # One-shot start marker: emitted once at job pickup. Keep it cheap — no file reads.
 if [ "${1:-}" = started ]; then
-  runid="${2:?usage: cr-emit started <runid> [project] [model]}"
+  runid="${2:?usage: cr-emit started <runid> [project] [model] [submitter]}"
   project="${3:-none}"; [ -z "$project" ] && project="none"
   model="${4:-default}"; [ -z "$model" ] && model="default"
+  submitter="${5:-}"
   worker="$(hostname)"
   line="$(jq -cn --arg runid "$runid" --arg project "$project" \
-    --arg model "$model" --arg worker "$worker" \
-    '{event:"job_started", runid:$runid, project:$project, model:$model, worker:$worker}')"
+    --arg model "$model" --arg worker "$worker" --arg submitter "$submitter" \
+    '{event:"job_started", runid:$runid, project:$project, model:$model, worker:$worker, submitter:$submitter}')"
   labels="$(jq -cn --arg project "$project" --arg model "$model" --arg worker "$worker" \
     '{job:"claude_runner", service:"claude_runner", project:$project, model:$model, worker:$worker}')"
   loki_push "$labels" "$line" && exit 0 || { echo "cr-emit: started push failed" >&2; exit 1; }
 fi
 
-runid="${1:?usage: cr-emit <runid> | cr-emit running <runid> [project] [model] | cr-emit started <runid> [project] [model]}"
+runid="${1:?usage: cr-emit <runid> | cr-emit running <runid> [project] [model] [submitter] | cr-emit started <runid> [project] [model] [submitter]}"
 meta="$JOBS_ROOT/logs/${runid}.meta"
 txt="$JOBS_ROOT/logs/${runid}.txt"
 [ -f "$meta" ] || { echo "cr-emit: no meta for $runid" >&2; exit 1; }
@@ -83,12 +88,12 @@ event="$(jq -cn \
   --arg exit "${M[exit]:-}" --arg dur "${M[duration_sec]:-}" \
   --arg cost "${M[cost_usd]:-}" --arg turns "${M[num_turns]:-}" \
   --arg pr "$pr_url" --arg worker "$worker" --arg fin "${M[finished]:-}" \
-  --arg limit "${M[limit]:-}" \
+  --arg limit "${M[limit]:-}" --arg submitter "${M[submitter]:-}" \
   '{event:"job_complete", runid:$runid, project:$project, repo:$repo, model:$model,
     status:$status, exit:($exit|tonumber? // null), duration_sec:($dur|tonumber? // null),
     cost_usd:($cost|tonumber? // 0), num_turns:($turns|tonumber? // null),
     limit:(if $limit == "" then null else $limit end),
-    pr_url:$pr, worker:$worker, finished:$fin}')"
+    pr_url:$pr, worker:$worker, finished:$fin, submitter:$submitter}')"
 
 labels="$(jq -cn --arg project "$project" --arg status "$status" \
   --arg model "${M[model]:-default}" --arg worker "$worker" \

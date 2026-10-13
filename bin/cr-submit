@@ -6,44 +6,152 @@
 # -i <N> names the job's target issue (written as "issue" in the spec; authoritative).
 # -m sets the job's model (opus|sonnet|haiku|fable or a full id); it wins over the
 # project/global defaults. Omit -m to use the project (or account) default.
+# -o/--owner <tag> stamps the job's "submitter" (#21); default $CLAUDE_SESSION, else
+# <user>@<host>. Before queueing, a one-glance fleet occupancy summary goes to stderr
+# and a soft capacity guard warns when the job will only deepen the backlog;
+# -w/--wait holds the submit (bounded) until a worker is free instead.
 set -euo pipefail
 JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
-ts="$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "$JOBS_ROOT/inbox"
+export JOBS_ROOT   # the occupancy probe re-runs this script and must see the same root
+# Tunables; a blank or non-positive-integer override falls back to the default
+# rather than break `timeout`/`sleep` mid-submit.
+_posint() { case "$1" in ''|*[!0-9]*|0) printf '%s' "$2" ;; *) printf '%s' "$1" ;; esac; }
+HEARTBEAT_STALE="$(_posint "${CLAUDE_HEARTBEAT_STALE:-}" 90)"     # same name/default as process-inbox: alive = .alive fresher than this
+PROBE_TIMEOUT="$(_posint "${CLAUDE_SUBMIT_PROBE_TIMEOUT:-}" 5)"   # hard cap on the occupancy read; a stalled CIFS listing must not hold the submit
+WAIT_TIMEOUT="$(_posint "${CLAUDE_SUBMIT_WAIT_TIMEOUT:-}" 1800)"  # -w gives up (and queues anyway) after this many seconds
+WAIT_POLL="$(_posint "${CLAUDE_SUBMIT_WAIT_POLL:-}" 15)"          # -w re-reads occupancy this often
+# Captured before anything reads stdin: -w may only block a human at a terminal.
+stdin_tty=0; [ -t 0 ] && stdin_tty=1
 
 usage() {
   cat <<'EOF'
 Usage:
-  cr-submit [-m <model>] "prompt"
-  echo "prompt" | cr-submit [-m <model>]
-  cr-submit [-m <model>] [-i <N>] -p <project> "task"
+  cr-submit [-m <model>] [-o <tag>] [-w] "prompt"
+  echo "prompt" | cr-submit [-m <model>] [-o <tag>]
+  cr-submit [-m <model>] [-i <N>] [-o <tag>] [-w] -p <project> "task"
   cr-submit -f spec.json
 
 Options:
   -m <model>    job model (opus|sonnet|haiku|fable or a full id); wins over project/global defaults
   -i <N>        target issue number (authoritative; the prompt is not parsed for it)
   -p <project>  project name (resolves repo/context/memory)
+  -o, --owner <tag>
+                submitter tag written as "submitter" in the spec
+                (default: $CLAUDE_SESSION, else <user>@<host>)
+  -w, --wait    if no worker is free, wait for one (up to $CLAUDE_SUBMIT_WAIT_TIMEOUT s,
+                default 1800) before queueing; only when stdin is a terminal
   -f spec.json  queue a verbatim copy of an existing spec (original kept; used by cron)
   -h, --help    show this help and exit
 EOF
 }
 
+# probe — read fleet occupancy from the queue's own files, the way process-inbox
+# does (workers/*.alive heartbeats, processing/*.owner claims, inbox/ entries).
+# Prints "<alive> <idle> <waiting>" on line 1, then the human summary lines.
+# Glob + stat only: never `ls -t` (it stalls on the CIFS share). Run only via
+# `--probe` under `timeout`, so a slow listing costs at most PROBE_TIMEOUT.
+probe() {
+  set +e   # best-effort: an odd entry is skipped, never fatal
+  shopt -s nullglob
+  local now f host age of runid owner orig info proj sub n_alive=0 n_idle=0 n_busy=0 n_wait=0 busy_lines=""
+  local -A alive=() busy=()
+  now="$(date -u +%s)"
+  for f in "$JOBS_ROOT"/workers/*.alive; do
+    age=$(( now - $(stat -c %Y "$f" 2>/dev/null || echo 0) ))
+    [ "$age" -le "$HEARTBEAT_STALE" ] || continue
+    host="$(basename "$f" .alive)"
+    alive[$host]=1; n_alive=$((n_alive + 1))
+  done
+  for of in "$JOBS_ROOT"/processing/*.owner; do
+    runid="$(basename "$of" .owner)"
+    [ -f "$JOBS_ROOT/processing/$runid" ] || continue      # stray owner; job already filed
+    owner="$(sed -n 's/^owner=//p' "$of" 2>/dev/null)"
+    # A claim held by a dead worker is the reaper's to requeue, not occupancy.
+    { [ -n "$owner" ] && [ -n "${alive[$owner]:-}" ]; } || continue
+    busy[$owner]=1; n_busy=$((n_busy + 1))
+    # Project (and submitter) come from the claimed spec when it is JSON; a plain
+    # text job has neither. origname= gates the read so text prompts aren't parsed.
+    proj="-"; sub=""
+    orig="$(sed -n 's/^origname=//p' "$of" 2>/dev/null)"
+    case "$orig" in
+      *.json|'')
+        info="$(jq -r 'if type == "object" then [(.project // "-"), (.submitter // "")] | @tsv else empty end' \
+          "$JOBS_ROOT/processing/$runid" 2>/dev/null)"
+        [ -n "$info" ] && IFS=$'\t' read -r proj sub <<<"$info"
+        ;;
+    esac
+    busy_lines+="  busy ${owner}: project=${proj:--} runid=${runid}${sub:+ submitter=$sub}"$'\n'
+  done
+  for host in "${!alive[@]}"; do [ -n "${busy[$host]:-}" ] || n_idle=$((n_idle + 1)); done
+  # Waiting = what process-inbox would claim next (same skip list).
+  for f in "$JOBS_ROOT"/inbox/*; do
+    [ -f "$f" ] || continue
+    case "$(basename "$f")" in .*|*.partial|*.tmp|*.swp|*.owner) continue ;; esac
+    n_wait=$((n_wait + 1))
+  done
+  printf '%s %s %s\n' "$n_alive" "$n_idle" "$n_wait"
+  printf 'fleet: %s alive, %s idle, %s busy; %s waiting in inbox/\n' "$n_alive" "$n_idle" "$n_busy" "$n_wait"
+  printf '%s' "$busy_lines"
+}
+
+# occupancy [quiet] — run the probe bounded, set OCC_ALIVE/OCC_IDLE/OCC_WAIT and
+# (unless quiet) print the summary to stderr. Returns 1 when occupancy can't be
+# read in time; callers then queue without the guard rather than fail the submit.
+OCC_ALIVE=0; OCC_IDLE=0; OCC_WAIT=0
+occupancy() {
+  local out first n
+  if ! out="$(timeout -k 1 "$PROBE_TIMEOUT" "$BASH" "$0" --probe 2>/dev/null)" || [ -z "$out" ]; then
+    [ "${1:-}" = quiet ] || echo "cr-submit: fleet occupancy unavailable (unreadable within ${PROBE_TIMEOUT}s); no capacity check" >&2
+    return 1
+  fi
+  first="${out%%$'\n'*}"
+  read -r OCC_ALIVE OCC_IDLE OCC_WAIT <<<"$first" || true
+  for n in "$OCC_ALIVE" "$OCC_IDLE" "$OCC_WAIT"; do
+    case "$n" in ''|*[!0-9]*) OCC_ALIVE=0; OCC_IDLE=0; OCC_WAIT=0; return 1 ;; esac
+  done
+  [ "${1:-}" = quiet ] || printf '%s\n' "${out#*$'\n'}" | sed 's/^/cr-submit: /' >&2
+}
+
+# The soft guard trips when the new job can't start now: no alive worker is idle,
+# or the inbox already holds a job for every alive worker. Inbox depth matters as
+# much as busy slots: a fan-out submitted in a burst sees idle workers on every
+# submit (none has claimed yet) but a growing inbox/ (the #21 2026-08-26 case).
+guard_trips() { [ "$OCC_IDLE" -eq 0 ] || [ "$OCC_WAIT" -ge "$OCC_ALIVE" ]; }
+
+default_submitter() {
+  if [ -n "${CLAUDE_SESSION:-}" ]; then printf '%s' "$CLAUDE_SESSION"; return; fi
+  local u h
+  u="${USER:-$(id -un 2>/dev/null || true)}"
+  h="${HOSTNAME:-$(hostname 2>/dev/null || true)}"
+  printf '%s@%s' "${u:-unknown}" "${h:-unknown}"
+}
+
 model=""
 project=""
 issue=""
+submitter=""
+wait=0
 
 while true; do
   case "${1:-}" in
     -h|--help) usage; exit 0 ;;
+    --probe) probe; exit 0 ;;   # internal: the bounded occupancy read (see occupancy())
     -m) model="${2:?usage: cr-submit -m <model> ...}"; shift 2 ;;
     -i) issue="${2:?usage: cr-submit -i <issue-number> ...}"; shift 2
         case "$issue" in ''|*[!0-9]*|0*) echo "cr-submit: -i needs a positive integer" >&2; exit 1 ;; esac ;;
+    -o|--owner) submitter="${2:-}"; shift $(( $# < 2 ? $# : 2 ))
+        # A blank or multi-line tag would attribute the job to nobody, or break the
+        # key=value .meta it lands in; refuse rather than fall back silently.
+        case "$submitter" in *[![:space:]]*) ;; *) echo "cr-submit: -o needs a non-empty tag" >&2; exit 1 ;; esac
+        case "$submitter" in *$'\n'*|*$'\r'*) echo "cr-submit: -o tag must be one line" >&2; exit 1 ;; esac ;;
+    -w|--wait) wait=1; shift ;;
     -p) project="${2:?usage: cr-submit [-m model] -p <project> \"task\"}"; shift 2 ;;
     -f) break ;;
     -*) echo "cr-submit: unknown option: ${1}" >&2; usage >&2; exit 1 ;;
     *)  break ;;
   esac
 done
+mkdir -p "$JOBS_ROOT/inbox"
 
 # bare invocation with no args and no piped stdin → show usage
 if [ $# -eq 0 ] && [ -t 0 ]; then
@@ -51,12 +159,16 @@ if [ $# -eq 0 ] && [ -t 0 ]; then
   exit 0
 fi
 
-# -f: queue a verbatim copy of an existing spec (it carries its own model).
+# -f: queue a verbatim copy of an existing spec (it carries its own model). This is
+# cron's path, so it stays exactly as it was: no occupancy read, no guard, no wait.
 if [ "${1:-}" = "-f" ]; then
   [ -z "$model" ] || echo "cr-submit: -m ignored with -f (the spec carries its own model)" >&2
+  [ "$wait" = 0 ] || echo "cr-submit: -w ignored with -f (the copy path never waits)" >&2
   # A silently dropped -i would comment on the wrong issue (or none); refuse instead.
   [ -z "$issue" ] || { echo "cr-submit: -i can't be combined with -f (the spec is copied verbatim; set \"issue\" in it)" >&2; exit 1; }
+  [ -z "$submitter" ] || { echo "cr-submit: -o can't be combined with -f (the spec is copied verbatim; set \"submitter\" in it)" >&2; exit 1; }
   [ -f "${2:-}" ] || { echo "cr-submit: no such file: ${2:-}" >&2; exit 1; }
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
   _base="$(basename "$2")"
   _ext="${_base##*.}"
   _stem="${_base%.*}"
@@ -68,19 +180,52 @@ fi
 
 task="$*"; [ -n "$task" ] || task="$(cat)"
 [ -n "${task// /}" ] || { echo "cr-submit: empty task" >&2; exit 1; }
+[ -n "$submitter" ] || submitter="$(default_submitter)"
 
-if [ -n "$project" ] || [ -n "$model" ] || [ -n "$issue" ]; then
-  # JSON spec when a project and/or an explicit model is in play
-  dest="$JOBS_ROOT/inbox/${ts}-${project:-adhoc}-$$-$RANDOM.json"
-  jq -n --arg p "$project" --arg t "$task" --arg m "$model" --arg i "$issue" \
-    '{prompt:$t}
-     + (if $p != "" then {project:$p} else {} end)
-     + (if $m != "" then {model:$m} else {} end)
-     + (if $i != "" then {issue:($i|tonumber)} else {} end)' \
-    > "$dest.partial" && mv "$dest.partial" "$dest"
-else
-  # plain ad-hoc text prompt
-  dest="$JOBS_ROOT/inbox/${ts}-adhoc-$$-$RANDOM.txt"
-  printf '%s\n' "$task" > "$dest.partial" && mv "$dest.partial" "$dest"
+# Occupancy + soft capacity guard. Advisory only: it warns and (with -w, at a
+# terminal) waits, but never refuses a job. Account-level session quota is not
+# visible from the queue, so it is deliberately not guessed at here.
+if occupancy && guard_trips; then
+  if [ "$OCC_ALIVE" -eq 0 ]; then
+    _why="no worker is alive"
+  elif [ "$OCC_IDLE" -eq 0 ]; then
+    _why="all $OCC_ALIVE alive worker(s) are busy"
+  else
+    _why="inbox/ already holds $OCC_WAIT waiting job(s) for $OCC_ALIVE alive worker(s)"
+  fi
+  if [ "$wait" = 1 ] && [ "$stdin_tty" = 0 ]; then
+    # Unattended callers (cron, pipes, agents) must never hang on the guard.
+    echo "cr-submit: -w ignored: stdin is not a terminal, so cr-submit will not block" >&2
+    wait=0
+  fi
+  if [ "$wait" = 0 ]; then
+    echo "cr-submit: warning: $_why; this job deepens the backlog (queued anyway; -w waits for a free worker)" >&2
+  else
+    echo "cr-submit: $_why; waiting up to ${WAIT_TIMEOUT}s for a free worker (Ctrl-C aborts; nothing is queued yet)" >&2
+    _deadline=$(( $(date -u +%s) + WAIT_TIMEOUT ))
+    while :; do
+      sleep "$WAIT_POLL"
+      if occupancy quiet && ! guard_trips; then
+        echo "cr-submit: a worker is free ($OCC_IDLE idle, $OCC_WAIT waiting); queueing" >&2
+        break
+      fi
+      if [ "$(date -u +%s)" -ge "$_deadline" ]; then
+        echo "cr-submit: warning: no free worker after ${WAIT_TIMEOUT}s; queueing anyway (the guard is advisory)" >&2
+        break
+      fi
+    done
+  fi
+  unset _why _deadline
 fi
-echo "queued: $dest${project:+ (project=$project)}${model:+ (model=$model)}${issue:+ (issue=$issue)}"
+
+# Always the JSON form now: a plain-text prompt can't carry the submitter field.
+# (run-job still accepts hand-dropped .txt/.md jobs; they just have no submitter.)
+ts="$(date -u +%Y%m%dT%H%M%SZ)"   # taken after any -w wait, so the name reflects queue time
+dest="$JOBS_ROOT/inbox/${ts}-${project:-adhoc}-$$-$RANDOM.json"
+jq -n --arg p "$project" --arg t "$task" --arg m "$model" --arg i "$issue" --arg s "$submitter" \
+  '{prompt:$t, submitter:$s}
+   + (if $p != "" then {project:$p} else {} end)
+   + (if $m != "" then {model:$m} else {} end)
+   + (if $i != "" then {issue:($i|tonumber)} else {} end)' \
+  > "$dest.partial" && mv "$dest.partial" "$dest"
+echo "queued: $dest${project:+ (project=$project)}${model:+ (model=$model)}${issue:+ (issue=$issue)} (submitter=$submitter)"

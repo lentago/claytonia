@@ -124,14 +124,19 @@ cr-submit "a quick ad-hoc prompt"                  # runs in /home/claude/work
 cr-submit -p site-icecreamtofightwith-com "fix broken doc links" # project job: clean checkout + PR
 cr-submit -m opus -p site-icecreamtofightwith-com "big refactor" # override the model for this one job
 cr-submit -i 130 -p claytonia "work this issue"     # name the target issue explicitly (see below)
+cr-submit -o batch-7 -p claytonia "fan-out chunk 3"  # tag who submitted it (default below)
+cr-submit -w -p claytonia "run when a worker frees up" # at a terminal: wait for a free worker first
 cr-submit -f /srv/jobs/scheduled/daily.json        # queue a copy of a saved spec (cron uses this)
 ```
+
+`cr-submit` always writes the JSON form, so every job it queues carries a
+`submitter`. Hand-dropped `.txt`/`.md` jobs still work; they just have no submitter.
 
 A job is **plain text** (the whole file is the prompt) or a **JSON spec**:
 
 ```json
 { "project": "site-icecreamtofightwith-com", "prompt": "…", "model": "sonnet",
-  "issue": 130, "max_turns": 30, "max_budget_usd": 5, "timeout_sec": 1800,
+  "submitter": "alice@laptop", "issue": 130, "max_turns": 30, "max_budget_usd": 5, "timeout_sec": 1800,
   "cwd": "…", "allowed_tools": "Read Bash" }
 ```
 
@@ -152,6 +157,45 @@ reads the prompt and recognises only:
 Bare `#N` and references to other repos (`bpg#2983`) are ignored. If more than one
 distinct candidate remains, no issue is resolved and no comment is posted, rather than
 guessing. The result is recorded as `issue=` in `logs/<runid>.meta`.
+
+**Submitter** (#21). `submitter` names who queued the job, so logs and the fleet
+dashboard can attribute it. `cr-submit -o <tag>` (long form `--owner <tag>`) sets it;
+otherwise it is `$CLAUDE_SESSION` when set, else `<user>@<host>`, and never empty.
+run-job records it as `submitter=` in `logs/<runid>.meta` and carries it on the metrics
+events (see § Metrics). It is not `processing/<runid>.owner`, which names the *worker*
+that claimed the job. `-f` copies a spec verbatim, so `-o` is refused there; set
+`"submitter"` in the spec itself.
+
+**Fleet occupancy** (#21). Before queueing, `cr-submit` prints a short summary to
+stderr, read from the queue's own files the way `process-inbox` reads them:
+
+```
+cr-submit: fleet: 3 alive, 1 idle, 2 busy; 4 waiting in inbox/
+cr-submit:   busy claude-runner-1: project=claytonia runid=20261013T202825Z-… submitter=alice@laptop
+cr-submit:   busy claude-runner-2: project=- runid=20261013T201500Z-adhoc-…
+```
+
+A worker is *alive* when `workers/<host>.alive` is fresher than
+`CLAUDE_HEARTBEAT_STALE` (default 90s, the reaper's threshold). It is *busy* when a
+`processing/<runid>.owner` names it; the project and submitter come from the claimed
+spec when it is JSON (`-` for a plain-text job). A claim held by a dead worker is the
+reaper's, so it is not counted. *Waiting* counts the `inbox/` entries `process-inbox`
+would claim (not `*.partial`, `*.tmp`, dotfiles). The read uses globs and `stat` only
+(never `ls -t`, which stalls on the CIFS share) and is capped at
+`CLAUDE_SUBMIT_PROBE_TIMEOUT` (default 5s). If it can't finish in time, `cr-submit`
+says so and queues with no capacity check. It never fails the submit.
+
+**Capacity guard** (#21). When no alive worker is idle, or `inbox/` already holds at
+least one waiting job per alive worker, `cr-submit` warns that the job will deepen the
+backlog, and queues it anyway. Inbox depth counts because a burst of submits sees idle
+workers every time (nobody has claimed yet) while the backlog grows. `-w`/`--wait`
+holds the submit instead: it re-reads occupancy every `CLAUDE_SUBMIT_WAIT_POLL`
+seconds (default 15) until the guard clears, then queues. After
+`CLAUDE_SUBMIT_WAIT_TIMEOUT` seconds (default 1800) it queues anyway with a warning.
+The guard never prompts. `-w` only waits when stdin is a terminal. Piped, cron, and
+agent callers get the warning and an immediate queue, and `-f` skips the check
+entirely. The account-level session quota (the limit that failed the 2026-07-08
+fan-out) is not visible from the queue, so the guard does not try to detect it.
 
 **Every job is bounded** (#114) by three limits, resolved the same way as `model`
 (job spec → project registry → `runner.env` default):
@@ -239,9 +283,15 @@ Secrets (`token.env`, `gh-app.pem`) live on the workers, never in this repo.
 ## Metrics
 
 Every job emits a `job_complete` event (cost, turns, duration, status, repo, pr_url,
-worker) to the Lentago lab Alloy Loki receiver → Grafana Cloud. Dashboard **"Claude Runner
+worker, submitter) to the Lentago lab Alloy Loki receiver → Grafana Cloud. Dashboard **"Claude Runner
 Fleet"** (uid `claude-runner-fleet`): spend, success rate, throughput, duration, and
 **open agent PRs awaiting review** — the review front door.
+
+**Submitter** (#21). `job_started`, `job_running` and `job_complete` carry `submitter`
+(who queued the job; `""` when unknown, e.g. a hand-dropped text job) as a **line
+field, never a stream label**: it is per-session, so as a label it would mint a stream
+per submitter. Query it with `| json | submitter="alice@laptop"` on the existing
+`{job="claude_runner"}` stream.
 
 **Worker liveness.** Besides touching `workers/<host>.alive`, `claude-heartbeat.service`
 runs `cr-emit alive` every 30s beat (one `worker_alive` event per worker per 30s), pushing

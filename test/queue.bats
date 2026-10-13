@@ -423,3 +423,34 @@ drop_spec() { # <name> <json>
   runid="$(basename "$(find "$JOBS_ROOT/done" -maxdepth 1 -type f)")"
   grep -q 'ignoring invalid timeout_sec=soon' "$JOBS_ROOT/logs/$runid.stderr"
 }
+
+# --- submitter attribution (#21) ---------------------------------------------------
+#
+# cr-submit stamps "submitter" into the spec; run-job records it in the .meta and
+# hands it to cr-emit for job_started / job_running (job_complete reads the .meta).
+
+@test "submitter: a spec's submitter lands in the .meta and reaches cr-emit" {
+  export FAKE_CREMIT_LOG="$TEST_TMP/cremit.log"
+  drop_spec "attr.json" '{"prompt":"go","project":"","submitter":"alice@laptop"}'
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+
+  runid="$(basename "$(find "$JOBS_ROOT/done" -maxdepth 1 -type f)")"
+  grep -qx 'submitter=alice@laptop' "$JOBS_ROOT/logs/$runid.meta"
+  grep -qxF "started	$runid			alice@laptop" "$FAKE_CREMIT_LOG"
+  grep -qxF "running	$runid			alice@laptop" "$FAKE_CREMIT_LOG"
+  grep -qxF "$runid" "$FAKE_CREMIT_LOG"   # job_complete: cr-emit reads it from the .meta
+}
+
+@test "submitter: a plain-text job has none; a multi-line one is flattened" {
+  drop_job "plain.txt" "no spec, no submitter"
+  drop_spec "multi.json" '{"prompt":"go","submitter":"a\nb\tc"}'
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+
+  [ "$(count_in done)" -eq 2 ]
+  grep -qx 'submitter=' "$JOBS_ROOT"/logs/*plain*.meta
+  grep -qx 'submitter=a b c' "$JOBS_ROOT"/logs/*multi*.meta
+}
