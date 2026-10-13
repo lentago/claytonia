@@ -293,13 +293,15 @@ task="$*"; [ -n "$task" ] || task="$(cat)"
 [ -n "${task// /}" ] || { echo "cr-submit: empty task" >&2; exit 1; }
 [ -n "$submitter" ] || submitter="$(default_submitter)"
 
+# Overlap first: it is "what's already writing to this project" and its gh calls can
+# take up to OVERLAP_TIMEOUT, so the occupancy read (which feeds the guard and -w)
+# comes after it and reflects the queue as it is at the moment of the decision.
+# Project jobs only; ad-hoc jobs have no repo to collide in.
+[ -z "$project" ] || overlap_warn "$project"
 # Occupancy + soft capacity guard. Advisory only: it warns and (with -w, at a
 # terminal) waits, but never refuses a job. Account-level session quota is not
 # visible from the queue, so it is deliberately not guessed at here.
 occ_ok=0; occupancy && occ_ok=1
-# Overlap sits beside the occupancy summary: both are "what's already running"
-# before this job joins it. Project jobs only; ad-hoc jobs have no repo to collide in.
-[ -z "$project" ] || overlap_warn "$project"
 if [ "$occ_ok" = 1 ] && guard_trips; then
   if [ "$OCC_ALIVE" -eq 0 ]; then
     _why="no worker is alive"
