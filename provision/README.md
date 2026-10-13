@@ -17,7 +17,7 @@ shipper (below).
 
 | Script | What it did | Now |
 |---|---|---|
-| `01-create-container.sh` | base pkgs, `claude` user, ssh key, Claude Code | baked → kalmia `forge/runner/substrate.sh` |
+| `01-create-container.sh` | base pkgs, `claude` user, ssh key, Claude Code, Node (nvm, pinned LTS) | baked → kalmia `forge/runner/substrate.sh` |
 | `02-install-runner.sh` | runner core + poller + cron | gitops-deployed (`bin/`/`systemd/`/`cron/`) |
 | `03-github-app.sh` | gh CLI + App token plumbing + git identity | gh + identity baked; `gh-token`/helper gitops-deployed |
 | `04-project-layer.sh` | project registry + project-aware run-job | gitops-deployed (`bin/`); registry lives on the NAS |
@@ -43,6 +43,18 @@ shipper (below).
 4. **First boot** — `bullpen-gitops.timer` (baked, enabled) pulls `main`, the
    pollers start, and the worker begins claiming jobs. There are no scripts to
    run: it is live once it has its NAS mount and token.
+
+### Node version (#140)
+
+`01-create-container.sh` installs [nvm](https://github.com/nvm-sh/nvm) and pins
+`nvm alias default 20` — the floor every worker carries. **This script is
+reference only** (see the table above): the actual baked substrate is kalmia's
+`forge/runner/substrate.sh`, so bumping the fleet's default Node means mirroring
+the change there, not just here. `run-job` (gitops-deployed) layers per-project
+overrides on top at job time — a project's `.nvmrc` or `package.json`
+`"engines.node"` wins when present, via `nvm use`/`nvm install`; the default
+above is both the fallback and the retry target. Tune the fallback with
+`CLAUDE_RUNNER_NODE_DEFAULT` in [`etc/runner.env`](../etc/runner.env).
 
 ### Transcript shipper (optional, per worker)
 

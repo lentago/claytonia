@@ -191,6 +191,13 @@ cr-newproject <name> <owner/repo> [model] [branch]   # register + scaffold conte
 - `projects/registry.json` — `name → {repo, default_branch, model, max_turns, max_budget_usd, timeout_sec, context_dir, setup}` (limits optional; they sit between the job spec and the `runner.env` defaults)
 - `projects/<name>/memory.md` — dated, durable learnings (conventions, gotchas)
 
+**Node version** (#140). Workers carry a pinned LTS default (`nvm alias default 20`,
+baked in `provision/01-create-container.sh` → kalmia's `forge/runner/substrate.sh`) —
+a floor, not every project's requirement. `run-job` resolves a project's own
+`.nvmrc` or `package.json` `"engines.node"` first and `nvm use`/`nvm install`s it;
+only a project with neither runs under the baked default. Tune the fallback with
+`CLAUDE_RUNNER_NODE_DEFAULT` in `etc/runner.env`.
+
 Durable conventions live in the **repo's own `CLAUDE.md`** (reviewed, versioned, loaded
 into every job automatically). Cross-run learnings live in the NAS **memory** store.
 Both reach any worker — nothing is trapped on one box.

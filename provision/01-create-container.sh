@@ -34,3 +34,8 @@ echo ">>> installing Claude Code (native installer, as claude)"
 su - claude -c 'curl -fsSL https://claude.ai/install.sh | bash' 2>&1 | tail -8
 su - claude -c 'grep -q ".local/bin" ~/.bashrc || echo "export PATH=\$HOME/.local/bin:\$PATH" >> ~/.bashrc'
 su - claude -c 'export PATH=$HOME/.local/bin:$PATH; claude --version' && echo "CLAUDE_OK"
+
+echo ">>> installing Node via nvm (pinned LTS default — #140)"
+su - claude -c 'export NVM_DIR=$HOME/.nvm; curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash' 2>&1 | tail -8
+su - claude -c 'export NVM_DIR=$HOME/.nvm; . "$NVM_DIR/nvm.sh"; nvm install 20 && nvm alias default 20'
+su - claude -c 'export NVM_DIR=$HOME/.nvm; . "$NVM_DIR/nvm.sh"; node -v' && echo "NODE_OK"

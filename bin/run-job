@@ -28,6 +28,7 @@ DEF_CWD="${CLAUDE_RUNNER_CWD:-/home/claude/work}"
 DEF_MAXTURNS="${CLAUDE_RUNNER_MAX_TURNS:-}"
 DEF_BUDGET="${CLAUDE_RUNNER_MAX_BUDGET_USD:-}"
 DEF_TIMEOUT="${CLAUDE_RUNNER_TIMEOUT_SEC:-}"
+DEF_NODE="${CLAUDE_RUNNER_NODE_DEFAULT:-20}"
 KILL_AFTER=30        # grace after TERM before KILL: a worker is held at most timeout+30s
 RC_TIMEOUT=7         # distinct exit for a wall-clock limit hit (run-job's own codes are 0-6)
 
@@ -126,6 +127,29 @@ if [ -n "$project" ]; then
     exit 5
   fi
   cwd="$ckout"
+
+  # Node version (#140): a worker's baked default is a floor, not every
+  # project's requirement (Astro et al. need current LTS). The project's own
+  # .nvmrc or package.json "engines.node" wins when present; CLAUDE_RUNNER_NODE_DEFAULT
+  # (runner.env) is the fallback. Best-effort — no nvm on the worker means the
+  # job just runs under whatever `node` is already on PATH.
+  NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+  if [ -s "$NVM_DIR/nvm.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$NVM_DIR/nvm.sh" >>"$errlog" 2>&1 || true
+    node_want=""
+    if [ -f "$ckout/.nvmrc" ]; then
+      node_want="$(tr -d '[:space:]' < "$ckout/.nvmrc")"
+    elif [ -f "$ckout/package.json" ]; then
+      node_want="$(jq -r '.engines.node // empty' "$ckout/package.json" 2>/dev/null \
+        | grep -oE '[0-9]+(\.[0-9]+){0,2}' | head -1)"
+    fi
+    node_want="${node_want:-$DEF_NODE}"
+    { nvm install --silent "$node_want" && nvm use --silent "$node_want"; } >>"$errlog" 2>&1 \
+      || { nvm install --silent "$DEF_NODE" && nvm use --silent "$DEF_NODE"; } >>"$errlog" 2>&1 || true
+    echo "run-job: node $(node -v 2>/dev/null || echo '?') (wanted ${node_want}, default ${DEF_NODE})" >>"$errlog"
+    unset node_want
+  fi
 
   if tok="$(gh-token 2>>"$errlog")"; then
     printf '%s' "$tok" | gh auth login --with-token >>"$errlog" 2>&1 || true
