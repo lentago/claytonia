@@ -218,12 +218,26 @@ _on_tty() { script -qec "$*" /dev/null </dev/null; }
   [ -n "$(queued_spec)" ]
 }
 
+@test "-f: a flag after the spec file is refused rather than ignored" {
+  printf '{"prompt":"x"}' > "$TEST_TMP/spec.json"
+  run "$REPO_ROOT/bin/cr-submit" -f "$TEST_TMP/spec.json" -W
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"unexpected arguments after the spec file: -W"* ]]
+  [ -z "$(queued_spec)" ]
+}
+
 @test "guard: -W waits without a terminal for a free worker, then queues" {
   alive w1; claim R1 w1 '{"prompt":"x"}'
   export CLAUDE_SUBMIT_WAIT_POLL=1 CLAUDE_SUBMIT_WAIT_TIMEOUT=30
-  ( sleep 2; rm -f "$JOBS_ROOT/processing/R1.owner"; touch "$JOBS_ROOT/workers/w1.alive" ) &
-  run timeout 25 "$REPO_ROOT/bin/cr-submit" -W "a" </dev/null
-  wait
+  # Release the worker only once cr-submit says it is waiting (polled, not a fixed
+  # sleep), so the test cannot free the worker before the first occupancy read.
+  timeout 25 "$REPO_ROOT/bin/cr-submit" -W "a" </dev/null >"$TEST_TMP/out" 2>&1 &
+  pid=$!
+  for _ in $(seq 1 100); do grep -q "waiting up to" "$TEST_TMP/out" 2>/dev/null && break; sleep 0.1; done
+  grep -q "waiting up to" "$TEST_TMP/out"
+  rm -f "$JOBS_ROOT/processing/R1.owner"; touch "$JOBS_ROOT/workers/w1.alive"
+  status=0; wait "$pid" || status=$?
+  output="$(cat "$TEST_TMP/out")"
   [ "$status" -eq 0 ]
   [[ "$output" == *"waiting up to 30s for a free worker"* ]]
   [[ "$output" == *"a worker is free"* ]]
@@ -244,9 +258,13 @@ _on_tty() { script -qec "$*" /dev/null </dev/null; }
 @test "guard: CLAUDE_SUBMIT_WAIT_UNATTENDED=1 waits without a terminal and without a flag" {
   alive w1; claim R1 w1 '{"prompt":"x"}'
   export CLAUDE_SUBMIT_WAIT_UNATTENDED=1 CLAUDE_SUBMIT_WAIT_POLL=1 CLAUDE_SUBMIT_WAIT_TIMEOUT=30
-  ( sleep 2; rm -f "$JOBS_ROOT/processing/R1.owner"; touch "$JOBS_ROOT/workers/w1.alive" ) &
-  run timeout 25 "$REPO_ROOT/bin/cr-submit" "a" </dev/null
-  wait
+  timeout 25 "$REPO_ROOT/bin/cr-submit" "a" </dev/null >"$TEST_TMP/out" 2>&1 &
+  pid=$!
+  for _ in $(seq 1 100); do grep -q "waiting up to" "$TEST_TMP/out" 2>/dev/null && break; sleep 0.1; done
+  grep -q "waiting up to" "$TEST_TMP/out"
+  rm -f "$JOBS_ROOT/processing/R1.owner"; touch "$JOBS_ROOT/workers/w1.alive"
+  status=0; wait "$pid" || status=$?
+  output="$(cat "$TEST_TMP/out")"
   [ "$status" -eq 0 ]
   [[ "$output" == *"waiting up to 30s for a free worker"* ]]
   [[ "$output" == *"a worker is free"* ]]

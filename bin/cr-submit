@@ -288,6 +288,9 @@ if [ "${1:-}" = "-f" ]; then
   [ -z "$issue" ] || { echo "cr-submit: -i can't be combined with -f (the spec is copied verbatim; set \"issue\" in it)" >&2; exit 1; }
   [ -z "$submitter" ] || { echo "cr-submit: -o can't be combined with -f (the spec is copied verbatim; set \"submitter\" in it)" >&2; exit 1; }
   [ -f "${2:-}" ] || { echo "cr-submit: no such file: ${2:-}" >&2; exit 1; }
+  # Option parsing stops at -f, so a flag placed after the spec (`-f spec.json -W`)
+  # would otherwise be ignored silently; refuse anything beyond the file instead.
+  [ $# -le 2 ] || { echo "cr-submit: unexpected arguments after the spec file: ${*:3}" >&2; exit 1; }
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   _base="$(basename "$2")"
   _ext="${_base##*.}"
