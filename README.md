@@ -20,9 +20,10 @@ the next scope expansion.
 
 This repo is also an exhibit. Lentago Labs is a pro-bono operations practice
 for organizations that run on volunteers, donations, and one overworked tech
-person, and we practice what we publish: the estate is real (a Proxmox homelab
-and a production-grade AWS platform), nothing critical rides on it, and
-everything is code. claytonia is the corner of that estate where a **fleet of
+person, and we practice what we publish: the estate is real (an on-prem Proxmox
+cluster, meaning one that runs on machines in our own building, plus a
+production-grade AWS platform), nothing critical rides on it, and everything is
+code. claytonia is the corner of that estate where a **fleet of
 agents does directed work and every merge is still a human's call** — a live,
 small-scale place to see everything-as-code and agent-ops fit together, then
 change something yourself before you build the same thing at home.
@@ -354,7 +355,7 @@ Secrets (`token.env`, `gh-app.pem`) live on the workers, never in this repo.
 ## Metrics
 
 Every job emits a `job_complete` event (cost, turns, duration, status, repo, pr_url,
-worker, submitter) to the Lentago lab Alloy Loki receiver → Grafana Cloud. Dashboard **"Claude Runner
+worker, submitter) to the on-prem Alloy Loki receiver → Grafana Cloud. Dashboard **"Claude Runner
 Fleet"** (uid `claude-runner-fleet`): spend, success rate, throughput, duration, and
 **open agent PRs awaiting review** — the review front door.
 

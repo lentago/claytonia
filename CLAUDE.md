@@ -61,9 +61,9 @@ A change to `bin/` or `systemd/` affects every worker on the next 5-min poll. Pr
 
 ## Where things run
 
-Workers are unprivileged LXCs on the PVE cluster (see the Lentago lab inventory). The NAS
-inbox is an SMB share bind-mounted to `/srv/jobs`. Metrics go to the Lentago lab Grafana
-Cloud stack via the Alloy Loki receiver.
+Workers are unprivileged LXCs on the on-prem PVE cluster (see the on-prem inventory). The NAS
+inbox is an SMB share bind-mounted to `/srv/jobs`. Metrics go to the Grafana Cloud stack
+via the on-prem Alloy Loki receiver.
 
 **Worker guest existence IS configured from this repo** since 2026-07-07 (#51):
 `terraform/` owns the pool's LXCs (adopted from kalmia — products own their capacity).
