@@ -21,8 +21,9 @@ the next scope expansion.
 This repo is also an exhibit. Lentago Labs is a pro-bono operations practice
 for organizations that run on volunteers, donations, and one overworked tech
 person, and we practice what we publish: the estate is real (an on-prem Proxmox
-cluster, the machines in our own building, and a production-grade AWS platform),
-nothing critical rides on it, and everything is code. claytonia is the corner of that estate where a **fleet of
+cluster, meaning one that runs on machines in our own building, plus a
+production-grade AWS platform), nothing critical rides on it, and everything is
+code. claytonia is the corner of that estate where a **fleet of
 agents does directed work and every merge is still a human's call** — a live,
 small-scale place to see everything-as-code and agent-ops fit together, then
 change something yourself before you build the same thing at home.
