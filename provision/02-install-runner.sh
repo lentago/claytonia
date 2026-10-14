@@ -230,7 +230,7 @@ cat > /etc/cron.d/claude-runner <<'CRON'
 #
 #   m  h dom mon dow  claude  /opt/claude-runner/bin/cr-submit -f /srv/jobs/scheduled/<name>.json
 #
-# Example — 7am daily Lentago lab health summary:
+# Example — 7am daily estate health summary:
 # 0  7  *   *   *     claude  /opt/claude-runner/bin/cr-submit -f /srv/jobs/scheduled/daily-health.json
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
