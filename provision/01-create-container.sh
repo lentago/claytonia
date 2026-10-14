@@ -13,13 +13,16 @@ echo "PKGS_OK"
 # Node 22 LTS from the NodeSource 22.x channel (#140): Astro 7 needs Node 22 and the
 # distro's Node is older. The pin keeps the distro package from outranking it.
 echo ">>> installing Node 22 LTS (NodeSource)"
+# The source and the pin are part of the worker contract, so they are written on
+# every run (idempotent); only the install is skipped when Node 22 is already there.
+# Same shape as kalmia forge/runner/substrate.sh (kalmia#157); keep them identical.
+apt-get install -y -qq gnupg >/dev/null
+install -d -m 755 /etc/apt/keyrings
+curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
+chmod go+r /etc/apt/keyrings/nodesource.gpg
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+printf 'Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 600\n' > /etc/apt/preferences.d/nodesource
 if [ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)" != 22 ]; then
-  apt-get install -y -qq gnupg >/dev/null
-  install -d -m 755 /etc/apt/keyrings
-  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
-  chmod go+r /etc/apt/keyrings/nodesource.gpg
-  echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
-  printf 'Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 600\n' > /etc/apt/preferences.d/nodesource
   apt-get update -qq
   apt-get install -y -qq nodejs >/dev/null
 fi
