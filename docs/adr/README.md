@@ -30,3 +30,5 @@ they were weighed historically.
 | [0006](0006-at-least-once-delivery-not-idempotent.md) | Crash-safe at-least-once delivery, one retry, deliberately not idempotent | 2026-06 (inception) |
 | [0007](0007-observability-log-event-native-no-pushgateway.md) | Observability is log-event-native; Pushgateway explicitly rejected | 2026-06-15 |
 | [0008](0008-context-ledger-lives-outside-the-fleet.md) | The context ledger lives outside the fleet it audits *(retired 2026-09-21)* | 2026-08-09 |
+| [0009](0009-policy-gated-auto-merge-for-routine-prs.md) | Policy-gated auto-merge for scheduled routine PRs (amends 0002) | 2026-10-28 |
+| [0010](0010-read-only-google-credential-on-workers.md) | A read-only Google credential on the workers | 2026-10-28 |

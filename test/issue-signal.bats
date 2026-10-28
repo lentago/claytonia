@@ -212,3 +212,17 @@ claimed_issue() { grep -oE 'issues/[0-9]+/comments' "$FAKE_GH_LOG" | head -1 | g
   [ "$status" -ne 0 ]
   [ -z "$(ls "$JOBS_ROOT"/inbox/ 2>/dev/null)" ]
 }
+
+@test "only the project's own PR gets a merge decision, and it lands in the meta" {
+  drop_project_job "Work issue #42"
+  cat > "$TEST_TMP/claude-pr" <<'EOT'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '{"result":"see https://github.com/other/repo/pull/3 then opened https://github.com/acme/proj/pull/77","is_error":false,"num_turns":1}\n'
+EOT
+  chmod +x "$TEST_TMP/claude-pr"
+  CLAUDE_BIN="$TEST_TMP/claude-pr" CLAUDE_RUNNER_BIN="$REPO_ROOT/bin" run_job
+  grep -q -- 'pr merge https://github.com/acme/proj/pull/77 --disable-auto' "$FAKE_GH_LOG"
+  ! grep -q 'other/repo/pull/3' <(grep 'pr merge' "$FAKE_GH_LOG")
+  grep -q '^automerge=disarmed: no rule named in the job spec$' "$JOBS_ROOT"/logs/*.meta
+}

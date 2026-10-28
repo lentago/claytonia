@@ -1,6 +1,8 @@
 # ADR-0002: Workers branch + PR and never merge
 
-**Status:** Accepted (2026-06-16; reconstructed 2026-08-13)
+**Status:** Accepted (2026-06-16; reconstructed 2026-08-13). Amended 2026-10-28 by
+[ADR-0009](0009-policy-gated-auto-merge-for-routine-prs.md): a deterministic gate may
+arm auto-merge on scheduled-routine PRs that the target repository has opted in.
 
 ## Context
 

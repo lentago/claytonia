@@ -69,7 +69,10 @@ flowchart TD
 
 *Everything above the red line runs unattended; the only way anything reaches
 `main` is a human clicking merge. That single edge is the fleet's governance
-model — not an implementation detail.*
+model — not an implementation detail.* One narrow exception: a scheduled
+routine's PR auto-merges when the target repository's default branch opts that
+kind of PR in, and a deterministic gate checks the PR against it
+([ADR-0009](docs/adr/0009-policy-gated-auto-merge-for-routine-prs.md)).
 
 ## 🧭 What this repo demonstrates
 
@@ -128,8 +131,28 @@ cr-submit -i 130 -p claytonia "work this issue"     # name the target issue expl
 cr-submit -o batch-7 -p claytonia "batch chunk 3"    # tag who submitted it (default below)
 cr-submit -w -p claytonia "run when a worker frees up" # at a terminal: wait for a free worker first
 cr-submit -W -p claytonia "fan-out chunk"            # same wait without a terminal (agents; bounded)
-cr-submit -f /srv/jobs/scheduled/daily.json        # queue a copy of a saved spec (cron uses this)
+cr-submit -f /srv/jobs/scheduled/daily.json        # queue a copy of a saved spec now
 ```
+
+### Scheduled jobs
+
+A schedule is data on the NAS, not a crontab line. Give a spec in
+`/srv/jobs/scheduled/<name>.json` a `schedule` (5-field cron) and a `tz`, and
+`cr-schedule` queues it on time:
+
+```json
+{"prompt": "…", "project": "…", "model": "opus",
+ "schedule": "0 6 * * *", "tz": "America/New_York", "catchup_min": 10,
+ "automerge": "<rule>"}
+```
+
+cron runs `cr-schedule` every minute on every worker. Each run of a schedule is
+claimed by `mkdir` on the NAS, so exactly one worker queues it, and the schedule
+survives any worker being down. A slot up to `catchup_min` minutes late still
+fires once; DST is handled by the `tz`. `"enabled": false` pauses a spec. The
+queued copy carries `submitter: schedule:<name>`. `automerge` names a rule from
+the target repo's `.claytonia/automerge.json` (ADR-0009); without it the PR waits
+for a human like any other.
 
 `cr-submit` always writes the JSON form, so every job it queues carries a
 `submitter`. Hand-dropped `.txt`/`.md` jobs still work; they just have no submitter.
@@ -331,8 +354,10 @@ owned by kalmia's Terraform, not this repo's — products own their own capacity
   draws from the Agent SDK credit pool.
 - **GitHub**: a GitHub App (`lentago-claude-runner`). `gh-token` mints short-lived
   installation tokens from the App key; `gh-credential-helper` feeds git per-op so no
-  token is persisted. Workers open branches + PRs and **never merge** — review is a
-  human step.
+  token is persisted. The token is for the installation that covers the job's repo
+  (`run-job` exports `GH_REPO`), so a project may live under another owner that has
+  installed the App; `INSTALLATION_ID` is the fallback. Workers open branches + PRs
+  and **never merge** — review is a human step, apart from the ADR-0009 gate.
 
   The org installation grants `contents: write`, `issues: write`,
   `pull_requests: write`, `workflows: write`, `metadata: read`. Installation tokens
@@ -350,7 +375,14 @@ owned by kalmia's Terraform, not this repo's — products own their own capacity
     boundary — the real backstop is that workers never merge and every agent PR is
     reviewed by a human.
 
-Secrets (`token.env`, `gh-app.pem`) live on the workers, never in this repo.
+- **Google (read-only)**: `/etc/claude-runner/google.env` holds one refresh token
+  with `gmail.readonly`, `calendar.readonly` and `drive.metadata.readonly`, minted
+  once on a desktop with `bin/google-auth <client.json> <out.env>` and installed
+  `root:claude 0640` on every worker. Jobs read through `google-read` (on the job
+  `PATH`); `google-read check` shows the account and scopes. Any job can use it;
+  the trade-off is in [ADR-0010](docs/adr/0010-read-only-google-credential-on-workers.md).
+
+Secrets (`token.env`, `gh-app.pem`, `google.env`) live on the workers, never in this repo.
 
 ## Metrics
 
@@ -380,11 +412,12 @@ count(max by (worker) (count_over_time({job="claude_runner"} | json | event="wor
 
 ```
 bin/         the runner: run-job, process-inbox, cr-submit, cr-newproject, cr-emit,
-             gh-token, gh-credential-helper, claude-set-token
+             gh-token, gh-credential-helper, claude-set-token, cr-schedule (scheduled
+             jobs), cr-automerge (ADR-0009 gate), google-read / google-auth (ADR-0010)
 systemd/     claude-inbox.{service,timer} (poll), claude-heartbeat.{service,timer},
              transcript-shipper-sync.{service,timer}, and zero-length mask files for
              proxmox-regenerate-snakeoil.service / first-boot-complete.target (#120)
-cron/        claude-runner — scheduled jobs (re-queue saved specs)
+cron/        claude-runner — cr-schedule every minute (schedules are specs on the NAS)
              + the weekly `cr-update` (Claude Code stays current; idle-guarded by the inbox lock)
 etc/         runner.env — non-secret config (model/cwd/turns defaults, LOKI_PUSH_URL)
 gitops/      bullpen-gitops.{sh,service,timer} + install.sh — pull main, redeploy on drift

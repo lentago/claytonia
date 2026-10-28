@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# gh-token [owner/repo] — print a short-lived (~1h) GitHub App installation token.
-# Config: /etc/claude-runner/gh-app.env  (APP_ID=, optional INSTALLATION_ID=)
+# gh-token [owner/repo] — print a short-lived (~1h) GitHub App installation token
+# for the installation that covers owner/repo (default: $GH_REPO, else INSTALLATION_ID).
+# Config: /etc/claude-runner/gh-app.env  (APP_ID=, INSTALLATION_ID= the default install)
 #         /etc/claude-runner/gh-app.pem  (App private key)
 set -euo pipefail
 ENVF=/etc/claude-runner/gh-app.env
@@ -19,12 +20,16 @@ jwt="$hdr.$pld.$sig"
 ghapi(){ curl -fsSL -H "Authorization: Bearer $jwt" -H "Accept: application/vnd.github+json" \
                     -H "X-GitHub-Api-Version: 2022-11-28" "$@"; }
 
-inst="${INSTALLATION_ID:-}"
+# A named repo (argument, else GH_REPO, which run-job exports for project jobs)
+# resolves to the installation that covers it, so one App can serve repos under
+# more than one owner. INSTALLATION_ID is the fallback when no repo is named or
+# the lookup fails, which keeps every pre-existing caller on the org install.
 repo="${1:-${GH_REPO:-}}"
-if [ -z "$inst" ]; then
-  [ -n "$repo" ] || { echo "gh-token: set INSTALLATION_ID in $ENVF, or pass owner/repo" >&2; exit 1; }
-  inst=$(ghapi "https://api.github.com/repos/$repo/installation" | jq -r .id)
+inst=""
+if [ -n "$repo" ]; then
+  inst=$(ghapi "https://api.github.com/repos/$repo/installation" 2>/dev/null | jq -r .id) || inst=""
 fi
-[ -n "$inst" ] && [ "$inst" != null ] || { echo "gh-token: cannot resolve installation id" >&2; exit 1; }
+{ [ -n "$inst" ] && [ "$inst" != null ]; } || inst="${INSTALLATION_ID:-}"
+[ -n "$inst" ] || { echo "gh-token: set INSTALLATION_ID in $ENVF, or pass owner/repo" >&2; exit 1; }
 
 ghapi -X POST "https://api.github.com/app/installations/$inst/access_tokens" | jq -r .token
