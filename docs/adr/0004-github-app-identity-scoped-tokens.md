@@ -1,6 +1,9 @@
 # ADR-0004: GitHub App identity minting short-lived tokens
 
-**Status:** Accepted (2026-07-05; reconstructed 2026-08-13)
+**Status:** Accepted (2026-07-05; reconstructed 2026-08-13). Updated 2026-10-28: the
+App was made public so a personal account could install it on one repository, and
+`gh-token` now resolves the installation per repository (see
+[ADR-0009](0009-policy-gated-auto-merge-for-routine-prs.md), *Consequences*).
 
 > Dated to issue #49 (2026-07-05), which framed the problem and drove the move off
 > the shared personal PAT. The issue proposed a machine-account *PAT*; the landed
