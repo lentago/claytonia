@@ -356,7 +356,12 @@ owned by kalmia's Terraform, not this repo's — products own their own capacity
   installation tokens from the App key; `gh-credential-helper` feeds git per-op so no
   token is persisted. The token is for the installation that covers the job's repo
   (`run-job` exports `GH_REPO`), so a project may live under another owner that has
-  installed the App; `INSTALLATION_ID` is the fallback. Workers open branches + PRs
+  installed the App; `INSTALLATION_ID` is the fallback. The App has been **public**
+  since 2026-10-28 so the maintainer's personal account could install it on one
+  repository (a private App installs only on the account that owns it). Public means
+  installable, not usable: acting as the App takes the private key on the workers, and
+  someone else's installation would only grant the App access to *their* repos, which
+  no job names. Workers open branches + PRs
   and **never merge** — review is a human step, apart from the ADR-0009 gate.
 
   The org installation grants `contents: write`, `issues: write`,
