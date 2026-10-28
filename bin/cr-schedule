@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# cr-schedule — queue the scheduled jobs that are due. cron runs it every minute
+# on EVERY worker; a per-slot claim on the NAS makes exactly one of them queue
+# each run, so the schedule needs no designated host (workers stay cattle).
+#
+# A spec in scheduled/<name>.json opts in by carrying a "schedule":
+#   "schedule":    5-field cron (minute hour day-of-month month day-of-week;
+#                  * , - and /N; day-of-week 0-7, 0 and 7 both Sunday)
+#   "tz":          IANA zone the schedule is read in (default UTC), so a
+#                  "0 6 * * *" in America/New_York stays 6am across DST
+#   "catchup_min": how many minutes late a slot may still fire (default 10), so
+#                  a worker reboot or a slow minute doesn't drop the run; only
+#                  the most recent due slot is ever caught up, never a backlog
+#   "enabled":     false pauses it without deleting it
+# Specs without "schedule" are ignored here (cr-submit -f still queues them).
+#
+# The claim is mkdir of scheduled/.claims/<name>/<local wall-clock slot>: mkdir
+# is atomic on the share, so of the workers racing a slot exactly one creates it
+# and queues; the rest find it and skip. Keying on local wall-clock time means
+# the repeated hour at the end of DST fires once, and a slot inside the skipped
+# spring-forward hour does not fire. Claims older than 30 days are pruned.
+#
+# The queued copy is a normal JSON job (write-then-rename into inbox/), stamped
+# "submitter": "schedule:<name>" unless the spec names one. The schedule keys
+# ride along; run-job ignores keys it doesn't know.
+#
+# Seams for the tests: JOBS_ROOT, and CR_SCHEDULE_NOW (an ISO-8601 instant with
+# offset) in place of the clock.
+set -uo pipefail
+JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
+[ -d "$JOBS_ROOT/scheduled" ] || exit 0
+exec python3 - "$JOBS_ROOT" <<'PY'
+import datetime, json, os, re, shutil, sys
+from zoneinfo import ZoneInfo
+
+root = sys.argv[1]
+sched_dir = os.path.join(root, "scheduled")
+claims_dir = os.path.join(sched_dir, ".claims")
+inbox = os.path.join(root, "inbox")
+KEEP_DAYS = 30
+
+def log(msg):
+    print("cr-schedule: " + msg, flush=True)
+
+def field(spec, lo, hi):
+    """The set of values one cron field allows."""
+    out = set()
+    for part in spec.split(","):
+        step = 1
+        if "/" in part:
+            part, s = part.split("/", 1)
+            step = int(s)
+            if step < 1:
+                raise ValueError("step must be positive")
+        if part == "*":
+            a, b = lo, hi
+        elif "-" in part:
+            a, b = (int(x) for x in part.split("-", 1))
+        else:
+            a = int(part)
+            b = hi if step > 1 else a
+        if a < lo or b > hi or a > b:
+            raise ValueError("%s out of range %d-%d" % (part, lo, hi))
+        out.update(range(a, b + 1, step))
+    return out
+
+def parse(expr):
+    f = expr.split()
+    if len(f) != 5:
+        raise ValueError("need 5 fields, got %d" % len(f))
+    dow = field(f[4], 0, 7)
+    if 7 in dow:
+        dow = (dow - {7}) | {0}
+    return {"min": field(f[0], 0, 59), "hour": field(f[1], 0, 23),
+            "dom": field(f[2], 1, 31), "mon": field(f[3], 1, 12), "dow": dow,
+            "dom_star": f[2].startswith("*"), "dow_star": f[4].startswith("*")}
+
+def matches(c, t):
+    if t.minute not in c["min"] or t.hour not in c["hour"] or t.month not in c["mon"]:
+        return False
+    dom_ok = t.day in c["dom"]
+    dow_ok = (t.isoweekday() % 7) in c["dow"]
+    # cron: when both day fields are restricted, either one matching is enough.
+    if c["dom_star"] or c["dow_star"]:
+        return dom_ok and dow_ok
+    return dom_ok or dow_ok
+
+def queue(name, spec, slot):
+    job = dict(spec)
+    job.setdefault("submitter", "schedule:" + name)
+    job["scheduled_slot"] = slot
+    os.makedirs(inbox, exist_ok=True)
+    dest = os.path.join(inbox, "%s-%s.json" % (name, slot))
+    tmp = dest + ".partial"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(job, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.rename(tmp, dest)
+    return dest
+
+def prune(name, now):
+    d = os.path.join(claims_dir, name)
+    cutoff = (now - datetime.timedelta(days=KEEP_DAYS)).strftime("%Y%m%dT%H%M")
+    try:
+        entries = os.listdir(d)
+    except OSError:
+        return
+    for e in entries:
+        if re.fullmatch(r"\d{8}T\d{4}", e) and e < cutoff:
+            shutil.rmtree(os.path.join(d, e), ignore_errors=True)
+
+override = os.environ.get("CR_SCHEDULE_NOW")
+now = (datetime.datetime.fromisoformat(override) if override
+       else datetime.datetime.now(datetime.timezone.utc))
+now = now.astimezone(datetime.timezone.utc).replace(second=0, microsecond=0)
+
+try:
+    names = sorted(os.listdir(sched_dir))
+except OSError as e:
+    log("cannot list %s: %s" % (sched_dir, e))
+    sys.exit(0)
+
+for fn in names:
+    if fn.startswith(".") or not fn.endswith(".json"):
+        continue
+    name = fn[:-5]
+    path = os.path.join(sched_dir, fn)
+    try:
+        with open(path, encoding="utf-8") as f:
+            spec = json.load(f)
+    except (OSError, ValueError) as e:
+        log("skip %s: unreadable (%s)" % (fn, e))
+        continue
+    if not isinstance(spec, dict) or not spec.get("schedule"):
+        continue
+    if spec.get("enabled", True) is False:
+        continue
+    try:
+        cron = parse(str(spec["schedule"]))
+        tz = ZoneInfo(spec.get("tz") or "UTC")
+        catchup = int(spec.get("catchup_min", 10))
+    except Exception as e:
+        log("skip %s: bad schedule (%s)" % (fn, e))
+        continue
+    # Only the most recent due slot in the window is a candidate: a late run
+    # catches up once, and a frequent schedule never replays a backlog.
+    for back in range(0, max(catchup, 0) + 1):
+        local = (now - datetime.timedelta(minutes=back)).astimezone(tz)
+        if matches(cron, local):
+            break
+    else:
+        prune(name, now)
+        continue
+    slot = local.strftime("%Y%m%dT%H%M")
+    claim = os.path.join(claims_dir, name, slot)
+    try:
+        os.makedirs(os.path.dirname(claim), exist_ok=True)
+        os.mkdir(claim)
+    except FileExistsError:
+        prune(name, now)
+        continue
+    except OSError as e:
+        log("skip %s slot %s: claim failed (%s)" % (name, slot, e))
+        continue
+    try:
+        dest = queue(name, spec, slot)
+    except OSError as e:
+        # Release the claim so another worker (or the next minute) retries.
+        os.rmdir(claim)
+        log("queue failed for %s slot %s: %s" % (name, slot, e))
+        continue
+    late = " (%d min late)" % back if back else ""
+    log("queued %s slot %s%s -> %s" % (name, slot, late, os.path.basename(dest)))
+    prune(name, now)
+PY

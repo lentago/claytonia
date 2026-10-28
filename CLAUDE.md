@@ -26,7 +26,10 @@ to `main` changes production. Treat it that way.
 - **Producers write-then-rename.** Any code that drops a job MUST write `*.partial`
   then rename into place. The poller skips `*.partial`/`*.tmp`.
 - **Workers branch + PR, never merge.** Human review is a separate step. Don't add
-  auto-merge, even on green CI.
+  auto-merge, even on green CI. The one exception is `bin/cr-automerge` (ADR-0009):
+  code, not the agent, arms auto-merge on a scheduled routine's PR when the target
+  repo's default branch opts that title and those paths in. Don't widen it, and
+  don't add another path to auto-merge.
 - **Context is portable.** Project conventions → the target repo's `CLAUDE.md`
   (reviewed). Cross-run learnings → `projects/<name>/memory.md` on the NAS. Never bake
   project knowledge into a worker image.

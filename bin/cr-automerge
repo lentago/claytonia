@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# cr-automerge <pr-url> <owner/repo> <base-branch> <rule> <job-exit-code>
+#
+# The post-job merge decision for a runner-bot PR (ADR-0009, amending ADR-0002).
+# run-job calls it after every project job that opened a PR. The default, and
+# the answer to every doubt, is the ADR-0002 behaviour: disarm auto-merge and
+# leave the PR for a human. It arms squash auto-merge only when ALL of these hold:
+#
+#   1. the job spec named a rule ("automerge": "<rule>") and the job succeeded;
+#   2. the repo's DEFAULT branch carries .claytonia/automerge.json defining that
+#      rule (read from the base branch through the API, never from the PR head,
+#      so a PR cannot write its own permission; adding or widening a rule takes
+#      a human-merged PR in that repo);
+#   3. the PR is open, not a draft, targets that base, comes from a branch in
+#      the same repo, and is authored by the runner App;
+#   4. its title matches the rule's "title" regex in full;
+#   5. it changes at least one file and no more than the rule's "max_files"
+#      (default 50), and every changed path (and a rename's old path) matches
+#      one of the rule's "paths" globs (* stays inside a directory, ** crosses
+#      directories).
+#
+# Policy file shape (in the target repo, on its default branch):
+#   {"rules": {"<rule>": {"title": "^…$", "paths": ["dir/*.md", …],
+#                         "max_files": 50}}}
+#
+# The agent never arms anything itself; the standing prompt still forbids it.
+# Prints one line, "armed rule=<rule>" or "disarmed: <reason>", which run-job
+# records in the job's .meta. Exits 0 either way; a gh failure disarms.
+# Seams for the tests: PATH (a stub gh), CLAUDE_AUTOMERGE_AUTHOR.
+set -uo pipefail
+[ $# -eq 5 ] || { echo "usage: cr-automerge <pr-url> <owner/repo> <base-branch> <rule> <exit-code>" >&2; exit 2; }
+exec python3 - "$@" <<'PY'
+import base64, json, os, re, subprocess, sys
+
+prurl, repo, base, rule_name, rc = sys.argv[1:6]
+AUTHORS = {a for a in os.environ.get(
+    "CLAUDE_AUTOMERGE_AUTHOR", "app/lentago-claude-runner,lentago-claude-runner[bot]").split(",") if a}
+GH_TIMEOUT = 30
+
+def gh(*args):
+    r = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=GH_TIMEOUT)
+    if r.returncode != 0:
+        raise RuntimeError("gh %s: %s" % (args[0], (r.stderr or r.stdout).strip()[:200]))
+    return r.stdout
+
+def glob_re(pat):
+    out, i = [], 0
+    while i < len(pat):
+        if pat.startswith("**", i):
+            out.append(".*"); i += 2
+        elif pat[i] == "*":
+            out.append("[^/]*"); i += 1
+        elif pat[i] == "?":
+            out.append("[^/]"); i += 1
+        else:
+            out.append(re.escape(pat[i])); i += 1
+    return re.compile("".join(out))
+
+def decide():
+    if not rule_name:
+        return None, "no rule named in the job spec"
+    if rc != "0":
+        return None, "job exited %s" % rc
+    try:
+        raw = gh("api", "repos/%s/contents/.claytonia/automerge.json?ref=%s" % (repo, base), "--jq", ".content")
+        policy = json.loads(base64.b64decode(raw))
+    except Exception as e:
+        return None, "no readable policy on %s (%s)" % (base, e)
+    rule = (policy.get("rules") or {}).get(rule_name)
+    if not isinstance(rule, dict):
+        return None, "policy has no rule %r" % rule_name
+    try:
+        title_re = re.compile(rule["title"])
+        globs = [glob_re(p) for p in rule["paths"]]
+        max_files = int(rule.get("max_files", 50))
+    except Exception as e:
+        return None, "rule %r is malformed (%s)" % (rule_name, e)
+    if not globs:
+        return None, "rule %r allows no paths" % rule_name
+
+    pr = json.loads(gh("pr", "view", prurl, "--json",
+                       "number,state,isDraft,baseRefName,author,title,headRepository,headRepositoryOwner"))
+    head = "%s/%s" % ((pr.get("headRepositoryOwner") or {}).get("login", ""),
+                      (pr.get("headRepository") or {}).get("name", ""))
+    author = (pr.get("author") or {}).get("login", "")
+    if pr.get("state") != "OPEN":
+        return None, "PR is %s" % pr.get("state")
+    if pr.get("isDraft"):
+        return None, "PR is a draft"
+    if pr.get("baseRefName") != base:
+        return None, "PR targets %s, not %s" % (pr.get("baseRefName"), base)
+    if head.lower() != repo.lower():
+        return None, "PR head is %s, not %s" % (head, repo)
+    if author not in AUTHORS:
+        return None, "PR author %s is not the runner App" % author
+    if not title_re.fullmatch(pr.get("title", "")):
+        return None, "title %r does not match rule %r" % (pr.get("title"), rule_name)
+
+    files = []
+    for line in gh("api", "--paginate", "repos/%s/pulls/%d/files" % (repo, pr["number"]),
+                   "--jq", ".[] | [.filename, (.previous_filename // \"\")] | @tsv").splitlines():
+        files.extend(p for p in line.split("\t") if p)
+    if not files:
+        return None, "PR changes no files"
+    if len(files) > max_files:
+        return None, "PR touches %d paths, rule allows %d" % (len(files), max_files)
+    outside = [p for p in files if not any(g.fullmatch(p) for g in globs)]
+    if outside:
+        return None, "path outside rule %r: %s" % (rule_name, outside[0])
+    return rule_name, ""
+
+try:
+    armed, reason = decide()
+except Exception as e:
+    armed, reason = None, "check failed (%s)" % e
+
+if armed:
+    try:
+        gh("pr", "merge", prurl, "--auto", "--squash", "--delete-branch")
+        print("armed rule=%s" % armed)
+        sys.exit(0)
+    except Exception as e:
+        reason = "arming failed (%s)" % e
+try:
+    gh("pr", "merge", prurl, "--disable-auto")
+except Exception:
+    pass  # nothing was armed, or GitHub is unreachable; either way nothing merges unattended
+print("disarmed: %s" % reason)
+PY

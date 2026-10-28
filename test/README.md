@@ -44,7 +44,16 @@ bats --print-output-on-failure test/
 - `test/cr-emit.bats` — `submitter` is a log-line field on job_started / job_running /
   job_complete and never a Loki label.
 - `test/cr-emit-alive.bats`, `test/issue-signal.bats` — liveness event; issue claim
-  comments.
+  comments; only the project's own PR gets a merge decision, recorded in the `.meta`.
+- `test/schedule.bats` — `cr-schedule` (scheduled jobs as data): one queue per slot
+  across racing workers, the `tz` on both sides of DST, the repeated fall-back hour
+  firing once, catch-up of the latest slot only, bad specs skipped without stopping
+  the rest, cron field semantics, claim pruning. The clock is `CR_SCHEDULE_NOW`.
+- `test/automerge.bats` — `cr-automerge` (ADR-0009): arms only when the job named a
+  rule, the default branch defines it and the PR fits it; disarms on every other case
+  (no rule, failed job, no policy, a path or rename outside the globs, `*` crossing a
+  directory, title, author, draft, state, base, fork head, file count). Uses its own
+  `gh` stub serving the policy, the PR and its files.
 
 ## How it stays hermetic
 

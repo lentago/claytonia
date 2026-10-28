@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+# google-read — read-only access to one person's Gmail, Calendar and Drive for
+# jobs that need them (ADR-0010). Prints JSON on stdout.
+#
+#   google-read check                         the account and the scopes the token carries
+#   google-read gmail-search <query> [--max N]
+#                                             threads matching a Gmail query (default 50):
+#                                             id, date, from, subject, snippet, labels, count.
+#                                             A query with in:anywhere includes Spam and Trash.
+#   google-read gmail-thread <thread-id>      every message: headers, labels, plain-text body
+#   google-read calendar [--days N] [--from YYYY-MM-DD] [--tz ZONE]
+#                                             events on every calendar in the list, from the
+#                                             start of --from (default today) for N days (default 7)
+#   google-read drive-recent [--days N] [--query Q]
+#                                             files modified in the last N days (default 3),
+#                                             metadata only; Q is an extra Drive query clause
+#
+# Credentials: /etc/claude-runner/google.env (override GOOGLE_READ_ENV), root:claude
+# 0640, holding GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REFRESH_TOKEN as
+# minted by google-auth with read-only scopes (gmail.readonly, calendar.readonly,
+# drive.metadata.readonly). The token's scopes are the real limit; this tool adds a
+# second one in code: its only POST is the token refresh, and every API call is a
+# GET to the three read endpoints. Nothing is cached on disk.
+set -uo pipefail
+exec python3 - "$@" <<'PY'
+import base64, datetime, html.parser, json, os, sys, urllib.error, urllib.parse, urllib.request
+from zoneinfo import ZoneInfo
+
+ENV = os.environ.get("GOOGLE_READ_ENV", "/etc/claude-runner/google.env")
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+READ_BASES = ("https://gmail.googleapis.com/gmail/v1/",
+              "https://www.googleapis.com/calendar/v3/",
+              "https://www.googleapis.com/drive/v3/",
+              "https://oauth2.googleapis.com/tokeninfo")
+BODY_CAP = 20000
+
+def die(msg, code=1):
+    print("google-read: " + msg, file=sys.stderr)
+    sys.exit(code)
+
+def creds():
+    vals = {}
+    try:
+        with open(ENV, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    vals[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError as e:
+        die("cannot read %s (%s); see google-auth" % (ENV, e.strerror), 3)
+    missing = [k for k in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN") if not vals.get(k)]
+    if missing:
+        die("%s lacks %s" % (ENV, ", ".join(missing)), 3)
+    return vals
+
+def access_token():
+    c = creds()
+    body = urllib.parse.urlencode({"client_id": c["GOOGLE_CLIENT_ID"], "client_secret": c["GOOGLE_CLIENT_SECRET"],
+                                   "refresh_token": c["GOOGLE_REFRESH_TOKEN"], "grant_type": "refresh_token"}).encode()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(TOKEN_URL, data=body), timeout=30) as r:
+            return json.load(r)["access_token"]
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:300]
+        die("token refresh failed (HTTP %d): %s" % (e.code, detail), 4)
+    except (urllib.error.URLError, KeyError, ValueError) as e:
+        die("token refresh failed: %s" % e, 4)
+
+TOKEN = None
+
+def get(url, params=None):
+    global TOKEN
+    if not url.startswith(READ_BASES):
+        die("refusing a request outside the read endpoints: %s" % url)
+    if params:
+        url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params, doseq=True)
+    if TOKEN is None:
+        TOKEN = access_token()
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer " + TOKEN})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        die("GET %s -> HTTP %d: %s" % (url.split("?")[0], e.code, e.read().decode("utf-8", "replace")[:300]), 5)
+    except urllib.error.URLError as e:
+        die("GET %s failed: %s" % (url.split("?")[0], e), 5)
+
+def headers_of(msg):
+    return {h["name"].lower(): h["value"] for h in (msg.get("payload") or {}).get("headers", [])}
+
+class Text(html.parser.HTMLParser):
+    def __init__(self):
+        super().__init__(); self.out = []; self.skip = 0
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"): self.skip += 1
+        if tag in ("br", "p", "div", "tr", "li", "h1", "h2", "h3"): self.out.append("\n")
+        if tag == "a":
+            href = dict(attrs).get("href")
+            if href and href.startswith("http"): self.out.append(" <%s> " % href)
+    def handle_endtag(self, tag):
+        if tag in ("script", "style") and self.skip: self.skip -= 1
+    def handle_data(self, d):
+        if not self.skip: self.out.append(d)
+
+def decode(data):
+    return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4)).decode("utf-8", "replace")
+
+def body_text(payload):
+    plain, htm = [], []
+    def walk(p):
+        mt = p.get("mimeType", "")
+        data = (p.get("body") or {}).get("data")
+        if data and mt == "text/plain": plain.append(decode(data))
+        elif data and mt == "text/html": htm.append(decode(data))
+        for c in p.get("parts") or []: walk(c)
+    walk(payload or {})
+    if plain:
+        text = "\n".join(plain)
+    elif htm:
+        t = Text(); t.feed("\n".join(htm)); text = "".join(t.out)
+    else:
+        text = ""
+    text = "\n".join(line.rstrip() for line in text.splitlines())
+    while "\n\n\n" in text: text = text.replace("\n\n\n", "\n\n")
+    if len(text) > BODY_CAP:
+        text = text[:BODY_CAP] + "\n[... truncated at %d characters]" % BODY_CAP
+    return text.strip()
+
+def opt(args, name, default=None):
+    if name in args:
+        i = args.index(name)
+        if i + 1 >= len(args): die("%s needs a value" % name, 2)
+        v = args[i + 1]; del args[i:i + 2]; return v
+    return default
+
+def cmd_check(args):
+    prof = get("https://gmail.googleapis.com/gmail/v1/users/me/profile")
+    info = get("https://oauth2.googleapis.com/tokeninfo", {"access_token": TOKEN})
+    scopes = sorted(info.get("scope", "").split())
+    write = [s for s in scopes if not s.endswith((".readonly", ".metadata.readonly")) and s not in ("openid", "email", "profile")]
+    return {"account": prof.get("emailAddress"), "scopes": scopes, "read_only": not write}
+
+def cmd_gmail_search(args):
+    n = int(opt(args, "--max", "50"))
+    if len(args) != 1: die("usage: google-read gmail-search <query> [--max N]", 2)
+    q = args[0]
+    params = {"q": q, "maxResults": min(n, 100)}
+    if "in:anywhere" in q: params["includeSpamTrash"] = "true"
+    out, token = [], None
+    while len(out) < n:
+        if token: params["pageToken"] = token
+        page = get("https://gmail.googleapis.com/gmail/v1/users/me/threads", params)
+        for t in page.get("threads", []):
+            if len(out) >= n: break
+            th = get("https://gmail.googleapis.com/gmail/v1/users/me/threads/" + t["id"],
+                     {"format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]})
+            msgs = th.get("messages", [])
+            first, last = (headers_of(msgs[0]) if msgs else {}), (headers_of(msgs[-1]) if msgs else {})
+            labels = sorted({l for m in msgs for l in m.get("labelIds", [])})
+            out.append({"id": t["id"], "subject": first.get("subject", ""), "from": first.get("from", ""),
+                        "last_from": last.get("from", ""), "last_date": last.get("date", ""),
+                        "messages": len(msgs), "labels": labels, "snippet": t.get("snippet", ""),
+                        "link": "https://mail.google.com/mail/u/0/#all/" + t["id"]})
+        token = page.get("nextPageToken")
+        if not token: break
+    return out
+
+def cmd_gmail_thread(args):
+    if len(args) != 1: die("usage: google-read gmail-thread <thread-id>", 2)
+    th = get("https://gmail.googleapis.com/gmail/v1/users/me/threads/" + urllib.parse.quote(args[0]), {"format": "full"})
+    msgs = []
+    for m in th.get("messages", []):
+        h = headers_of(m)
+        msgs.append({"id": m["id"], "date": h.get("date", ""), "from": h.get("from", ""), "to": h.get("to", ""),
+                     "cc": h.get("cc", ""), "subject": h.get("subject", ""), "labels": m.get("labelIds", []),
+                     "body": body_text(m.get("payload"))})
+    return {"id": th.get("id"), "link": "https://mail.google.com/mail/u/0/#all/" + args[0], "messages": msgs}
+
+def cmd_calendar(args):
+    days = int(opt(args, "--days", "7"))
+    tz = ZoneInfo(opt(args, "--tz", "America/New_York"))
+    start_s = opt(args, "--from")
+    if args: die("usage: google-read calendar [--days N] [--from YYYY-MM-DD] [--tz ZONE]", 2)
+    start = datetime.date.fromisoformat(start_s) if start_s else datetime.datetime.now(tz).date()
+    t0 = datetime.datetime.combine(start, datetime.time(), tz)
+    t1 = t0 + datetime.timedelta(days=days)
+    out = []
+    for cal in get("https://www.googleapis.com/calendar/v3/users/me/calendarList").get("items", []):
+        if cal.get("hidden") or cal.get("selected") is False: continue
+        params = {"timeMin": t0.isoformat(), "timeMax": t1.isoformat(), "singleEvents": "true",
+                  "orderBy": "startTime", "maxResults": 250}
+        evs = get("https://www.googleapis.com/calendar/v3/calendars/%s/events" % urllib.parse.quote(cal["id"]), params)
+        for e in evs.get("items", []):
+            me = next((a for a in e.get("attendees", []) if a.get("self")), {})
+            out.append({"calendar": cal.get("summary"), "summary": e.get("summary", ""),
+                        "start": e.get("start", {}).get("dateTime") or e.get("start", {}).get("date"),
+                        "end": e.get("end", {}).get("dateTime") or e.get("end", {}).get("date"),
+                        "location": e.get("location", ""), "status": e.get("status"),
+                        "my_response": me.get("responseStatus"), "attendees": len(e.get("attendees", [])),
+                        "organizer": (e.get("organizer") or {}).get("email", ""),
+                        "description": (e.get("description") or "")[:2000], "link": e.get("htmlLink")})
+    out.sort(key=lambda e: e["start"] or "")
+    return out
+
+def cmd_drive_recent(args):
+    days = int(opt(args, "--days", "3"))
+    extra = opt(args, "--query")
+    if args: die("usage: google-read drive-recent [--days N] [--query Q]", 2)
+    since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
+    q = "modifiedTime > '%s' and trashed = false" % since
+    if extra: q += " and (%s)" % extra
+    out, token = [], None
+    while True:
+        params = {"q": q, "orderBy": "modifiedTime desc", "pageSize": 100,
+                  "fields": "nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink,owners(displayName),lastModifyingUser(displayName))"}
+        if token: params["pageToken"] = token
+        page = get("https://www.googleapis.com/drive/v3/files", params)
+        out.extend(page.get("files", []))
+        token = page.get("nextPageToken")
+        if not token or len(out) >= 500: break
+    return out
+
+CMDS = {"check": cmd_check, "gmail-search": cmd_gmail_search, "gmail-thread": cmd_gmail_thread,
+        "calendar": cmd_calendar, "drive-recent": cmd_drive_recent}
+argv = sys.argv[1:]
+if not argv or argv[0] not in CMDS:
+    die("usage: google-read {%s} ... (see the header of this script)" % "|".join(CMDS), 2)
+json.dump(CMDS[argv[0]](argv[1:]), sys.stdout, ensure_ascii=False, indent=1)
+print()
+PY

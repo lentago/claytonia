@@ -3,13 +3,16 @@
 # Job = plain text (whole file is the prompt) OR a .json spec:
 #   {"prompt":"...", "project":"name", "model":"...", "cwd":"...",
 #    "max_turns":N, "issue":N, "max_budget_usd":N, "timeout_sec":N, "allowed_tools":"...",
-#    "submitter":"..."}
+#    "submitter":"...", "automerge":"<rule>"}
 # "submitter" (#21, stamped by cr-submit) names who queued the job; it is recorded
 # in the .meta and carried on the metrics events. Distinct from processing/<runid>.owner,
 # which names the WORKER that claimed the job.
 # If "project" is set it is resolved via projects/registry.json: a CLEAN checkout
 # of the repo is prepared (repo CLAUDE.md applies), per-project memory is loaded,
-# and the agent is told to branch + open a PR (never merge).
+# and the agent is told to branch + open a PR (never merge). After the run,
+# cr-automerge decides the PR's merge path: disarmed for a human (ADR-0002), or,
+# only when "automerge" names a rule the repo's default branch defines and the
+# PR fits it, squash auto-merge armed (ADR-0009).
 # Every run is bounded (issue #114): turns, spend and wall-clock each resolve
 # spec > project registry > runner.env default, like model. A limit hit routes
 # to failed/ and is named as limit=turns|budget|timeout in the .meta.
@@ -25,7 +28,7 @@ CLAUDE_BIN="${CLAUDE_BIN:-/home/claude/.local/bin/claude}"
 [ -f /etc/claude-runner/token.env ] && . /etc/claude-runner/token.env
 export CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}"
 export HOME="${HOME:-/home/claude}"
-export PATH="${CLAUDE_RUNNER_PATH:-/home/claude/.local/bin:/usr/local/bin:/usr/bin:/bin}"  # override lets the test harness inject stub bins
+export PATH="${CLAUDE_RUNNER_PATH:-/home/claude/.local/bin:/usr/local/bin:/usr/bin:/bin:$RUNNER_ROOT/bin}"  # override lets the test harness inject stub bins
 
 DEF_MODEL="${CLAUDE_RUNNER_MODEL:-}"
 DEF_CWD="${CLAUDE_RUNNER_CWD:-/home/claude/work}"
@@ -58,7 +61,7 @@ started=%s
 origname=%s
 ' "$(hostname)" "$(date -u +%s)" "$base" > "$proc.owner" 2>/dev/null || true
 
-prompt=""; cwd="$DEF_CWD"; model=""; max_turns=""; max_budget=""; timeout_sec=""; allowed=""; project=""; spec_issue=""; spec_issue_set=0; submitter=""
+prompt=""; cwd="$DEF_CWD"; model=""; max_turns=""; max_budget=""; timeout_sec=""; allowed=""; project=""; spec_issue=""; spec_issue_set=0; submitter=""; automerge_rule=""
 case "$base" in
   *.json)
     if ! jq -e . "$proc" >/dev/null 2>&1; then
@@ -77,6 +80,7 @@ case "$base" in
     allowed="$(jq -r '.allowed_tools // empty' "$proc")"
     # One line, no tabs: it lands in the key=value .meta and the Loki line as-is.
     submitter="$(jq -r '.submitter // empty | tostring | gsub("[\n\r\t]"; " ")' "$proc")"
+    automerge_rule="$(jq -r '.automerge // empty | tostring' "$proc")"
     # Presence, not value, makes the spec authoritative: "issue": null / "" / "x" means
     # "no issue" and must not fall back to parsing the prompt (#130).
     if jq -e 'has("issue")' "$proc" >/dev/null 2>&1; then
@@ -113,6 +117,10 @@ if [ -n "$project" ]; then
   context_dir="$(printf '%s' "$pj" | jq -r '.context_dir // empty')"
   [ -z "$context_dir" ] && context_dir="$JOBS_ROOT/projects/$project"
   setup="$(printf '%s' "$pj" | jq -r '.setup // empty')"
+  # gh-token (and the git credential helper behind it) mint for the installation
+  # that covers this repo, so a project outside the org installation still clones
+  # and pushes. gh also takes GH_REPO as its default repo, which is this one.
+  export GH_REPO="$repo"
 
   ckout="$WORKROOT/$project"
   {
@@ -315,10 +323,15 @@ else
 fi
 
 # Extract PR URL from output now — used for both the no-PR check and the
-# auto-merge disarm below, so it must be set before the done/failed routing.
+# merge decision below, so it must be set before the done/failed routing. Only a
+# PR in the project's own repo counts, and the last one wins (agents end with
+# their PR URL): a report that links other repos' PRs must never have one of
+# those disarmed or armed on its behalf.
 prurl=""
 if [ -n "${project:-}" ] && [ -n "${repo:-}" ] && [ -f "$outtxt" ]; then
-  prurl="$(grep -oE 'https://github.com/[^ )]+/pull/[0-9]+' "$outtxt" 2>/dev/null | head -1)"
+  _re="$(printf '%s' "$repo" | sed 's/[].*^$\\[]/\\&/g')"
+  prurl="$(grep -oiE "https://github.com/${_re}/pull/[0-9]+" "$outtxt" 2>/dev/null | tail -1)"
+  unset _re
 fi
 
 # For project jobs that exit cleanly: verify a PR was actually opened.
@@ -395,13 +408,28 @@ else
     unset _reason _logtail _body _limitline
   fi
 fi
-# Enforce the no-auto-merge rule: a runner-bot PR is ALWAYS left for a human, so if
-# the agent opened one (and possibly armed auto-merge despite the standing rule),
-# disarm it. Overrides any repo convention; runs win-or-lose. Best-effort.
-# prurl was extracted above before the done/failed routing.
+# The merge path for the PR the agent opened (prurl was extracted above). By default
+# a runner-bot PR is left for a human: if the agent armed auto-merge despite the
+# standing rule, it is disarmed (ADR-0002). cr-automerge arms squash auto-merge
+# instead only when the spec named a rule that the repo's default branch defines
+# and the PR fits it (ADR-0009); any doubt or error disarms. If cr-automerge isn't
+# deployed, the plain disarm runs. Best-effort; the decision lands in the .meta.
 if [ -n "${prurl:-}" ]; then
-  GH_TOKEN="$(gh-token 2>/dev/null)" gh pr merge "$prurl" --disable-auto >/dev/null 2>&1 \
-    && echo "run-job: disarmed auto-merge on $prurl (bot PRs are human-reviewed)" | systemd-cat -t claude-runner -p notice || true
+  _am="${CLAUDE_RUNNER_BIN:-$RUNNER_ROOT/bin}/cr-automerge"
+  if [ -x "$_am" ]; then
+    _decision="$(GH_TOKEN="$(gh-token 2>/dev/null)" timeout -k 5 180 "$_am" "$prurl" "$repo" "$branch" "$automerge_rule" "$rc" 2>>"$errlog" | tail -1)"
+    [ -n "$_decision" ] || _decision="disarmed: cr-automerge gave no answer"
+    case "$_decision" in
+      armed*) ;;
+      *) GH_TOKEN="$(gh-token 2>/dev/null)" gh pr merge "$prurl" --disable-auto >/dev/null 2>&1 || true ;;
+    esac
+  else
+    GH_TOKEN="$(gh-token 2>/dev/null)" gh pr merge "$prurl" --disable-auto >/dev/null 2>&1 || true
+    _decision="disarmed: bot PRs are human-reviewed"
+  fi
+  echo "automerge=${_decision}" >> "$meta"
+  echo "run-job: $prurl ${_decision}" | systemd-cat -t claude-runner -p notice || true
+  unset _am _decision
 fi
 
 rm -f "$proc.owner" 2>/dev/null || true

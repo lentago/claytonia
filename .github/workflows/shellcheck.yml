@@ -22,6 +22,10 @@ jobs:
         bin/process-inbox
         bin/cr-submit
         bin/cr-newproject
+        bin/cr-schedule
+        bin/cr-automerge
+        bin/google-read
+        bin/google-auth
         bin/cr-emit
         bin/gh-token
         bin/gh-credential-helper
