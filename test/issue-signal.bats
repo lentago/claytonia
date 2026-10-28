@@ -226,3 +226,18 @@ EOT
   ! grep -q 'other/repo/pull/3' <(grep 'pr merge' "$FAKE_GH_LOG")
   grep -q '^automerge=disarmed: no rule named in the job spec$' "$JOBS_ROOT"/logs/*.meta
 }
+
+@test "offbox_transcript false checks the project out under the private root" {
+  export CLAUDE_RUNNER_PRIVATE_WORKROOT="$TEST_TMP/private"
+  git clone -q "$TEST_TMP/origin.git" "$CLAUDE_RUNNER_PRIVATE_WORKROOT/proj" 2>/dev/null
+  printf '{"proj":{"repo":"acme/proj","default_branch":"main","offbox_transcript":false}}\n' > "$JOBS_ROOT/projects/registry.json"
+  drop_project_job "Work issue #42"
+  run_job
+  grep -q "^cwd=$CLAUDE_RUNNER_PRIVATE_WORKROOT/proj$" "$JOBS_ROOT"/logs/*.meta
+}
+
+@test "projects without the flag keep the shared work root" {
+  drop_project_job "Work issue #42"
+  run_job
+  grep -q "^cwd=$CLAUDE_RUNNER_WORKROOT/proj$" "$JOBS_ROOT"/logs/*.meta
+}

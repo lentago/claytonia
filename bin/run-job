@@ -22,6 +22,11 @@ JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
 RUNNER_ROOT=/opt/claude-runner
 REGISTRY="$JOBS_ROOT/projects/registry.json"
 WORKROOT="${CLAUDE_RUNNER_WORKROOT:-/home/claude/work}"
+# Checkouts for projects registered with "offbox_transcript": false. The live
+# transcript shipper (drosera's runner-transcript.alloy) tails only session files
+# under ~/.claude/projects/-home-claude-work*/, so a session whose cwd is here is
+# never streamed to Grafana Cloud; its full transcript still lands in the NAS logs.
+PRIVATE_WORKROOT="${CLAUDE_RUNNER_PRIVATE_WORKROOT:-/home/claude/private}"
 CLAUDE_BIN="${CLAUDE_BIN:-/home/claude/.local/bin/claude}"
 
 [ -f "$RUNNER_ROOT/etc/runner.env" ] && . "$RUNNER_ROOT/etc/runner.env"
@@ -123,6 +128,10 @@ if [ -n "$project" ]; then
   export GH_REPO="$repo"
 
   ckout="$WORKROOT/$project"
+  if [ "$(printf '%s' "$pj" | jq -r '.offbox_transcript')" = false ]; then
+    mkdir -p "$PRIVATE_WORKROOT"
+    ckout="$PRIVATE_WORKROOT/$project"
+  fi
   {
     if [ -d "$ckout/.git" ]; then
       git -C "$ckout" fetch --quiet origin "$branch" \
