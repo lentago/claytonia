@@ -318,7 +318,7 @@ memory that jobs read and append to.
 cr-newproject <name> <owner/repo> [model] [branch]   # register + scaffold context
 ```
 
-- `projects/registry.json` — `name → {repo, default_branch, model, max_turns, max_budget_usd, timeout_sec, context_dir, setup}` (limits optional; they sit between the job spec and the `runner.env` defaults)
+- `projects/registry.json` — `name → {repo, default_branch, model, max_turns, max_budget_usd, timeout_sec, context_dir, setup, offbox_transcript}` (limits optional; they sit between the job spec and the `runner.env` defaults). `"offbox_transcript": false` checks the project out under `/home/claude/private/` instead of `/home/claude/work/`, outside the live transcript shipper's path, so its jobs' narration is never streamed to Grafana Cloud; the full transcript still lands in `logs/` on the NAS. Use it for a project whose jobs read personal data.
 - `projects/<name>/memory.md` — dated, durable learnings (conventions, gotchas)
 
 Durable conventions live in the **repo's own `CLAUDE.md`** (reviewed, versioned, loaded
