@@ -88,8 +88,8 @@ jobs:
           non-secret.
         - **Gitops and Terraform scope**: the `bullpen-gitops.*` units are
           bootstrap-only and must not be deployed by the loop they drive, and the
-          on-host `bullpen`/`BULLPEN_*` names are intentional and must not be
-          renamed. Terraform owns only the pool's LXCs; flag plans that touch
+          on-host `bullpen`/`BULLPEN_*` names are tracked for rename in claytonia#65;
+          a rename must be a planned, codified change, not a drive-by. Terraform owns only the pool's LXCs; flag plans that touch
           non-pool guests, the NAS, or in-guest content, and flag docs or
           README drift from the behavior of changed scripts.
 
