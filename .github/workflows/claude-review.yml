@@ -1,0 +1,117 @@
+# ============================================================================
+# Claude Code — Automated PR Review (advisory)
+# ============================================================================
+# Thin wrapper around lentago/shared-workflows/claude-review.yml, per
+# lentago/.github ADR-0013. This file is copied from repo-template's; only the
+# review_prompt is specific to this repo.
+#
+# - Runs when a PR is opened or marked ready for review, and again when it is
+#   labelled `re-review` (Haiku) or `review:sonnet` (Sonnet). It does NOT run on
+#   every push: it shares the fleet's Claude subscription with the bullpen.
+# - Advisory, never a required status check (shared-workflows ADR-0003). The
+#   gate is the arming rule: don't arm until a review has posted and every
+#   finding is triaged on the PR (shared-workflows CLAUDE.md, Auto-merge
+#   arming). A "could not complete" soft-fail comment is not a review —
+#   label `re-review`.
+# - After a labelled run, `clear-label` removes the label so adding it again
+#   triggers again.
+# - A PR that adds or changes THIS file is not reviewed by it: the Claude Code
+#   action skips unless the workflow is identical to the default branch's copy,
+#   and the reusable workflow (v1.5.0+) posts a "not a review" notice instead.
+#   Review such PRs locally and post the result as "Review (Haiku, local)"
+#   (ADR-0013 Decision 2).
+# - Dependabot PRs are skipped: Dependabot runs don't receive Actions secrets,
+#   so the required token would fail the call. Review a bump locally if it
+#   warrants one.
+# - Drafts are skipped (by the reusable workflow) and keep their trigger label
+#   until they are ready.
+# ============================================================================
+
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, labeled]
+
+jobs:
+  review:
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      github.event.pull_request.draft == false &&
+      (github.event.action != 'labeled' ||
+       github.event.label.name == 're-review' ||
+       github.event.label.name == 'review:sonnet')
+    # One review at a time per PR: a re-label during a running review queues
+    # behind it instead of posting a duplicate.
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    uses: lentago/shared-workflows/.github/workflows/claude-review.yml@v1.5.0
+    secrets: inherit
+    with:
+      model: ${{ github.event.label.name == 'review:sonnet' && 'sonnet' || 'haiku' }}
+      review_prompt: |
+        This repository is claytonia (a.k.a. the bullpen), the Lentago Labs
+        agent-fleet system: self-hosted headless coding agents on unprivileged
+        LXCs that poll a NAS inbox, claim jobs by atomic rename, and open PRs.
+        It is POSIX-ish bash (bin/), systemd units, a gitops self-deploy loop,
+        and Terraform for the worker pool. A merge to main deploys to live
+        workers within about 5 minutes, so treat every change as production.
+        Focus your review on:
+
+        - **Shell correctness and deploy safety**: quoting, `set -euo pipefail`
+          behavior, and error handling (watch `|| true` hiding a failed move).
+          Every `bin/` script must pass `bash -n` or it blocks the whole deploy;
+          systemd units must pass `systemd-analyze verify`. Stay within the
+          dependencies jq, curl, openssl, git and gh.
+        - **Queue and claim invariants**: claims are an atomic `mv`
+          inbox to processing on the shared mount, and the per-worker `flock` is
+          local only, never cross-worker coordination. Producers must write
+          `*.partial` then rename. Look for double-processing, lost jobs,
+          stranded processing entries, or requeue loops in the reaper and
+          janitor paths. Do not accept a broker or lock service.
+        - **Workers are cattle**: no per-worker identity beyond hostname, and
+          nothing durable on a worker's local disk (it belongs on the NAS under
+          `/srv/jobs`). Project knowledge belongs in the target repo's CLAUDE.md
+          or the NAS `memory.md`, never baked into a worker image.
+        - **Merge authority**: workers branch and open PRs, never merge. The only
+          auto-merge path is `bin/cr-automerge` (ADR-0009); flag anything that
+          widens it or adds another route to auto-merge.
+        - **Secrets and config**: no tokens, keys, `*.pem`, `*.smbcred` or
+          `token.env` content committed, and no credentials echoed to logs or
+          transcripts. `etc/runner.env` is deployed verbatim and must stay
+          non-secret.
+        - **Gitops and Terraform scope**: the `bullpen-gitops.*` units are
+          bootstrap-only and must not be deployed by the loop they drive, and the
+          on-host `bullpen`/`BULLPEN_*` names are tracked for rename in claytonia#65;
+          a rename must be a planned, codified change, not a drive-by. Terraform owns only the pool's LXCs; flag plans that touch
+          non-pool guests, the NAS, or in-guest content, and flag docs or
+          README drift from the behavior of changed scripts.
+
+  clear-label:
+    needs: review
+    if: >-
+      always() && github.event.action == 'labeled' &&
+      github.event.pull_request.draft == false &&
+      (github.event.label.name == 're-review' || github.event.label.name == 'review:sonnet')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Remove the trigger label so it can be added again
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          LABEL: ${{ github.event.label.name }}
+        # REST, not `gh pr edit`: the GraphQL path can trip on PR project
+        # fields with GITHUB_TOKEN, and a label left behind would make the
+        # next re-add a no-op (no `labeled` event).
+        run: |
+          enc=$(jq -rn --arg l "$LABEL" '$l|@uri')
+          gh api --method DELETE "repos/$REPO/issues/$PR/labels/$enc" >/dev/null
