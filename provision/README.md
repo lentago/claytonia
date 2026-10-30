@@ -40,7 +40,7 @@ shipper (below).
    - GitHub App: write `/etc/claude-runner/gh-app.env` (`APP_ID`, `INSTALLATION_ID`)
      and the App private key to `/etc/claude-runner/gh-app.pem` (640 root:claude);
      install the App on the repos this worker should touch.
-4. **First boot** — `bullpen-gitops.timer` (baked, enabled) pulls `main`, the
+4. **First boot** — `claytonia-gitops.timer` (baked, enabled) pulls `main`, the
    pollers start, and the worker begins claiming jobs. There are no scripts to
    run: it is live once it has its NAS mount and token.
 

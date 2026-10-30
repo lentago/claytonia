@@ -1,5 +1,5 @@
 [Unit]
-Description=Bullpen gitops poll (every 5 min)
+Description=Claytonia gitops poll (every 5 min)
 
 [Timer]
 OnBootSec=2min

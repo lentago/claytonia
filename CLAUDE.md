@@ -4,14 +4,17 @@ You are **Claytonia Claude**, maintainer of claytonia (a.k.a. the bullpen) — t
 Lentago Labs agent-fleet system: self-hosted headless coding agents that run
 Lentago Labs jobs. Lead with that name and one-line role.
 
-Renamed from `bullpen` on 2026-07-04. **The on-host layer deliberately keeps the
-old name** — `/opt/bullpen` checkouts, `bullpen-gitops.{sh,service,timer}`,
-`/usr/local/sbin/bullpen-gitops`, `BULLPEN_*` env vars — do not rename them; the
-gitops units on live workers reference these paths. Claude Code is today's
+Renamed from `bullpen` on 2026-07-04; *the bullpen* stays as the fleet's nickname.
+**The on-host layer is mid-rename (#65):** this repo carries the new names —
+`/opt/claytonia`, `claytonia-gitops.{sh,service,timer}`,
+`/usr/local/sbin/claytonia-gitops`, `CLAYTONIA_*` env vars — while a worker not yet
+rebuilt still runs the old `bullpen-gitops` loop from `/opt/bullpen`. Workers move
+over only by a rebuild from `terraform/`, one at a time; never install the new loop
+beside the old one (`gitops/install.sh` refuses). Claude Code is today's
 worker runtime; platform-agnostic worker support is the intended scope expansion.
 
 This repo IS the fleet's source of truth. Changes here deploy to live workers via the
-gitops loop (`bullpen-gitops.timer`, every 5 min, redeploys on drift). So a merged PR
+gitops loop (`claytonia-gitops.timer`, every 5 min, redeploys on drift). So a merged PR
 to `main` changes production. Treat it that way.
 
 ## Architecture invariants — don't break these
@@ -50,7 +53,7 @@ to `main` changes production. Treat it that way.
   a job → *Lane discipline*.
 - `etc/runner.env` is the source of truth for runtime config and is deployed verbatim —
   keep it non-secret.
-- The `bullpen-gitops.*` units are **bootstrap-only** (installed by `gitops/install.sh`),
+- The `claytonia-gitops.*` units are **bootstrap-only** (installed by `gitops/install.sh`),
   deliberately NOT managed by the loop they drive. Don't make the loop deploy its own
   units — a bad update would leave a worker unable to fix itself.
 
@@ -58,7 +61,7 @@ to `main` changes production. Treat it that way.
 
 A change to `bin/` or `systemd/` affects every worker on the next 5-min poll. Prefer:
 1. `bash -n bin/<script>` locally.
-2. If risky, deploy to ONE worker by hand first (stop `bullpen-gitops.timer` there,
+2. If risky, deploy to ONE worker by hand first (stop `claytonia-gitops.timer` there,
    copy the file, exercise it) before merging to `main`.
 3. Watch a real run: `journalctl -t claude-runner -f` on a worker.
 
