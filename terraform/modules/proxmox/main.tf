@@ -2,11 +2,24 @@
 # pool was adopted from (lentago/kalmia#37) attribute-for-attribute, so the
 # brownfield import landed on a clean plan. In-guest content is NOT this
 # layer's job: provision/ bootstraps it, the gitops loop converges it.
+
+# Changing a worker's `rebuild` input rebuilds that worker through the
+# container's replace_triggered_by. Terraform fires the trigger only when this
+# resource is updated, never when it is first created, so the triggers landed
+# alone first (#65). It lives in this module because replace_triggered_by can
+# reference only resources in the same module.
+resource "terraform_data" "rebuild" {
+  for_each = var.workers
+
+  input = each.value.rebuild
+}
+
 resource "proxmox_virtual_environment_container" "worker" {
   for_each = var.workers
 
   node_name     = var.node_name
   vm_id         = each.value.vm_id
+  pool_id       = var.pool_id
   description   = "Claude Code headless runner — scheduled (cron) + triggered (inbox watcher) jobs. Code in /opt/claude-runner; inbox on NAS at /srv/jobs.\n"
   unprivileged  = true
   started       = true
@@ -73,9 +86,9 @@ resource "proxmox_virtual_environment_container" "worker" {
     # one is a config bug, not a change to apply.
     prevent_destroy = true
     # operating_system: create-only (above). mount_point: root@pam-attached
-    # (above). pool_id: membership in the `claytonia` PVE resource pool is
-    # substrate managed alongside the pool itself (README.md § Auth) — never
-    # reconciled here, whether or not the provider reads it.
-    ignore_changes = [operating_system, mount_point, pool_id]
+    # (above). pool_id: set at create (var.pool_id), never reconciled after;
+    # the imported workers were placed in the pool root-side (README.md § Auth).
+    ignore_changes       = [operating_system, mount_point, pool_id]
+    replace_triggered_by = [terraform_data.rebuild[each.key]]
   }
 }

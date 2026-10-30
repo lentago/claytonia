@@ -60,10 +60,13 @@ TLS follows kalmia's pattern: the committed [`pve-root-ca.pem`](pve-root-ca.pem)
 `SSL_CERT_DIR` keeping the system roots for the S3 backend — so
 `insecure = false`.
 
-**Pool membership is substrate, not Terraform-reconciled** (`pool_id` is in
-`ignore_changes`): guests are placed in the pool with `pvesh set
-/pools/claytonia --vms <ids>` alongside the other root-side steps. The
-membership is what scopes the token, so it can't be owned by the token.
+**Pool membership is set at create, then never reconciled** (`pool_id` is in
+`ignore_changes`). The token's create right comes only from its
+`/pool/claytonia` ACL. A destroy takes the VMID out of the pool
+(`remove_vm_access`), so a create that names no pool is refused with a 403
+after the old guest is already gone. The module therefore sends
+`pool_id = "claytonia"` on every create (#65). The five imported workers were
+placed in the pool root-side with `pvesh set /pools/claytonia --vms <ids>`.
 
 ## State
 
@@ -113,8 +116,9 @@ install dir with its own systemd service.
 1. Add a map entry in [`main.tf`](main.tf): next free VMID (118+ — 113–115
    are non-pool guests), next free IP, `mac` pinned after first boot (or
    pre-assigned). Plan + apply.
-2. Root-side substrate on the PVE host: add the VMID to the pool
-   (`pvesh set /pools/claytonia --vms <id>`), attach the NAS bind mount
+2. Root-side substrate on the PVE host. Pool membership needs no step: the
+   module's `pool_id` puts the new guest in `claytonia` at create (check with
+   `pvesh get /pools/claytonia`). Attach the NAS bind mount
    (`pct set <id> -mp0 /mnt/neptune-lentago/claude-jobs,mp=/srv/jobs` — see
    `provision/README.md` step 2, including the `RequiresMountsFor=` drop-in).
 3. In-guest: nothing to run — workers are cut from the kalmia runner image
