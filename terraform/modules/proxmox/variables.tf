@@ -1,10 +1,22 @@
 variable "workers" {
-  description = "Worker name → Proxmox identity: vm_id, static LAN IP (/24 assumed), pinned MAC."
+  description = "Worker name → Proxmox identity: vm_id, static LAN IP (/24 assumed), pinned MAC, rebuild trigger."
   type = map(object({
     vm_id = number
     ip    = string
     mac   = string
+    # Changing this string rebuilds that one worker (destroy, then create from
+    # the template) through terraform_data.rebuild below.
+    rebuild = optional(string, "claytonia#65: baseline")
   }))
+}
+
+variable "pool_id" {
+  # Set at create so a replacement lands back in the pool. The token's
+  # VM.Allocate comes only from its /pool/claytonia ACL, and a destroy takes the
+  # VMID out of the pool, so a create that names no pool is refused (#65).
+  description = "PVE resource pool new workers are created in."
+  type        = string
+  default     = "claytonia"
 }
 
 variable "node_name" {
