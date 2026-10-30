@@ -19,7 +19,7 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-OBS_DIR="${OBS_REPO_DIR:-/opt/homelab-observability}"
+OBS_DIR="${OBS_REPO_DIR:-/opt/drosera}"
 OBS_URL="${OBS_REPO_URL:-https://github.com/lentago/drosera.git}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

@@ -91,7 +91,7 @@ label). Co-locate clones on the same host so they share one CIFS mount
 `terraform/main.tf` so its existence stays codified.
 
 The **transcript shipper** comes along for free on a clone: its Alloy service, the
-`/opt/homelab-observability` checkout, the sync timer, and the
+`/opt/drosera` checkout, the sync timer, and the
 `/etc/default/alloy-transcript` push token are all copied. Because the shipper
 labels its stream with `constants.hostname` (not a baked value), the clone
 self-labels with its own new hostname — no per-clone reconfiguration needed.
