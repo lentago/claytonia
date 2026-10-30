@@ -14,7 +14,7 @@
 # (/etc/default/alloy-transcript), which the deploy script itself wrote.
 set -uo pipefail
 
-OBS_DIR="${OBS_REPO_DIR:-/opt/homelab-observability}"
+OBS_DIR="${OBS_REPO_DIR:-/opt/drosera}"
 LOG="${TRANSCRIPT_SYNC_LOG:-/var/log/transcript-shipper-sync.log}"
 DEPLOY="$OBS_DIR/scripts/deploy-runner-transcript-alloy.sh"
 
