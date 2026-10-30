@@ -87,11 +87,13 @@ jobs:
           transcripts. `etc/runner.env` is deployed verbatim and must stay
           non-secret.
         - **Gitops and Terraform scope**: the `claytonia-gitops.*` units are
-          bootstrap-only and must not be deployed by the loop they drive. Workers
-          still on the pre-rename `bullpen-gitops` loop move to the new names only
-          by a terraform rebuild (claytonia#65); flag any change that renames
-          on-host paths in place or installs a second loop beside the old one. Terraform owns only the pool's LXCs; flag plans that touch
-          non-pool guests, the NAS, or in-guest content, and flag docs or
+          bootstrap-only and must not be deployed by the loop they drive. A
+          worker still on the pre-rename `bullpen-gitops` loop moves to the new
+          names only by a terraform rebuild (claytonia#65), never by a change
+          on the box: flag any change that renames a live worker's on-host
+          units, paths or `BULLPEN_*` names, or installs a second loop beside
+          the old one. Terraform owns only the pool's LXCs; flag plans that
+          touch non-pool guests, the NAS, or in-guest content, and flag docs or
           README drift from the behavior of changed scripts.
 
   clear-label:
