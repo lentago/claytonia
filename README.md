@@ -36,9 +36,10 @@ of coding ability.
 
 The fleet keeps its nickname, **the bullpen**: a pool of ready workers called up
 when needed. Agents idle until a job arrives, then one gets the call. The
-on-host layer took the new name in #65 (`/opt/claytonia`, `claytonia-gitops.*`,
-`CLAYTONIA_*` env vars, replacing `/opt/bullpen`, `bullpen-gitops.*` and
-`BULLPEN_*`); each worker moves over when it is rebuilt from `terraform/`.
+on-host layer is taking the new name under #65 (`/opt/claytonia`,
+`claytonia-gitops.*`, `CLAYTONIA_*` env vars). Until a worker is rebuilt from the
+v2 runner image it still runs `bullpen-gitops` from `/opt/bullpen` with
+`BULLPEN_*` defaults.
 
 ## Architecture at a glance
 

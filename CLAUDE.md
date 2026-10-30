@@ -9,8 +9,9 @@ Renamed from `bullpen` on 2026-07-04; *the bullpen* stays as the fleet's nicknam
 `/opt/claytonia`, `claytonia-gitops.{sh,service,timer}`,
 `/usr/local/sbin/claytonia-gitops`, `CLAYTONIA_*` env vars — while a worker not yet
 rebuilt still runs the old `bullpen-gitops` loop from `/opt/bullpen`. Workers move
-over only by a rebuild from `terraform/`, one at a time; never install the new loop
-beside the old one (`gitops/install.sh` refuses). Claude Code is today's
+over only by a rebuild, one at a time: `terraform/` recreates the LXC from the v2
+kalmia runner image, which carries the new loop. Never install the new loop beside
+the old one (`gitops/install.sh` refuses). Claude Code is today's
 worker runtime; platform-agnostic worker support is the intended scope expansion.
 
 This repo IS the fleet's source of truth. Changes here deploy to live workers via the
