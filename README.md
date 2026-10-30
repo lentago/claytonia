@@ -36,9 +36,10 @@ of coding ability.
 
 The fleet keeps its nickname, **the bullpen**: a pool of ready workers called up
 when needed. Agents idle until a job arrives, then one gets the call. The
-on-host layer keeps the name too (`/opt/bullpen`, `bullpen-gitops.*`,
-`BULLPEN_*` env vars) — renamed from `bullpen` on 2026-07-04, live paths and
-unit names deliberately unchanged.
+on-host layer is taking the new name under #65 (`/opt/claytonia`,
+`claytonia-gitops.*`, `CLAYTONIA_*` env vars). Until a worker is rebuilt from the
+v2 runner image it still runs `bullpen-gitops` from `/opt/bullpen` with
+`BULLPEN_*` defaults.
 
 ## Architecture at a glance
 
@@ -59,7 +60,7 @@ flowchart TD
         HUMAN --> MAIN[("main")]
     end
 
-    MAIN -.->|"bullpen-gitops.timer polls every 5 min"| WORKER
+    MAIN -.->|"claytonia-gitops.timer polls every 5 min"| WORKER
     MAIN -.->|"terraform/ changed → apply-on-merge"| POOL["Terraform-owned<br/>claude-runner LXC pool"]
     POOL -.->|"pool capacity"| WORKER
 
@@ -83,7 +84,7 @@ Operations patterns you can inspect end to end here — each row links to the co
 | **Apply-on-merge Terraform for guest lifecycle** — change management where the merged PR *is* the change record | [`terraform.yml`](https://github.com/lentago/claytonia/blob/main/.github/workflows/terraform.yml) runs `terraform plan` on the PR and `terraform apply -auto-approve` on merge to `main`, serialized by a concurrency group so simultaneous merges can't race on state |
 | **Self-hosted LAN runner for a LAN-only API** | terraform CI is pinned to [`runs-on: [self-hosted, lan]`](https://github.com/lentago/claytonia/blob/main/.github/workflows/terraform.yml) (LXC 115) because the Proxmox API isn't reachable from GitHub-hosted runners |
 | **Least-privilege identity per system** | [`id-token: write`](https://github.com/lentago/claytonia/blob/main/.github/workflows/terraform.yml) → an AWS role for the S3 tfstate backend (OIDC, no static keys); on-prem a dedicated `claytonia-tf@pve` token scoped to one PVE resource pool ([terraform/README.md](https://github.com/lentago/claytonia/blob/main/terraform/README.md)) |
-| **Pull-based GitOps self-deploy on the workers** | [`bullpen-gitops.sh`](https://github.com/lentago/claytonia/blob/main/gitops/bullpen-gitops.sh) fetches `origin/main` every 5 min, redeploys only drifted files, and validates with `bash -n` / `systemd-analyze` before restarting anything |
+| **Pull-based GitOps self-deploy on the workers** | [`claytonia-gitops.sh`](https://github.com/lentago/claytonia/blob/main/gitops/claytonia-gitops.sh) fetches `origin/main` every 5 min, redeploys only drifted files, and validates with `bash -n` / `systemd-analyze` before restarting anything |
 | **Required-status-check branch protection** — PR-gated change enforced by a ruleset, not convention | the `main` ruleset requires `gate`, [`shellcheck`](https://github.com/lentago/claytonia/blob/main/.github/workflows/shellcheck.yml), and [`docs-check`](https://github.com/lentago/claytonia/blob/main/.github/workflows/docs-check.yml); squash-only merges |
 | **Always-on gate job to dodge required-check deadlock** | the [`gate`](https://github.com/lentago/claytonia/blob/main/.github/workflows/terraform.yml) fan-in job runs on every PR — a required check whose workflow never triggers holds "Expected" forever and blocks every unrelated PR |
 | **Reusable/shared CI across a fleet of repos** — the paved road | [`shellcheck`](https://github.com/lentago/claytonia/blob/main/.github/workflows/shellcheck.yml), [`docs-check`](https://github.com/lentago/claytonia/blob/main/.github/workflows/docs-check.yml), and [`claude`](https://github.com/lentago/claytonia/blob/main/.github/workflows/claude.yml) are thin wrappers calling `lentago/shared-workflows` |
@@ -425,7 +426,7 @@ systemd/     claude-inbox.{service,timer} (poll), claude-heartbeat.{service,time
 cron/        claude-runner — cr-schedule every minute (schedules are specs on the NAS)
              + the weekly `cr-update` (Claude Code stays current; idle-guarded by the inbox lock)
 etc/         runner.env — non-secret config (model/cwd/turns defaults, LOKI_PUSH_URL)
-gitops/      bullpen-gitops.{sh,service,timer} + install.sh — pull main, redeploy on drift
+gitops/      claytonia-gitops.{sh,service,timer} + install.sh — pull main, redeploy on drift
 terraform/   the five claytonia-pool worker LXCs (plan-on-PR / apply-on-merge)
 provision/   01..05 scripts — stand up a worker from scratch (LXC, runner, App, projects, reaper)
 frontends/   alternate producers — n8n web form (frontends/n8n/), retired 2026-07-01, kept as reference
@@ -439,10 +440,10 @@ is recorded as ADRs in [`docs/adr/`](docs/adr/README.md).
 
 ## Deploy model (gitops)
 
-`bullpen-gitops.timer` on each worker fetches `origin/main` every 5 min and redeploys
+`claytonia-gitops.timer` on each worker fetches `origin/main` every 5 min and redeploys
 **only** files that actually drifted (`cmp -s`), validating scripts (`bash -n`) and
 units first; no-op polls don't restart anything. **So a change to the fleet is a merged
-PR, not a hand-run script on every box.** The `bullpen-gitops.*` units are bootstrap-only
+PR, not a hand-run script on every box.** The `claytonia-gitops.*` units are bootstrap-only
 (installed by `gitops/install.sh`) so a bad update can't break the updater.
 
 ## Provisioning a worker

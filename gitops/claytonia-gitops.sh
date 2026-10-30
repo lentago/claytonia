@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# bullpen-gitops.sh — pull origin/main and redeploy to THIS worker, but only
+# claytonia-gitops.sh — pull origin/main and redeploy to THIS worker, but only
 # when the deployed files have actually drifted. Bootstrap-installed by
-# gitops/install.sh; runs as root from bullpen-gitops.timer (every 5 min).
+# gitops/install.sh; runs as root from claytonia-gitops.timer (every 5 min).
 #
 # Deploys: bin/ -> /opt/claude-runner/bin, systemd/ -> /etc/systemd/system,
 #          cron/claude-runner -> /etc/cron.d, etc/runner.env -> /opt/claude-runner/etc.
 # Zero-length files under systemd/ are deliberate masks (systemd treats an empty
 # unit in /etc/systemd/system as masked); they deploy like any other unit.
-# Does NOT manage its own units (bullpen-gitops.*) — those are bootstrap-only,
+# Does NOT manage its own units (claytonia-gitops.*) — those are bootstrap-only,
 # so a broken update can't leave the worker unable to fix itself.
 set -uo pipefail
 
-REPO_DIR="${BULLPEN_REPO_DIR:-/opt/bullpen}"
-LOG="${BULLPEN_LOG:-/var/log/bullpen-gitops.log}"
-exec 9>/tmp/bullpen-gitops.lock; flock -n 9 || exit 0
+REPO_DIR="${CLAYTONIA_REPO_DIR:-/opt/claytonia}"
+LOG="${CLAYTONIA_LOG:-/var/log/claytonia-gitops.log}"
+exec 9>/tmp/claytonia-gitops.lock; flock -n 9 || exit 0
 log(){ echo "[$(date -u +%FT%TZ)] $*" >> "$LOG"; }
 [ -f "$LOG" ] && [ "$(stat -c%s "$LOG" 2>/dev/null || echo 0)" -gt 1000000 ] && mv -f "$LOG" "$LOG.1"
 

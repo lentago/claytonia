@@ -31,7 +31,7 @@ jobs:
         bin/gh-credential-helper
         bin/claude-set-token
         bin/transcript-shipper-sync
-        gitops/bullpen-gitops.sh
+        gitops/claytonia-gitops.sh
         gitops/install.sh
         provision/01-create-container.sh
         provision/02-install-runner.sh
