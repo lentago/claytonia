@@ -5,7 +5,8 @@ variable "workers" {
     ip    = string
     mac   = string
     # Changing this string rebuilds that one worker (destroy, then create from
-    # the template) through terraform_data.rebuild below.
+    # the template) through terraform_data.rebuild, but only while the
+    # container's prevent_destroy is off; with it on, the plan errors.
     rebuild = optional(string, "claytonia#65: baseline")
   }))
 }

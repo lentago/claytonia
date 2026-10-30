@@ -75,6 +75,7 @@ via the on-prem Alloy Loki receiver.
 **Worker guest existence IS configured from this repo** since 2026-07-07 (#51):
 `terraform/` owns the pool's LXCs (adopted from kalmia — products own their capacity).
 Everything else stays external: the NAS, the network, the Grafana stack, and all
-non-pool guests (those are kalmia's). The NAS bind mount and `claytonia` PVE-pool
-membership are root-side substrate (`terraform/README.md` § Scale-out), and in-guest
-content remains `provision/` + the gitops loop — never Terraform.
+non-pool guests (those are kalmia's). The NAS bind mount is root-side substrate
+(`terraform/README.md` § Scale-out); `claytonia` PVE-pool membership is set by
+Terraform at create (`pool_id`, #65) and never reconciled after. In-guest content
+remains `provision/` + the gitops loop — never Terraform.

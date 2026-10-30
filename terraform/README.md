@@ -116,8 +116,9 @@ install dir with its own systemd service.
 1. Add a map entry in [`main.tf`](main.tf): next free VMID (118+ — 113–115
    are non-pool guests), next free IP, `mac` pinned after first boot (or
    pre-assigned). Plan + apply.
-2. Root-side substrate on the PVE host: confirm the create placed the VMID in
-   the pool (`pvesh get /pools/claytonia`; `pool_id` does this), attach the NAS bind mount
+2. Root-side substrate on the PVE host. Pool membership needs no step: the
+   module's `pool_id` puts the new guest in `claytonia` at create (check with
+   `pvesh get /pools/claytonia`). Attach the NAS bind mount
    (`pct set <id> -mp0 /mnt/neptune-lentago/claude-jobs,mp=/srv/jobs` — see
    `provision/README.md` step 2, including the `RequiresMountsFor=` drop-in).
 3. In-guest: nothing to run — workers are cut from the kalmia runner image
