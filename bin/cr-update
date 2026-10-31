@@ -12,7 +12,13 @@
 # A random jitter staggers the fleet so five workers do not all update at once.
 #
 # Scheduled from cron/claude-runner (weekly). Run by hand: cr-update [--now]
+#
+# The binary is called by absolute path, as run-job does: cron's PATH is
+# /usr/local/bin:/usr/bin:/bin and the native installer puts claude in
+# ~/.local/bin, so a bare `claude` failed every scheduled run from 2026-10-04
+# to 2026-10-25 with "command not found" and the fleet never moved off 2.1.289.
 set -uo pipefail
+CLAUDE_BIN="${CLAUDE_BIN:-/home/claude/.local/bin/claude}"   # override lets the test harness inject a stub
 LOCK="${CLAUDE_INBOX_LOCK:-/tmp/claude-inbox.lock}"
 WAIT="${CR_UPDATE_WAIT:-600}"          # seconds to wait for a running job to finish
 JITTER="${CR_UPDATE_JITTER:-1800}"     # max random delay before starting (0 with --now)
@@ -28,12 +34,12 @@ if ! flock -w "$WAIT" 9; then
   exit 0
 fi
 
-before="$(claude --version 2>/dev/null | head -1 || echo unknown)"
-if ! out="$(claude update 2>&1)"; then
+before="$("$CLAUDE_BIN" --version 2>/dev/null | head -1 || echo unknown)"
+if ! out="$("$CLAUDE_BIN" update 2>&1)"; then
   log "update FAILED (was: $before): $(printf '%s' "$out" | tail -1)"
   exit 1
 fi
-after="$(claude --version 2>/dev/null | head -1 || echo unknown)"
+after="$("$CLAUDE_BIN" --version 2>/dev/null | head -1 || echo unknown)"
 if [ "$before" = "$after" ]; then
   log "already current ($after)"
 else

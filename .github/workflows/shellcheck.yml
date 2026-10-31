@@ -24,6 +24,7 @@ jobs:
         bin/cr-newproject
         bin/cr-schedule
         bin/cr-automerge
+        bin/cr-update
         bin/google-read
         bin/google-auth
         bin/cr-emit
