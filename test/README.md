@@ -54,6 +54,10 @@ bats --print-output-on-failure test/
   (no rule, failed job, no policy, a path or rename outside the globs, `*` crossing a
   directory, title, author, draft, state, base, fork head, file count). Uses its own
   `gh` stub serving the policy, the PR and its files.
+- `test/cr-update.bats` — `cr-update` runs under cron's PATH (`/usr/local/bin:/usr/bin:/bin`)
+  and reaches claude only through `CLAUDE_BIN`: an update, an already-current run, a
+  failed update (exit 1, logged with the prior version), and a held inbox lock that
+  skips the run without calling claude.
 
 ## How it stays hermetic
 
