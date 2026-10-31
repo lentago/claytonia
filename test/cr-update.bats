@@ -79,3 +79,15 @@ cr_update() { # run the real script the way cron does: minimal PATH, nothing inh
   [[ "$output" == *"a job is still running"* ]]
   [ ! -e "$FAKE_CALLS" ]
 }
+
+@test "the production CLAUDE_BIN default matches run-job's" {
+  # Every case above overrides CLAUDE_BIN, so pin the default itself to the one
+  # run-job uses for every job: a typo here would pass the suite and fail on
+  # every worker.
+  # shellcheck disable=SC2016  # the $ is a literal in the sed pattern
+  default_of() { sed -n 's/^CLAUDE_BIN="\${CLAUDE_BIN:-\(.*\)}".*/\1/p' "$1"; }
+  ours="$(default_of "$REPO_ROOT/bin/cr-update")"
+  theirs="$(default_of "$REPO_ROOT/bin/run-job")"
+  [ -n "$ours" ]
+  [ "$ours" = "$theirs" ]
+}
