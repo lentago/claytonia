@@ -65,14 +65,15 @@ ln -sf /opt/claude-runner/bin/gh-token /usr/local/bin/gh-token
 ln -sf /opt/claude-runner/bin/gh-credential-helper /usr/local/bin/gh-credential-helper
 
 echo ">>> App config placeholder (you fill APP_ID/INSTALLATION_ID; drop the .pem)"
+# Both root's alone (#177): the agent reaches them only through gh-token run as root.
 if [ ! -f /etc/claude-runner/gh-app.env ]; then
   printf 'APP_ID=\nINSTALLATION_ID=\n' > /etc/claude-runner/gh-app.env
-  chown root:claude /etc/claude-runner/gh-app.env
-  chmod 640 /etc/claude-runner/gh-app.env
+  chown root:root /etc/claude-runner/gh-app.env
+  chmod 600 /etc/claude-runner/gh-app.env
 fi
 touch /etc/claude-runner/gh-app.pem
-chown root:claude /etc/claude-runner/gh-app.pem
-chmod 640 /etc/claude-runner/gh-app.pem
+chown root:root /etc/claude-runner/gh-app.pem
+chmod 600 /etc/claude-runner/gh-app.pem
 
 echo ">>> configure git for the claude user (bot identity + App credential helper)"
 su - claude -c '

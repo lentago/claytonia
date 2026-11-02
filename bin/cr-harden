@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# cr-harden — hold this worker's root boundary (#177): the agent user may run the
+# GitHub App token broker (gh-token) as root and nothing else, and the App key is
+# root's alone.
+#
+# cron runs this as root every minute on every worker. The gitops loop deploys it
+# like any bin/ script, so the live workers and every claytonia#65 rebuild arrive at
+# the same state with no change to the loop and no hand patch. A rebuilt worker's
+# image may still carry the old blanket rule; the first run replaces it.
+#
+# Each run compares first, so a steady state writes nothing. On drift it:
+#   0. makes the broker's path root's: sudo runs whatever file sits at the broker's
+#      path, and cron runs this script as root from the same directory, so a user who
+#      could write either file, or a directory above it, could replace it and get
+#      root. The runner's directory, its bin/ and the two scripts are set to root's
+#      and not writable by group or others; a parent above them (/opt, /) is only
+#      reported, as it is not this repo's to change;
+#   1. writes RULE to a temp file in sudoers.d whose name has a dot (sudo skips such
+#      names), checks it with visudo, and renames it over the old file;
+#   2. sets the App key, then its config, to root:root 0600. Key first: gh-token run
+#      as the agent user reads the key itself while it can, and goes through sudo
+#      once it cannot, so there is no moment when neither works;
+#   3. checks that sudo grants the agent user exactly the broker, and logs one error
+#      if anything else grants it more (another sudoers file, the sudo group). It
+#      checks after a change and then hourly, not every minute: an agent without root
+#      cannot add a grant, and each check is a line in the auth log.
+# kalmia's runner image writes the same RULE (forge/runner/substrate.sh); keep them
+# equal. Problems are journald notes, each logged once until it changes.
+# Seams for the tests: CR_HARDEN_RUNNER_DIR, CR_HARDEN_SUDOERS_D, CR_HARDEN_APP_DIR, CR_HARDEN_OWNER,
+# CR_HARDEN_VISUDO, CR_HARDEN_SUDO_LIST (a file standing in for `sudo -l -U claude`),
+# CR_HARDEN_STATE (the note memory).
+set -uo pipefail
+[ "$EUID" -eq 0 ] && { PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; }
+
+BROKER=/opt/claude-runner/bin/gh-token
+RULE="# Managed by claytonia bin/cr-harden (#177): a change made here is replaced within a minute.
+# The agent user may run the GitHub App token broker as root, and nothing else.
+claude ALL=(root) NOPASSWD: $BROKER"
+GRANT="(root) NOPASSWD: $BROKER"   # how `sudo -l -U claude` lists RULE
+
+RUNNER_DIR="${CR_HARDEN_RUNNER_DIR:-/opt/claude-runner}"
+SUDOERS_D="${CR_HARDEN_SUDOERS_D:-/etc/sudoers.d}"
+APP_DIR="${CR_HARDEN_APP_DIR:-/etc/claude-runner}"
+OWNER="${CR_HARDEN_OWNER:-root:root}"
+VISUDO="${CR_HARDEN_VISUDO:-visudo}"
+STATE="${CR_HARDEN_STATE:-/run/cr-harden.notes}"
+
+note_once() { # <priority> <message>
+  local m="${2//$'\n'/ }"
+  grep -qxF -- "$m" "$STATE" 2>/dev/null && return 0
+  printf '%s\n' "$m" >> "$STATE" 2>/dev/null || true
+  echo "cr-harden: $m" | systemd-cat -t claude-runner -p "$1" 2>/dev/null || true
+}
+say() { echo "cr-harden: $*" | systemd-cat -t claude-runner -p notice 2>/dev/null || true; }
+forget() { [ -f "$STATE" ] && sed -i "/^$1/d" "$STATE" 2>/dev/null; true; }
+
+if [ "$EUID" -ne 0 ] && [ -z "${CR_HARDEN_SUDOERS_D:-}" ]; then
+  echo "cr-harden: run as root (cron does)" >&2; exit 1
+fi
+
+changed=0
+
+# 0. The broker's path. A sticky parent that others can write (/tmp-like) is safe:
+#    no one can rename or remove an entry in it that they do not own.
+for p in "$RUNNER_DIR" "$RUNNER_DIR/bin" "$RUNNER_DIR/bin/gh-token" "$RUNNER_DIR/bin/cr-harden"; do
+  [ -e "$p" ] || continue
+  read -r og m <<<"$(stat -c '%U:%G %a' "$p")"
+  [ "$og" = "$OWNER" ] && ! (( 8#$m & 8#022 )) && continue
+  if err="$( { chown "$OWNER" "$p" && chmod go-w "$p"; } 2>&1 )"; then
+    changed=1; forget "could not make $p"
+    say "set $p to $OWNER, not writable by group or others (was $og $m)"
+  else
+    note_once err "could not make $p $OWNER and not writable by group or others: $(printf '%s' "$err" | head -c 200 | tr '\n' ' ')"
+  fi
+done
+d="$RUNNER_DIR"
+while [ "$d" != / ]; do
+  d="$(dirname "$d")"
+  read -r u m <<<"$(stat -c '%U %a' "$d")"
+  if { [ "$u" != root ] && [ "$u" != "${OWNER%%:*}" ]; } || { (( 8#$m & 8#022 )) && ! (( 8#$m & 8#1000 )); }; then
+    note_once err "$d is not root's alone (owner $u, mode $m): whoever can write it can replace $BROKER, which runs as root"
+  fi
+done
+
+# 1. The sudoers rule.
+dst="$SUDOERS_D/claude"
+if [ "$(cat "$dst" 2>/dev/null)" != "$RULE" ] || [ "$(stat -c '%U:%G %a' "$dst" 2>/dev/null)" != "$OWNER 440" ]; then
+  tmp="$SUDOERS_D/.claude.cr-harden.$$"
+  trap 'rm -f "$tmp"' EXIT
+  if err="$( { umask 077 && printf '%s\n' "$RULE" > "$tmp" && chown "$OWNER" "$tmp" && chmod 0440 "$tmp" \
+               && "$VISUDO" -cqf "$tmp" && mv -f "$tmp" "$dst"; } 2>&1 )"; then
+    changed=1; forget 'could not install'
+    say "installed the sudoers rule $dst: claude may run $BROKER as root, nothing else"
+  else
+    note_once err "could not install the sudoers rule $dst, which is left as it was: $(printf '%s' "$err" | head -c 200 | tr '\n' ' ')"
+  fi
+  rm -f "$tmp"
+fi
+
+# 2. The App key, then its config. A file not there yet (secrets come after first
+#    boot) is skipped until it is.
+for f in "$APP_DIR/gh-app.pem" "$APP_DIR/gh-app.env"; do
+  [ -e "$f" ] || continue
+  [ "$(stat -c '%U:%G %a' "$f" 2>/dev/null)" = "$OWNER 600" ] && continue
+  if err="$( { chown "$OWNER" "$f" && chmod 0600 "$f"; } 2>&1 )"; then
+    changed=1; say "set $f to $OWNER 0600"
+  else
+    note_once err "could not set $f to $OWNER 0600: $(printf '%s' "$err" | head -c 200 | tr '\n' ' ')"
+  fi
+done
+
+# 3. What sudo actually grants the agent user, after a change and hourly.
+if [ "$changed" = 1 ] || [ "$(date +%M)" = 00 ] || [ -n "${CR_HARDEN_SUDO_LIST:-}" ]; then
+  if [ -n "${CR_HARDEN_SUDO_LIST:-}" ]; then list="$(cat "$CR_HARDEN_SUDO_LIST")"
+  else list="$(sudo -n -l -U claude 2>&1)"; fi
+  grants="$(printf '%s\n' "$list" | sed -n '/may run the following commands/,$p' | sed '1d; s/^[[:space:]]*//; /^$/d')"
+  if [ "$grants" = "$GRANT" ]; then
+    forget 'sudo grants'
+  else
+    note_once err "sudo grants claude more or less than the token broker; expected only \"$GRANT\", got: $(printf '%s' "${grants:-$list}" | head -c 300 | tr '\n' ';')"
+  fi
+fi
+exit 0

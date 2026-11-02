@@ -31,8 +31,11 @@ echo "NODE_OK"
 
 echo ">>> creating claude user"
 id claude >/dev/null 2>&1 || useradd -m -s /bin/bash claude
-echo "claude ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/claude
+# One rule: the GitHub App token broker as root, nothing else (#177). bin/cr-harden
+# holds this on every worker; kalmia's substrate.sh writes the same line.
+echo "claude ALL=(root) NOPASSWD: /opt/claude-runner/bin/gh-token" > /etc/sudoers.d/claude
 chmod 440 /etc/sudoers.d/claude
+visudo -cqf /etc/sudoers.d/claude
 echo "USER_OK"
 
 echo ">>> installing SSH key (root + claude)"
@@ -49,7 +52,20 @@ systemctl enable ssh >/dev/null 2>&1 || true
 systemctl restart ssh
 echo "SSH_OK"
 
-echo ">>> installing Claude Code (native installer, as claude)"
-su - claude -c 'curl -fsSL https://claude.ai/install.sh | bash' 2>&1 | tail -8
+echo ">>> installing Claude Code (pinned native binary, as claude)"
+# The pinned binary, checked against the sha256 in its release manifest
+# (downloads.claude.ai/claude-code-releases/<v>/manifest.json,
+# platforms["linux-x64"].checksum), replaces `curl claude.ai/install.sh | bash`
+# (#177). That installer does the same: download the binary, check it, then
+# `claude install`. Same pin as kalmia roles/editors (kalmia#259); Claude Code
+# updates itself afterwards (bin/cr-update), so the pin only seeds the install.
+CLAUDE_CODE_VERSION=2.1.316
+CLAUDE_CODE_SHA256=fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824
+dl="$(su - claude -c 'mktemp')"
+su - claude -c "curl -fsSL -o '$dl' https://downloads.claude.ai/claude-code-releases/$CLAUDE_CODE_VERSION/linux-x64/claude"
+echo "$CLAUDE_CODE_SHA256  $dl" | sha256sum -c --quiet
+chmod 755 "$dl"
+su - claude -c "'$dl' install $CLAUDE_CODE_VERSION" 2>&1 | tail -8
+rm -f "$dl"
 su - claude -c 'grep -q ".local/bin" ~/.bashrc || echo "export PATH=\$HOME/.local/bin:\$PATH" >> ~/.bashrc'
 su - claude -c 'export PATH=$HOME/.local/bin:$PATH; claude --version' && echo "CLAUDE_OK"
