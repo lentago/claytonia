@@ -23,9 +23,17 @@
 #   {"rules": {"<rule>": {"title": "^…$", "paths": ["dir/*.md", …],
 #                         "max_files": 50}}}
 #
+# The head-SHA rule (ADR-0014 point 5, #178): the commit armed is the commit
+# evaluated. The PR's head is read with the PR, read again after its files are
+# listed, and passed to the arm as --match-head-commit, so a push at any point
+# between check and arm fails the arm. It is read once more after arming, and a
+# moved head disarms. An armed PR gets a comment carrying the rule and the armed
+# head, a record agent-pr-gate (shared-workflows#84) can hold the PR's current head
+# to; a push after run-job has exited is that gate's to catch (ADR-0014 point 4).
+#
 # The agent never arms anything itself; the standing prompt still forbids it.
-# Prints one line, "armed rule=<rule>" or "disarmed: <reason>", which run-job
-# records in the job's .meta. Exits 0 either way; a gh failure disarms.
+# Prints one line, "armed rule=<rule> head=<sha>" or "disarmed: <reason>", which
+# run-job records in the job's .meta. Exits 0 either way; a gh failure disarms.
 # Seams for the tests: PATH (a stub gh), CLAUDE_AUTOMERGE_AUTHOR.
 set -uo pipefail
 [ $# -eq 5 ] || { echo "usage: cr-automerge <pr-url> <owner/repo> <base-branch> <rule> <exit-code>" >&2; exit 2; }
@@ -36,6 +44,7 @@ prurl, repo, base, rule_name, rc = sys.argv[1:6]
 AUTHORS = {a for a in os.environ.get(
     "CLAUDE_AUTOMERGE_AUTHOR", "app/lentago-claude-runner,lentago-claude-runner[bot]").split(",") if a}
 GH_TIMEOUT = 30
+SHA = re.compile(r"[0-9a-f]{40}")
 
 def gh(*args):
     r = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=GH_TIMEOUT)
@@ -79,7 +88,10 @@ def decide():
         return None, "rule %r allows no paths" % rule_name
 
     pr = json.loads(gh("pr", "view", prurl, "--json",
-                       "number,state,isDraft,baseRefName,author,title,headRepository,headRepositoryOwner"))
+                       "number,state,isDraft,baseRefName,author,title,headRepository,headRepositoryOwner,headRefOid"))
+    sha = pr.get("headRefOid") or ""
+    if not SHA.fullmatch(sha):
+        return None, "PR has no readable head commit"
     head = "%s/%s" % ((pr.get("headRepositoryOwner") or {}).get("login", ""),
                       (pr.get("headRepository") or {}).get("name", ""))
     author = (pr.get("author") or {}).get("login", "")
@@ -107,7 +119,14 @@ def decide():
     outside = [p for p in files if not any(g.fullmatch(p) for g in globs)]
     if outside:
         return None, "path outside rule %r: %s" % (rule_name, outside[0])
-    return rule_name, ""
+    # The files listed must be the evaluated head's: a push during the check moves it.
+    now = head_of()
+    if now != sha:
+        return None, "head moved during the check (%s -> %s)" % (sha[:12], now[:12])
+    return (rule_name, sha), ""
+
+def head_of():
+    return gh("pr", "view", prurl, "--json", "headRefOid", "--jq", ".headRefOid").strip()
 
 try:
     armed, reason = decide()
@@ -115,12 +134,24 @@ except Exception as e:
     armed, reason = None, "check failed (%s)" % e
 
 if armed:
+    rule, sha = armed
     try:
-        gh("pr", "merge", prurl, "--auto", "--squash", "--delete-branch")
-        print("armed rule=%s" % armed)
-        sys.exit(0)
+        gh("pr", "merge", prurl, "--auto", "--squash", "--delete-branch", "--match-head-commit", sha)
+        now = head_of()
+        if now != sha:
+            raise RuntimeError("head moved after arming (%s -> %s)" % (sha[:12], now[:12]))
     except Exception as e:
         reason = "arming failed (%s)" % e
+    else:
+        try:  # the gate-readable record of what was armed; best-effort, a gate without it holds the PR
+            gh("pr", "comment", prurl, "--body",
+               "<!-- cr-automerge armed rule=%s head=%s -->\n"
+               "Auto-merge armed by `cr-automerge` under rule `%s` for head `%s`. "
+               "A later push re-opens the decision (ADR-0014 point 5)." % (rule, sha, rule, sha[:12]))
+        except Exception:
+            pass
+        print("armed rule=%s head=%s" % (rule, sha))
+        sys.exit(0)
 try:
     gh("pr", "merge", prurl, "--disable-auto")
 except Exception:

@@ -157,7 +157,11 @@ survives any worker being down. A slot up to `catchup_min` minutes late still
 fires once; DST is handled by the `tz`. `"enabled": false` pauses a spec. The
 queued copy carries `submitter: schedule:<name>`. `automerge` names a rule from
 the target repo's `.claytonia/automerge.json` (ADR-0009); without it the PR waits
-for a human like any other.
+for a human like any other. `cr-automerge` arms the head it evaluated and no other
+(ADR-0014 point 5, #178): the arm carries `--match-head-commit`, a push during the check
+or right after the arm disarms, the `.meta` records `automerge=armed rule=<rule>
+head=<sha>`, and the PR gets a comment naming the rule and that head. That comment is
+the record `agent-pr-gate` can hold a later push against.
 
 `cr-submit` always writes the JSON form, so every job it queues carries a
 `submitter`. Hand-dropped `.txt`/`.md` jobs still work; they just have no submitter.
