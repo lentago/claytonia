@@ -61,7 +61,10 @@ runid="${ts}-${label}"
 # uuid-runtime, and every job on them ran with no session id: no NAS transcript, no
 # live runid. So: uuidgen where installed, else the kernel's UUID source, else a
 # bash-only v4-shaped id that cannot fail. Each source counts only if it yields a
-# well-formed UUID (CLIs reject anything else as a session id).
+# well-formed UUID (CLIs reject anything else as a session id). The last resort is
+# well-formed but not collision-proof: $RANDOM is a per-process PRNG, not a CSPRNG.
+# It is reached only when /proc/sys/kernel/random/uuid is unreadable, which no
+# Linux worker has shown; there, a repeated id could reuse another job's session.
 mint_uuid() {
   local u re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
   u="$(uuidgen 2>/dev/null | tr 'A-F' 'a-f')"
