@@ -6,16 +6,31 @@
 # Source: docs/share/README.md in this worker's gitops checkout of claytonia, which
 # the gitops loop resets to origin/main every 5 minutes: /opt/claytonia, or
 # /opt/bullpen on a worker not yet rebuilt under #65. cron runs this every minute
-# on every worker. Each run compares first, so a steady state writes nothing and
-# a hand edit to the share copy is overwritten on the next run. A change goes to a
-# per-worker temp file that is then renamed into place, so a reader never sees half
-# a file and five workers publishing at once leave one whole copy.
-# Best-effort: a missing checkout or share is a journald note, never a failure.
-# Seams for the tests: JOBS_ROOT, and CR_PUBLISH_SRC (the source file).
+# on every worker.
+#
+# The published copy is the source plus one last line stamping the commit it came
+# from and that commit's time. A worker never overwrites a copy stamped newer than
+# its own checkout, so a worker whose checkout is stale (a wedged gitops loop, or
+# mid-rollout) cannot flip the share back to older text. A copy with no stamp, or
+# one stamped more than an hour in the future, counts as a hand edit and is
+# overwritten. Each run compares first, so a steady state writes nothing. A change
+# goes to a per-worker temp file renamed into place, so a reader never sees half a
+# file; temp files a killed run left behind are swept after ten minutes.
+# Best-effort: problems are journald notes, each logged once until it changes,
+# never a failure.
+# Seams for the tests: JOBS_ROOT, CR_PUBLISH_SRC (the source file),
+# CR_PUBLISH_STAMP ("<sha> <commit epoch>"), CR_PUBLISH_STATE (the note memory).
 set -uo pipefail
 JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
+STATE="${CR_PUBLISH_STATE:-${XDG_RUNTIME_DIR:-/tmp}/cr-publish-share.last}"
 
-note() { echo "cr-publish-share: $*" | systemd-cat -t claude-runner -p notice 2>/dev/null || true; }
+# note_once <message> — log to journald only when the message differs from the last.
+note_once() {
+  [ "$(cat "$STATE" 2>/dev/null)" = "$1" ] && return 0
+  printf '%s' "$1" > "$STATE" 2>/dev/null || true
+  echo "cr-publish-share: $1" | systemd-cat -t claude-runner -p notice 2>/dev/null || true
+}
+all_clear() { rm -f "$STATE" 2>/dev/null || true; }
 
 src="${CR_PUBLISH_SRC:-}"
 if [ -z "$src" ]; then
@@ -23,16 +38,39 @@ if [ -z "$src" ]; then
     [ -f "$d/docs/share/README.md" ] && { src="$d/docs/share/README.md"; break; }
   done
 fi
-[ -n "$src" ] && [ -s "$src" ] || { note "no docs/share/README.md in the gitops checkout; nothing published"; exit 0; }
-[ -d "$JOBS_ROOT/inbox" ] || { note "no queue at $JOBS_ROOT; nothing published"; exit 0; }
+[ -n "$src" ] && [ -s "$src" ] || { note_once "no docs/share/README.md in the gitops checkout; nothing published"; exit 0; }
+[ -d "$JOBS_ROOT/inbox" ] || { note_once "no queue at $JOBS_ROOT; nothing published"; exit 0; }
+
+# The commit the source came from, and when it was committed.
+stamp="${CR_PUBLISH_STAMP:-$(git -C "$(dirname "$src")" log -1 --format='%H %ct' -- "$(basename "$src")" 2>/dev/null)}"
+sha="${stamp%% *}"; ct="${stamp##* }"
+case "$ct" in ''|*[!0-9]*) sha=unknown; ct=0 ;; esac
 
 dst="$JOBS_ROOT/README.md"
-cmp -s "$src" "$dst" 2>/dev/null && exit 0
+gen="$(mktemp)"; tmp=""
+trap 'rm -f "$gen" ${tmp:+"$tmp"} 2>/dev/null' EXIT
+trap 'exit 1' INT TERM
+{ cat "$src"
+  printf '<!-- published by cr-publish-share from lentago/claytonia@%s (commit time %s); edit docs/share/README.md there -->\n' \
+    "${sha:0:12}" "$ct"
+} > "$gen"
+
+find "$JOBS_ROOT" -maxdepth 1 -name '.README.md.*.tmp' -mmin +10 -delete 2>/dev/null
+if cmp -s "$gen" "$dst" 2>/dev/null; then all_clear; exit 0; fi
+
+share_ct="$(sed -n 's/.*(commit time \([0-9][0-9]*\)).*/\1/p' "$dst" 2>/dev/null | tail -1)"
+if [ -n "$share_ct" ] && [ "$share_ct" -le $(( $(date +%s) + 3600 )) ] && [ "$ct" -lt "$share_ct" ]; then
+  note_once "the share copy is from a newer commit (time $share_ct) than this checkout (${sha:0:12}, time $ct); not overwriting it"
+  exit 0
+fi
+
 tmp="$JOBS_ROOT/.README.md.$(hostname).$$.tmp"
-if cp "$src" "$tmp" 2>/dev/null && mv -f "$tmp" "$dst" 2>/dev/null; then
-  note "published $dst from $src"
+if err="$( { cp "$gen" "$tmp" && mv -f "$tmp" "$dst"; } 2>&1 )"; then
+  tmp=""
+  all_clear
+  echo "cr-publish-share: published $dst from ${sha:0:12}" | systemd-cat -t claude-runner -p notice 2>/dev/null || true
 else
-  rm -f "$tmp" 2>/dev/null
-  note "could not publish $dst"
+  err="${err//"$tmp"/<temp file>}"   # the temp name carries a PID; keep the note stable
+  note_once "could not publish $dst: $(printf '%s' "$err" | head -c 200 | tr '\n' ' ')"
 fi
 exit 0

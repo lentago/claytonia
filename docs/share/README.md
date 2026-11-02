@@ -1,12 +1,15 @@
 <!-- Generated from docs/share/README.md in lentago/claytonia and published here by bin/cr-publish-share (#185). Edit it there, by PR: a change made in this copy is overwritten within minutes. -->
 # claytonia job queue — the drop folder
 
+_Co-written with [Claude](https://claude.ai) (Anthropic), like the rest of claytonia: the
+maintainer directs and reviews, Claude writes._
+
 This folder is the job queue for **claytonia**, the Lentago Labs agent fleet (the
 bullpen). It is the SMB share `lentago/claude-jobs`, mounted on every worker as
-`/srv/jobs`. Five workers (the `claude-runner*` LXCs on pve4) poll `inbox/` every
-60 seconds. The first worker to rename a job into `processing/` owns it, and the
-result lands in `logs/`. Project jobs end in a pull request for a human to review.
-Workers never merge.
+`/srv/jobs`. The worker pool (the `claude-runner*` LXCs; their number is set in the
+repo's `terraform/`) polls `inbox/` every 60 seconds. The first worker to rename a
+job into `processing/` owns it, and the result lands in `logs/`. Project jobs end
+in a pull request for a human to review. Workers never merge.
 
 The full reference is the claytonia README:
 <https://github.com/lentago/claytonia#submitting-a-job>.
