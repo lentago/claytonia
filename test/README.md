@@ -83,6 +83,11 @@ bats --print-output-on-failure test/
   `cr-submit --workflows`; and a job that needed workflows:write without it fails with
   the fix in its reason line, from the agent's marker or GitHub's refusal, while a
   transcript that merely quotes run-job does not trip it.
+- `test/publish-share.bats` — `cr-publish-share` (#185): publishes the source to the share
+  root, writes nothing in a steady state, overwrites a hand edit, writes by rename (never in
+  place), leaves one whole copy and no temp files when five run at once, and does nothing
+  when the source or the queue is missing; the source carries its generated header, and
+  cron runs it on every worker.
 - `test/cr-update.bats` — `cr-update` runs under cron's PATH (`/usr/local/bin:/usr/bin:/bin`)
   and reaches claude only through `CLAUDE_BIN`: an update, an already-current run, a
   failed update (exit 1, logged with the prior version), and a held inbox lock that

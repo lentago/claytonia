@@ -347,6 +347,10 @@ memory that jobs read and append to.
 cr-newproject <name> <owner/repo> [model] [branch]   # register + scaffold context
 ```
 
+- `README.md` at the share root — the dispatcher's quick start, generated from
+  [`docs/share/README.md`](docs/share/README.md) and kept equal to it on `main` by
+  `cr-publish-share` (cron, every minute, compare-then-rename; #185). Edit it here, by PR:
+  a hand edit on the share is overwritten within minutes.
 - `projects/registry.json` — `name → {repo, default_branch, runtime, model, max_turns, max_budget_usd, timeout_sec, context_dir, setup, offbox_transcript}` (`runtime` optional: an entry that names none runs on the fleet default, `CLAUDE_RUNNER_RUNTIME`. Its `model` is written for its `runtime`, and is taken as a Claude model when the entry names no runtime, as every entry written before #168 is. Limits are optional; they sit between the job spec and the `runner.env` defaults). `"offbox_transcript": false` checks the project out under `/home/claude/private/` instead of `/home/claude/work/`, outside the live transcript shipper's path, so its jobs' narration is never streamed to Grafana Cloud; the full transcript still lands in `logs/` on the NAS. Use it for a project whose jobs read personal data.
 - `projects/<name>/memory.md` — dated, durable learnings (conventions, gotchas)
 

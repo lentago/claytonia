@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# cr-publish-share — publish the queue's README to the root of the NAS share from
+# main (#185), so the copy dispatchers read is an artifact of a merged commit and
+# never a hand edit.
+#
+# Source: docs/share/README.md in this worker's gitops checkout of claytonia, which
+# the gitops loop resets to origin/main every 5 minutes: /opt/claytonia, or
+# /opt/bullpen on a worker not yet rebuilt under #65. cron runs this every minute
+# on every worker. Each run compares first, so a steady state writes nothing and
+# a hand edit to the share copy is overwritten on the next run. A change goes to a
+# per-worker temp file that is then renamed into place, so a reader never sees half
+# a file and five workers publishing at once leave one whole copy.
+# Best-effort: a missing checkout or share is a journald note, never a failure.
+# Seams for the tests: JOBS_ROOT, and CR_PUBLISH_SRC (the source file).
+set -uo pipefail
+JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
+
+note() { echo "cr-publish-share: $*" | systemd-cat -t claude-runner -p notice 2>/dev/null || true; }
+
+src="${CR_PUBLISH_SRC:-}"
+if [ -z "$src" ]; then
+  for d in /opt/claytonia /opt/bullpen; do
+    [ -f "$d/docs/share/README.md" ] && { src="$d/docs/share/README.md"; break; }
+  done
+fi
+[ -n "$src" ] && [ -s "$src" ] || { note "no docs/share/README.md in the gitops checkout; nothing published"; exit 0; }
+[ -d "$JOBS_ROOT/inbox" ] || { note "no queue at $JOBS_ROOT; nothing published"; exit 0; }
+
+dst="$JOBS_ROOT/README.md"
+cmp -s "$src" "$dst" 2>/dev/null && exit 0
+tmp="$JOBS_ROOT/.README.md.$(hostname).$$.tmp"
+if cp "$src" "$tmp" 2>/dev/null && mv -f "$tmp" "$dst" 2>/dev/null; then
+  note "published $dst from $src"
+else
+  rm -f "$tmp" 2>/dev/null
+  note "could not publish $dst"
+fi
+exit 0
