@@ -27,9 +27,15 @@
 # evaluated. The PR's head is read with the PR, read again after its files are
 # listed, and passed to the arm as --match-head-commit, so a push at any point
 # between check and arm fails the arm. It is read once more after arming, and a
-# moved head disarms. An armed PR gets a comment carrying the rule and the armed
-# head, a record agent-pr-gate (shared-workflows#84) can hold the PR's current head
-# to; a push after run-job has exited is that gate's to catch (ADR-0014 point 4).
+# head that moved by then disarms. GitHub's auto-merge does not pin a commit once
+# armed, so a push after that re-read is caught only by agent-pr-gate
+# (shared-workflows#84, ADR-0014 point 4; not yet running anywhere).
+#
+# The gate's record is a comment on the armed PR whose FIRST LINE is exactly
+#   <!-- cr-automerge armed rule=<rule> head=<40-hex sha> -->
+# That line is a contract with shared-workflows#84: keep it byte-stable. Any
+# commenter can type it, so the gate must accept it only from the runner App's
+# own comment (author lentago-claude-runner[bot]).
 #
 # The agent never arms anything itself; the standing prompt still forbids it.
 # Prints one line, "armed rule=<rule> head=<sha>" or "disarmed: <reason>", which

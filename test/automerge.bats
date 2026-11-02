@@ -104,7 +104,8 @@ disarmed() { grep -q -- "pr merge $URL --disable-auto" "$FAKE_GH_LOG" && ! armed
 
 @test "an armed PR gets the gate-readable record of its rule and head; a failed comment does not disarm" {
   decide
-  grep -q -- "pr comment $URL --body <!-- cr-automerge armed rule=brief head=$SHA1 -->" "$FAKE_GH_LOG"
+  # The first line is a contract with agent-pr-gate (shared-workflows#84): byte-exact.
+  grep -qx -- "pr comment $URL --body <!-- cr-automerge armed rule=brief head=$SHA1 -->" "$FAKE_GH_LOG"
   : > "$FAKE_GH_LOG"
   FAKE_COMMENT_FAIL=1 decide
   [ "$output" = "armed rule=brief head=$SHA1" ]
