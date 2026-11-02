@@ -16,3 +16,7 @@ PATH=/usr/local/bin:/usr/bin:/bin
 
 # Every minute: queue the scheduled jobs that are due (one worker wins each slot).
 *  *  *   *   *     claude  /opt/claude-runner/bin/cr-schedule 2>&1 | systemd-cat -t cr-schedule -p notice
+
+# Every minute: keep the share's README.md equal to docs/share/README.md on main
+# (#185). It compares first, so a steady state writes nothing.
+*  *  *   *   *     claude  /opt/claude-runner/bin/cr-publish-share
