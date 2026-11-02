@@ -17,7 +17,7 @@ shipper (below).
 
 | Script | What it did | Now |
 |---|---|---|
-| `01-create-container.sh` | base pkgs, Node 22 LTS, `claude` user, ssh key, Claude Code | baked → kalmia `forge/runner/substrate.sh` (Node 22 not yet in the image build: lentago/kalmia#156; the reference step here is what the running workers got by hand on 2026-10-13) |
+| `01-create-container.sh` | base pkgs, Node 22 LTS, `claude` user and its one sudoers rule (#177), ssh key, Claude Code (pinned, checksummed) | baked → kalmia `forge/runner/substrate.sh` (Node 22 not yet in the image build: lentago/kalmia#156; the reference step here is what the running workers got by hand on 2026-10-13) |
 | `02-install-runner.sh` | runner core + poller + cron | gitops-deployed (`bin/`/`systemd/`/`cron/`) |
 | `03-github-app.sh` | gh CLI + App token plumbing + git identity | gh + identity baked; `gh-token`/helper gitops-deployed |
 | `04-project-layer.sh` | project registry + project-aware run-job | gitops-deployed (`bin/`); registry lives on the NAS |
@@ -36,25 +36,30 @@ shipper (below).
    on `pve-container@<id>.service` so the CT starts after the mount.
 3. **Inject the secrets** — the image ships empty placeholders; real values are
    never baked:
-   - OAuth: `claude setup-token` → `claude-set-token` → `/etc/claude-runner/token.env`.
+   - OAuth: `claude setup-token` → `claude-set-token` (as root:
+     `ssh root@<worker> claude-set-token`) → `/etc/claude-runner/token.env`.
    - GitHub App: write `/etc/claude-runner/gh-app.env` (`APP_ID`, `INSTALLATION_ID`)
-     and the App private key to `/etc/claude-runner/gh-app.pem` (640 root:claude);
+     and the App private key to `/etc/claude-runner/gh-app.pem`, both `600 root:root`
+     (#177; `cr-harden` sets them so within a minute if they land otherwise);
      install the App on the repos this worker should touch.
 4. **First boot** — the image's baked, enabled gitops timer pulls `main`
    (`claytonia-gitops.timer` from runner image v2; v1 carries the pre-rename
    `bullpen-gitops.timer`, #65), the
    pollers start, and the worker begins claiming jobs. There are no scripts to
-   run: it is live once it has its NAS mount and token.
+   run: it is live once it has its NAS mount and token. Within a minute of that
+   first pull, `cr-harden` (cron, as root) replaces whatever sudoers rule the image
+   carries with the one claytonia allows, and sets the App key to `600 root:root`
+   (#177).
 
 ### Transcript shipper (optional, per worker)
 
 The transcript-shipper units ride in the image (gitops-deployed from `systemd/` +
 `bin/`), but the initial `drosera` checkout, the Alloy install, and the Grafana
 Cloud LOGS push token are **not** baked. To activate on a worker, run `06` with
-the token:
+the token, as root (the `claude` user has no sudo beyond the token broker, #177):
 
 ```bash
-sudo env GRAFANA_CLOUD_LOGS_URL=… GRAFANA_CLOUD_LOGS_USER=… GRAFANA_CLOUD_LOGS_TOKEN=… \
+env GRAFANA_CLOUD_LOGS_URL=… GRAFANA_CLOUD_LOGS_USER=… GRAFANA_CLOUD_LOGS_TOKEN=… \
   provision/06-transcript-shipper.sh
 ```
 

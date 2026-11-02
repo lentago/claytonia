@@ -20,3 +20,8 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # Every minute: keep the share's README.md equal to docs/share/README.md on main
 # (#185). It compares first, so a steady state writes nothing.
 *  *  *   *   *     claude  /opt/claude-runner/bin/cr-publish-share
+
+# Every minute, as root: the agent user may run the GitHub App token broker as root
+# and nothing else, and the App key is root's (#177). It compares first, so a steady
+# state writes nothing; a rebuilt worker's blanket rule is replaced on the first run.
+*  *  *   *   *     root    /opt/claude-runner/bin/cr-harden

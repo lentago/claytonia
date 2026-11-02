@@ -399,7 +399,28 @@ owned by kalmia's Terraform, not this repo's — products own their own capacity
   with the flag. No write token is minted for a whole installation; a job with no
   repo gets a read-only token, which does span the installation. This bounds what a leaked token is worth (a token can
   surface in a transcript or a log). It is not a boundary against the agent itself,
-  which can run `gh-token` too; see #117. The App has been **public**
+  which can run `gh-token` too; see #117.
+
+  **The App key is root's, and the agent user has no root (#177).** `gh-app.pem` and
+  `gh-app.env` are `root:root 0600`. `gh-token` is also the token broker: run as
+  `claude`, it cannot read the key, so it runs itself again through the one sudoers
+  rule that user has, `claude ALL=(root) NOPASSWD: /opt/claude-runner/bin/gh-token`,
+  naming the profile and repo explicitly (sudo drops `GH_REPO`). Run as root it trusts
+  nothing from its caller: the path seams are ignored, `PATH` and `HOME` are fixed,
+  curl skips any `.curlrc`, and `gh-app.env` is parsed for its two numbers, never
+  sourced. sudo logs each mint (user, profile, repo) to the auth journal.
+  `bin/cr-harden` holds this state on every worker: cron runs it as root every minute,
+  it compares first, and on drift it installs the rule (checked with `visudo`,
+  renamed into place), sets the key and its config to `0600`, and logs one error if
+  sudo grants `claude` anything else. A rebuilt worker whose image still carries the
+  old blanket rule is corrected on the first run. The agent can still ask the broker
+  for any profile on any repo while it runs; what it cannot do any more is take the key,
+  which signs tokens from anywhere until it is rotated. Jobs no longer have root
+  (no `sudo apt-get install`); `apt-get download` plus `dpkg -x` into a temp
+  directory still works for a library a check needs. Operator tasks that need root
+  (`claude-set-token`, stopping the gitops timer) go through `ssh root@<worker>`.
+
+  The App has been **public**
   since 2026-10-28 so the maintainer's personal account could install it on one
   repository (a private App installs only on the account that owns it). Public means
   installable, not usable: acting as the App takes the private key on the workers, and
@@ -431,6 +452,8 @@ owned by kalmia's Terraform, not this repo's — products own their own capacity
   the trade-off is in [ADR-0010](docs/adr/0010-read-only-google-credential-on-workers.md).
 
 Secrets (`token.env`, `gh-app.pem`, `google.env`) live on the workers, never in this repo.
+`gh-app.pem` and `gh-app.env` are `root:root 0600`; `token.env` and `google.env` are
+`root:claude 0640`, because the agent's CLI and `google-read` read them as `claude`.
 
 ## Metrics
 
@@ -461,12 +484,14 @@ count(max by (worker) (count_over_time({job="claude_runner"} | json | event="wor
 ```
 bin/         the runner: run-job, process-inbox, cr-submit, cr-newproject, cr-emit,
              gh-token, gh-credential-helper, claude-set-token, cr-schedule (scheduled
-             jobs), cr-automerge (ADR-0009 gate), google-read / google-auth (ADR-0010)
+             jobs), cr-automerge (ADR-0009 gate), google-read / google-auth (ADR-0010),
+             cr-harden (the sudoers rule and the App key's mode, #177)
 systemd/     claude-inbox.{service,timer} (poll), claude-heartbeat.{service,timer},
              transcript-shipper-sync.{service,timer}, and zero-length mask files for
              proxmox-regenerate-snakeoil.service / first-boot-complete.target (#120)
 cron/        claude-runner — cr-schedule every minute (schedules are specs on the NAS)
              + the weekly `cr-update` (Claude Code stays current; idle-guarded by the inbox lock)
+             + cr-publish-share every minute + cr-harden every minute, as root
 etc/         runner.env — non-secret config (model/cwd/turns defaults, LOKI_PUSH_URL)
 gitops/      claytonia-gitops.{sh,service,timer} + install.sh — pull main, redeploy on drift
 terraform/   the five claytonia-pool worker LXCs (plan-on-PR / apply-on-merge)
