@@ -60,6 +60,16 @@ bats --print-output-on-failure test/
   keys and order are pinned; each stub mode yields its normalized `logs/<runid>.result.json`
   (none when the output is not JSON, so the exit code decides); token counts are disjoint;
   `normalize` is silent on stderr; the transcript copy is best-effort.
+- `test/adapter-contract.bats` — the worker-runtime contract (#166, #169), run against
+  every `bin/rt-*` adapter: the prompt on stdin and never in argv, raw output on stdout,
+  the CLI's exit code passed through, the full result schema from an ok run, a failed run
+  never filed `ok`, no result (and silence) for empty or unparseable output,
+  `accepts-model`, a best-effort `transcript`, and exit 2 for anything else. A new adapter
+  adds one `contract_entry` (its stub and two models); without it the suite fails.
+- `test/runtime.bats` — the runtime key (#168): precedence, refusal at claim time, the
+  runtime-scoped model defaults, `cr-submit -r`, `cr-newproject -r`, `cr-schedule`.
+- `test/runtime-stubs.bats` — the Gemini and Codex stubs replay the captured CLI output
+  shapes (`test/fixtures/runtimes/`) and honour their seams.
 - `test/cr-update.bats` — `cr-update` runs under cron's PATH (`/usr/local/bin:/usr/bin:/bin`)
   and reaches claude only through `CLAUDE_BIN`: an update, an already-current run, a
   failed update (exit 1, logged with the prior version), and a held inbox lock that
@@ -76,8 +86,11 @@ value, so nothing here changes how a real worker behaves):
 - `CLAUDE_INBOX_LOCK` — a per-run flock path, never the prod singleton
 - `CLAUDE_BIN` — points at `test/stubs/claude`
 
-`test/stubs/` holds no-op / canned-output stand-ins for `claude`, `cr-emit`, `gh`,
-`gh-token`, and `systemd-cat`. The `gh` stub logs its argv to `FAKE_GH_LOG`; with
+`test/stubs/` holds no-op / canned-output stand-ins for `claude`, `gemini`, `codex`,
+`cr-emit`, `gh`, `gh-token`, and `systemd-cat`. The `gemini` and `codex` stubs replay real
+output captured from the CLIs (`test/fixtures/runtimes/README.md` says what and when);
+each takes `FAKE_<CLI>_MODE` (`ok` / `error` / `nonzero`), `FAKE_<CLI>_ARGS`,
+`FAKE_<CLI>_STDIN` and a `FAKE_HANG` prompt, like the `claude` stub. The `gh` stub logs its argv to `FAKE_GH_LOG`; with
 `FAKE_GH_PRS` set, `gh pr list` prints that file and `gh api …/pulls/<n>/files` prints
 `FAKE_GH_FILES_DIR/<n>.json` (`FAKE_GH_FAIL` / `FAKE_GH_SLEEP` apply to both). The `cr-emit` stub appends its argv to `FAKE_CREMIT_LOG` when set.
 The fake `claude` picks its result from `FAKE_CLAUDE_MODE` (`ok` / `error` / `nonzero` / `turns` / `budget`) so a test can drive the done vs
