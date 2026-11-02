@@ -95,6 +95,12 @@ bats --print-output-on-failure test/
   `cr-submit --workflows`; and a job that needed workflows:write without it fails with
   the fix in its reason line, from the agent's marker or GitHub's refusal, while a
   transcript that merely quotes run-job does not trip it.
+- `test/gitops.bats` — the gitops loop's lock and its installer (#190): a run that
+  cannot get the lock in time exits 1 saying nothing was deployed; a run that finds
+  another in progress waits, then makes its own pass; `install.sh` runs the first
+  deploy in the foreground before it enables the timer, and a failed first deploy
+  still enables the timer but makes `install.sh` exit non-zero. The loop runs against
+  a scratch lock, log and checkout; `install.sh` against stub `systemctl`/`install`/`git`.
 - `test/publish-share.bats` — `cr-publish-share` (#185): publishes the source stamped with
   its commit, writes nothing in a steady state, overwrites a hand edit (and a forged future
   stamp), writes by rename (never in place), never lets a stale checkout overwrite a newer

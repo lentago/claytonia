@@ -13,8 +13,21 @@ set -uo pipefail
 
 REPO_DIR="${CLAYTONIA_REPO_DIR:-/opt/claytonia}"
 LOG="${CLAYTONIA_LOG:-/var/log/claytonia-gitops.log}"
-exec 9>/tmp/claytonia-gitops.lock; flock -n 9 || exit 0
+LOCK="${CLAYTONIA_LOCK:-/tmp/claytonia-gitops.lock}"
+LOCK_WAIT="${CLAYTONIA_LOCK_WAIT:-300}"   # seconds to wait for a run already in progress
 log(){ echo "[$(date -u +%FT%TZ)] $*" >> "$LOG"; }
+
+# One run at a time. A run that finds another in progress waits for it, then makes
+# its own pass; that pass compares every file before it writes, so after a finished
+# deploy it does nothing and exits as that deploy left things. It never exits 0
+# without having made a pass: a caller that forces a deploy and checks the exit
+# status (kalmia's forge does) must not see success with nothing deployed (#190).
+exec 9>"$LOCK"
+if ! flock -w "$LOCK_WAIT" 9; then
+  log "another run still holds $LOCK after ${LOCK_WAIT}s; nothing deployed"
+  echo "claytonia-gitops: another run still holds $LOCK after ${LOCK_WAIT}s; nothing deployed" >&2
+  exit 1
+fi
 [ -f "$LOG" ] && [ "$(stat -c%s "$LOG" 2>/dev/null || echo 0)" -gt 1000000 ] && mv -f "$LOG" "$LOG.1"
 
 cd "$REPO_DIR" 2>/dev/null || { log "no repo at $REPO_DIR"; exit 1; }

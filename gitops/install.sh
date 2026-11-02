@@ -22,6 +22,19 @@ install -m 755 "$REPO_DIR/gitops/claytonia-gitops.sh"      /usr/local/sbin/clayt
 install -m 644 "$REPO_DIR/gitops/claytonia-gitops.service" /etc/systemd/system/claytonia-gitops.service
 install -m 644 "$REPO_DIR/gitops/claytonia-gitops.timer"   /etc/systemd/system/claytonia-gitops.timer
 systemctl daemon-reload
+# The first deploy runs here, in the foreground, and the timer is enabled after it
+# (#190). `enable --now` alone starts the timer, and once OnBootSec has passed (a
+# container counts it from its own start) the timer fires at once and deploys in
+# parallel with whatever runs next. For a oneshot unit, `systemctl start` returns
+# when the run ends and fails if the run fails. A failed first deploy still enables
+# the timer, which retries every 5 minutes, and makes this script exit non-zero.
+rc=0
+systemctl start claytonia-gitops.service || rc=$?
 systemctl enable --now claytonia-gitops.timer
-echo "claytonia gitops installed — pulls origin/main and redeploys every 5 min."
+if [ "$rc" -ne 0 ]; then
+  echo "claytonia gitops installed, but the first deploy failed (rc $rc); the timer retries every 5 min." >&2
+  echo "see: tail /var/log/claytonia-gitops.log ; journalctl -u claytonia-gitops.service" >&2
+  exit 1
+fi
+echo "claytonia gitops installed and deployed — pulls origin/main and redeploys every 5 min."
 echo "force a pull: systemctl start claytonia-gitops.service ; watch: tail -f /var/log/claytonia-gitops.log"
