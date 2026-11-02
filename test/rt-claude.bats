@@ -119,6 +119,40 @@ only_runid() { basename "$(find "$JOBS_ROOT/logs" -name '*.meta' | head -1)" .me
   [ -e "$TEST_TMP/txt" ]
 }
 
+@test "rt-claude normalize: a result it cannot write is an exit 1, still silent" {
+  printf '%s\n' '{"result":"r","is_error":true}' > "$TEST_TMP/raw"
+  run "$RT" normalize --raw "$TEST_TMP/raw" --result "$TEST_TMP/no-such-dir/res" --txt "$TEST_TMP/txt" --session-id S
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "fail closed: when the adapter cannot file a result, a run the CLI called an error is never filed done/" {
+  # The fail-open the review of #175 found: the raw JSON says is_error with exit 0,
+  # and the result write fails. Without the guard the job would land in done/.
+  real_mv="$(command -v mv)"
+  mkdir -p "$TEST_TMP/failmv"
+  cat > "$TEST_TMP/failmv/mv" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do case "\$a" in *.result.json) exit 1 ;; esac; done
+exec "$real_mv" "\$@"
+EOF
+  chmod +x "$TEST_TMP/failmv/mv"
+  export CLAUDE_RUNNER_PATH="$TEST_TMP/failmv:$CLAUDE_RUNNER_PATH"
+  for mode in error ok; do
+    rm -rf "${JOBS_ROOT:?}"/logs/* "$JOBS_ROOT"/done/* "$JOBS_ROOT"/failed/*
+    export FAKE_CLAUDE_MODE="$mode"
+    drop_job "closed-$mode.txt" "go"
+    run "$REPO_ROOT/bin/process-inbox"
+    [ "$status" -eq 0 ]
+    [ "$(count_in done)" -eq 0 ]
+    [ "$(count_in failed)" -eq 1 ]
+    runid="$(only_runid)"
+    [ ! -e "$JOBS_ROOT/logs/$runid.result.json" ]
+    grep -q '^exit=1$' "$JOBS_ROOT/logs/$runid.meta"
+    tail -1 "$JOBS_ROOT/logs/$runid.stderr" | grep -q 'could not file a result'
+  done
+}
+
 @test "rt-claude transcript: a kept session transcript is copied; a missing one is not an error" {
   mkdir -p "$HOME/.claude/projects/-some-cwd"
   printf '{"turn":1}\n' > "$HOME/.claude/projects/-some-cwd/abc.jsonl"

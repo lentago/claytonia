@@ -307,7 +307,7 @@ dur=$(( $(date -u +%s) - start ))
 # that could not run at all).
 normargs=( --raw "$outjson" --result "$outresult" --txt "$outtxt" --session-id "$sid" )
 [ -n "$model" ] && normargs+=( --model "$model" )
-"$rt" normalize "${normargs[@]}" 2>>"$errlog" || true
+"$rt" normalize "${normargs[@]}" 2>>"$errlog"; normrc=$?
 [ -f "$outtxt" ] || cp "$outjson" "$outtxt" 2>/dev/null || true
 
 cost=""; turns=""; status=""; limit=""
@@ -316,6 +316,13 @@ if jq -e . "$outresult" >/dev/null 2>&1; then
   cost="$(jq -r '.cost_usd // empty' "$outresult" 2>/dev/null)"
   turns="$(jq -r '.turns // empty' "$outresult" 2>/dev/null)"
   status="$(jq -r '.status // empty' "$outresult" 2>/dev/null)"
+fi
+# Fail closed: the adapter read the output but could not file its result, so the
+# runtime's own verdict (an is_error, a limit hit) is unknown. Never file that as
+# a success.
+if [ "$normrc" -ne 0 ]; then
+  echo "run-job: the $runtime adapter could not file a result for this run (normalize exit $normrc); failing it" >>"$errlog"
+  [ "$rc" -eq 0 ] && rc=1
 fi
 
 # Name a limit hit. timeout exits 124 (TERM worked) or 137 (needed the KILL);

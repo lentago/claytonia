@@ -17,8 +17,11 @@
 #       logs/<runid>.result.json) and the final text (--txt, logs/<runid>.txt).
 #       Called after the run and outside the timeout, so a killed run is still
 #       filed. Raw output that is not JSON gets no result: run-job then lets the
-#       exit code alone decide, as it always has. Silent on stderr, because the
-#       last line of run-job's stderr log is what a failure comment quotes.
+#       exit code alone decide, as it always has. Exits non-zero only when the
+#       output was readable but its result could not be written; run-job then
+#       fails the job (fail closed: a run whose result is lost is never filed as
+#       a success). Silent on stderr, because the last line of run-job's stderr
+#       log is what a failure comment quotes.
 #   rt-<runtime> transcript --session-id UUID --out F
 #       Best-effort: copy the session transcript, if the runtime keeps one.
 #
@@ -84,11 +87,11 @@ case "$cmd" in
       cp "$raw" "$txt" 2>/dev/null || true
       exit 0
     fi
-    jq -r '.result // .text // ""' "$raw" > "$txt" 2>/dev/null || true
+    { jq -r '.result // .text // ""' "$raw" > "$txt"; } 2>/dev/null || true
     # Field values are copied, never recomputed, so run-job reads back exactly
     # the strings it used to read from the raw JSON (cost and turns land in the
-    # .meta as-is).
-    if jq -c --arg model "$model" --arg sid "$sid" '
+    # .meta as-is). The braces keep a failed redirect's shell message off stderr.
+    if { jq -c --arg model "$model" --arg sid "$sid" '
       def str: if . == null then "" else tostring end;
       if type != "object" then
         {runtime: "claude", model: (if $model == "" then null else $model end),
@@ -120,9 +123,17 @@ case "$cmd" in
              catch {in: null, cached: null, out: null, thinking: null}),
            cost_usd: .total_cost_usd,
            final_text: (.result // .text // "")}
-      end' "$raw" > "$result.tmp" 2>/dev/null && [ -s "$result.tmp" ]
-    then mv -f "$result.tmp" "$result" 2>/dev/null
-    else rm -f "$result.tmp" 2>/dev/null   # jq 1.6 passes `jq -e .` on empty output (a killed run): no result
+      end' "$raw" > "$result.tmp"; } 2>/dev/null
+    then
+      if [ -s "$result.tmp" ]; then
+        mv -f "$result.tmp" "$result" 2>/dev/null || { rm -f "$result.tmp" 2>/dev/null; exit 1; }
+      else
+        rm -f "$result.tmp" 2>/dev/null   # jq 1.6 passes `jq -e .` on empty output (a killed run): no result is due
+      fi
+    else
+      # Parseable output, but no result could be written: say so, and run-job
+      # fails the job rather than file a run it cannot read as a success.
+      rm -f "$result.tmp" 2>/dev/null; exit 1
     fi
     exit 0
     ;;
