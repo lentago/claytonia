@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Stub `gemini` (Gemini CLI 0.66, headless `-o json`) for the runtime-seam tests
+# (#169). Its output is the real thing: captured from a live run on 2026-11-02 and
+# kept, ids scrubbed, in test/fixtures/runtimes/. The adapter pipes the prompt on
+# stdin (`-p ""` appends stdin; verified on 0.66). Behaviour from FAKE_GEMINI_MODE:
+#   ok      -> gemini-ok.json on stdout, session_id taken from --session-id, exit 0
+#   error   -> nothing on stdout, the real error report on stderr, exit 1. A failed
+#              call writes its JSON error to stderr, never stdout.
+#   nonzero -> non-JSON on stdout, exit 9
+# The session-turn cap's output shape is not captured yet; #170 adds a `turns` mode.
+# A prompt containing FAKE_HANG sleeps FAKE_GEMINI_SLEEP (default 60) seconds first.
+# FAKE_GEMINI_ARGS receives the argv (one per line); FAKE_GEMINI_STDIN the prompt read.
+set -u
+FIX="$(cd "$(dirname "$0")/../fixtures/runtimes" && pwd)"
+prompt="$(cat 2>/dev/null)" || true
+[ -n "${FAKE_GEMINI_ARGS:-}" ] && printf '%s\n' "$@" > "$FAKE_GEMINI_ARGS"
+[ -n "${FAKE_GEMINI_STDIN:-}" ] && printf '%s' "$prompt" > "$FAKE_GEMINI_STDIN"
+case "$prompt" in *FAKE_HANG*) sleep "${FAKE_GEMINI_SLEEP:-60}" ;; esac
+
+sid=""; prev=""
+for a in "$@"; do [ "$prev" = --session-id ] && sid="$a"; prev="$a"; done
+
+case "${FAKE_GEMINI_MODE:-ok}" in
+  error)   cat "$FIX/gemini-error.stderr" >&2; exit 1 ;;
+  nonzero) printf 'stub crashed before emitting JSON\n'; exit 9 ;;
+  *)
+    if [ -n "$sid" ]; then jq -c --arg s "$sid" '.session_id = $s' "$FIX/gemini-ok.json"
+    else cat "$FIX/gemini-ok.json"; fi
+    exit 0 ;;
+esac

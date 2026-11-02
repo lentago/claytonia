@@ -10,10 +10,12 @@
 #   budget  -> subtype error_max_budget_usd              (limit=budget -> failed/)
 # A prompt containing FAKE_HANG sleeps FAKE_CLAUDE_SLEEP (default 60) seconds
 # first, so one job in a batch can blow its timeout while the rest run normally.
-# FAKE_CLAUDE_ARGS, if set, receives the argv (one per line) for assertions.
+# FAKE_CLAUDE_ARGS, if set, receives the argv (one per line) for assertions;
+# FAKE_CLAUDE_STDIN, if set, receives the prompt read from stdin (#169).
 set -u
 prompt="$(cat 2>/dev/null)" || true   # drain the piped prompt; never fail on a closed pipe
 [ -n "${FAKE_CLAUDE_ARGS:-}" ] && printf '%s\n' "$@" > "$FAKE_CLAUDE_ARGS"
+[ -n "${FAKE_CLAUDE_STDIN:-}" ] && printf '%s' "$prompt" > "$FAKE_CLAUDE_STDIN"
 case "$prompt" in *FAKE_HANG*) sleep "${FAKE_CLAUDE_SLEEP:-60}" ;; esac
 
 case "${FAKE_CLAUDE_MODE:-ok}" in

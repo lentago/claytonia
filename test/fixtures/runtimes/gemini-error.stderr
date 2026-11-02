@@ -1,0 +1,11 @@
+Error when talking to Gemini API Full report available at: /tmp/gemini-client-error-REDACTED.json ModelNotFoundError: Publisher model `projects/PROJECT/locations/global/publishers/google/models/no-such-model-xyz` was not found or your project does not have access to it. Ensure you are using a valid model name and that the model is available in the specified region. For more information, see: https://docs.cloud.google.com/gemini-enterprise-agent-platform/resources/locations.
+  code: 404
+}
+{
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "error": {
+    "type": "Error",
+    "message": "Publisher model `projects/PROJECT/locations/global/publishers/google/models/no-such-model-xyz` was not found or your project does not have access to it. Ensure you are using a valid model name and that the model is available in the specified region. For more information, see: https://docs.cloud.google.com/gemini-enterprise-agent-platform/resources/locations.",
+    "code": 1
+  }
+}

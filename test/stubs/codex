@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Stub `codex` (Codex CLI 0.166, `codex exec --json`) for the runtime-seam tests
+# (#169). Its output is the real thing: captured from a live run on 2026-11-02 and
+# kept, ids scrubbed, in test/fixtures/runtimes/. With no PROMPT argument, `exec`
+# reads the prompt from stdin (verified on 0.166). Behaviour from FAKE_CODEX_MODE:
+#   ok      -> codex-ok.jsonl events on stdout (thread.started, turn.started,
+#              item.completed agent_message, turn.completed with usage); the last
+#              message written to the -o / --output-last-message file; exit 0
+#   error   -> codex-error.jsonl events (an error item, error, turn.failed), no -o
+#              file, exit 1
+#   nonzero -> non-JSON on stdout, exit 9
+# Codex mints its own thread id: FAKE_CODEX_THREAD_ID (default a fixed UUID).
+# A prompt containing FAKE_HANG sleeps FAKE_CODEX_SLEEP (default 60) seconds first.
+# FAKE_CODEX_ARGS receives the argv (one per line); FAKE_CODEX_STDIN the prompt read.
+set -u
+FIX="$(cd "$(dirname "$0")/../fixtures/runtimes" && pwd)"
+[ "${1:-}" = exec ] || { echo "codex stub: only 'exec' is stubbed" >&2; exit 2; }
+prompt="$(cat 2>/dev/null)" || true
+[ -n "${FAKE_CODEX_ARGS:-}" ] && printf '%s\n' "$@" > "$FAKE_CODEX_ARGS"
+[ -n "${FAKE_CODEX_STDIN:-}" ] && printf '%s' "$prompt" > "$FAKE_CODEX_STDIN"
+case "$prompt" in *FAKE_HANG*) sleep "${FAKE_CODEX_SLEEP:-60}" ;; esac
+
+last=""; prev=""
+for a in "$@"; do case "$prev" in -o|--output-last-message) last="$a" ;; esac; prev="$a"; done
+tid="${FAKE_CODEX_THREAD_ID:-0f0f0f0f-0000-7000-8000-00000000c0de}"
+events() { sed -E "s/\"thread_id\":\"[0-9a-f-]+\"/\"thread_id\":\"$tid\"/" "$FIX/$1"; }
+
+case "${FAKE_CODEX_MODE:-ok}" in
+  error)   events codex-error.jsonl; exit 1 ;;
+  nonzero) printf 'stub crashed before emitting JSON\n'; exit 9 ;;
+  *)
+    events codex-ok.jsonl
+    [ -n "$last" ] && jq -r 'select(.type == "item.completed" and .item.type == "agent_message") | .item.text' \
+      "$FIX/codex-ok.jsonl" > "$last"
+    exit 0 ;;
+esac
