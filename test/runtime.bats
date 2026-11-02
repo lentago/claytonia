@@ -213,6 +213,35 @@ the_stderr() { cat "$JOBS_ROOT"/logs/*.stderr; }
   [ "$status" -eq 1 ]
 }
 
+@test "cr-newproject keeps a recorded runtime when re-registering without -r" {
+  run "$REPO_ROOT/bin/cr-newproject" -r fake gproj acme/gproj fake-large
+  [ "$status" -eq 0 ]
+  run "$REPO_ROOT/bin/cr-newproject" gproj acme/gproj fake-small
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"runtime fake (kept from the existing entry)"* ]]
+  [ "$(jq -r .gproj.runtime "$JOBS_ROOT/projects/registry.json")" = fake ]
+  [ "$(jq -r .gproj.model "$JOBS_ROOT/projects/registry.json")" = fake-small ]
+  run "$REPO_ROOT/bin/cr-newproject" -r claude gproj acme/gproj sonnet   # -r still replaces it
+  [ "$(jq -r .gproj.runtime "$JOBS_ROOT/projects/registry.json")" = claude ]
+}
+
+@test "an empty -r is refused by cr-submit and cr-newproject" {
+  run "$REPO_ROOT/bin/cr-submit" -r "" -o t "do it" </dev/null
+  [ "$status" -ne 0 ]
+  [ -z "$(find "$JOBS_ROOT/inbox" -name '*.json')" ]
+  run "$REPO_ROOT/bin/cr-newproject" -r "" x acme/x
+  [ "$status" -ne 0 ]
+  [ "$(jq -r 'has("x")' "$JOBS_ROOT/projects/registry.json")" = false ]
+}
+
+@test "a project that names no runtime follows the fleet default, without its Claude model" {
+  export CLAUDE_RUNNER_RUNTIME=fake
+  run_spec '{"prompt":"go","project":"proj"}'   # proj: no runtime, model sonnet
+  [ "$status" -eq 0 ]
+  ran fake
+  [ -z "$(model_given "$FAKE_RT_ARGS")" ]
+}
+
 @test "cr-schedule keeps a scheduled spec's runtime" {
   printf '%s\n' '{"prompt":"p","runtime":"fake","schedule":"* * * * *"}' > "$JOBS_ROOT/scheduled/r.json"
   CR_SCHEDULE_NOW=2026-10-28T10:00:00Z "$REPO_ROOT/bin/cr-schedule" >/dev/null

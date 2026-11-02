@@ -174,13 +174,17 @@ A job is **plain text** (the whole file is the prompt) or a **JSON spec**:
 `runner.env` → `claude`. The runtime names its adapter, `bin/rt-<runtime>`, the one
 place a worker reaches an agent CLI. A runtime with no adapter, or a name that is not
 lowercase letters, digits and `-`, is refused at claim time: the job goes to `failed/`
-with exit 8 and a one-line reason in `logs/<runid>.stderr`, before any checkout.
+with exit 8 and a one-line reason in `logs/<runid>.stderr`, before any checkout. Like the
+other failures before the run (unknown project, failed checkout), a refusal posts nothing
+on the job's issue yet; #181 tracks that.
 
 **Model resolution**, most-specific wins: the job spec's `model` (or `cr-submit -m`)
 → the project registry's `model` → the global `CLAUDE_RUNNER_MODEL` in `runner.env`
 → the runtime's own default. Each default applies only to the runtime it was written
-for: a registry entry's `model` to that entry's `runtime` (`claude` when it names
-none), the global model to `CLAUDE_RUNNER_RUNTIME`. So a `"runtime": "gemini"` job on
+for: a registry entry's `model` to that entry's `runtime` (taken as `claude` when the
+entry names none), the global model to `CLAUDE_RUNNER_RUNTIME`. An entry that names no
+runtime runs on the fleet default, so if `CLAUDE_RUNNER_RUNTIME` ever moves off `claude`,
+those projects run on the new default with its own default model, never with their Claude one. So a `"runtime": "gemini"` job on
 a project registered with `"model": "sonnet"` runs on Gemini's default model rather
 than being handed a Claude one. A spec `model` must be one its runtime takes (the
 adapter's `accepts-model` decides; for Claude, its aliases and `claude-*` ids), or the
@@ -335,7 +339,7 @@ memory that jobs read and append to.
 cr-newproject <name> <owner/repo> [model] [branch]   # register + scaffold context
 ```
 
-- `projects/registry.json` — `name → {repo, default_branch, runtime, model, max_turns, max_budget_usd, timeout_sec, context_dir, setup, offbox_transcript}` (`runtime` optional, default `claude`, and `model` is written for it; limits optional; they sit between the job spec and the `runner.env` defaults). `"offbox_transcript": false` checks the project out under `/home/claude/private/` instead of `/home/claude/work/`, outside the live transcript shipper's path, so its jobs' narration is never streamed to Grafana Cloud; the full transcript still lands in `logs/` on the NAS. Use it for a project whose jobs read personal data.
+- `projects/registry.json` — `name → {repo, default_branch, runtime, model, max_turns, max_budget_usd, timeout_sec, context_dir, setup, offbox_transcript}` (`runtime` optional: an entry that names none runs on the fleet default, `CLAUDE_RUNNER_RUNTIME`. Its `model` is written for its `runtime`, and is taken as a Claude model when the entry names no runtime, as every entry written before #168 is. Limits are optional; they sit between the job spec and the `runner.env` defaults). `"offbox_transcript": false` checks the project out under `/home/claude/private/` instead of `/home/claude/work/`, outside the live transcript shipper's path, so its jobs' narration is never streamed to Grafana Cloud; the full transcript still lands in `logs/` on the NAS. Use it for a project whose jobs read personal data.
 - `projects/<name>/memory.md` — dated, durable learnings (conventions, gotchas)
 
 Durable conventions live in the **repo's own `CLAUDE.md`** (reviewed, versioned, loaded
