@@ -9,6 +9,8 @@ load test_helper
 
 REPO=acme/proj
 URL=https://github.com/acme/proj/pull/9
+SHA1=1111111111111111111111111111111111111111
+SHA2=2222222222222222222222222222222222222222
 
 setup() {
   TEST_TMP="$(mktemp -d "$(_tmpfs_base)/claytonia-am.XXXXXX")"
@@ -17,6 +19,9 @@ setup() {
   export FAKE_POLICY="$TEST_TMP/policy.json"
   export FAKE_PR="$TEST_TMP/pr.json"
   export FAKE_FILES="$TEST_TMP/files.tsv"
+  # Each head re-read (pr view --json headRefOid) takes the next line of FAKE_HEADS;
+  # when they run out it answers the PR's own head. That simulates a push mid-way.
+  export FAKE_HEADS="$TEST_TMP/heads"; : > "$FAKE_HEADS"
   cat > "$TEST_TMP/bin/gh" <<'EOS'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE_GH_LOG"
@@ -24,9 +29,13 @@ case "$*" in
   "api repos/"*"/contents/.claytonia/automerge.json?ref=main --jq .content")
     [ -f "$FAKE_POLICY" ] || { echo "HTTP 404" >&2; exit 1; }
     base64 -w0 < "$FAKE_POLICY"; echo ;;
+  "pr view "*" --json headRefOid --jq .headRefOid")
+    if [ -s "$FAKE_HEADS" ]; then head -1 "$FAKE_HEADS"; sed -i 1d "$FAKE_HEADS"
+    else jq -r .headRefOid "$FAKE_PR"; fi ;;
   "pr view "*) cat "$FAKE_PR" ;;
   "api --paginate repos/"*"/pulls/9/files "*) cat "$FAKE_FILES" ;;
   "pr merge "*) ;;
+  "pr comment "*) [ -n "${FAKE_COMMENT_FAIL:-}" ] && exit 1 ;;
   *) echo "unexpected gh call: $*" >&2; exit 1 ;;
 esac
 EOS
@@ -45,8 +54,9 @@ teardown() { rm -rf "$TEST_TMP"; }
 
 pr() { # <state> <draft> <base> <author> <title> <head-owner> <head-repo>
   jq -n --arg s "$1" --argjson d "$2" --arg b "$3" --arg a "$4" --arg t "$5" --arg o "$6" --arg r "$7" \
+    --arg h "${PR_HEAD-$SHA1}" \
     '{number:9, state:$s, isDraft:$d, baseRefName:$b, author:{login:$a}, title:$t,
-      headRepositoryOwner:{login:$o}, headRepository:{name:$r}}' > "$FAKE_PR"
+      headRepositoryOwner:{login:$o}, headRepository:{name:$r}, headRefOid:$h}' > "$FAKE_PR"
 }
 
 decide() { # [rule] [rc]
@@ -59,8 +69,52 @@ disarmed() { grep -q -- "pr merge $URL --disable-auto" "$FAKE_GH_LOG" && ! armed
 @test "arms when the job named a rule and the PR fits it" {
   decide
   [ "$status" -eq 0 ]
-  [ "$output" = "armed rule=brief" ]
+  [ "$output" = "armed rule=brief head=$SHA1" ]
   armed
+}
+
+# --- the head-SHA rule (ADR-0014 point 5, #178) --------------------------------
+
+@test "head pin: the arm carries the evaluated head as --match-head-commit" {
+  decide
+  grep -qx -- "pr merge $URL --auto --squash --delete-branch --match-head-commit $SHA1" "$FAKE_GH_LOG"
+}
+
+@test "head pin: a push during the check disarms, and nothing is armed" {
+  printf '%s\n' "$SHA2" > "$FAKE_HEADS"      # the re-read after listing files sees a new head
+  decide
+  [ "$output" = "disarmed: head moved during the check (${SHA1:0:12} -> ${SHA2:0:12})" ]
+  disarmed
+}
+
+@test "head pin: a push right after arming disarms it again" {
+  printf '%s\n%s\n' "$SHA1" "$SHA2" > "$FAKE_HEADS"   # same during the check, moved after the arm
+  decide
+  [[ "$output" == "disarmed: arming failed (head moved after arming (${SHA1:0:12} -> ${SHA2:0:12}))" ]]
+  grep -q -- "pr merge $URL --auto --squash" "$FAKE_GH_LOG"
+  grep -q -- "pr merge $URL --disable-auto" "$FAKE_GH_LOG"
+}
+
+@test "head pin: a PR with no readable head commit is never armed" {
+  PR_HEAD="" pr OPEN false main app/lentago-claude-runner "Add 2026-10-28 morning briefing" acme proj
+  decide
+  [ "$output" = "disarmed: PR has no readable head commit" ]
+  disarmed
+}
+
+@test "an armed PR gets the gate-readable record of its rule and head; a failed comment does not disarm" {
+  decide
+  # The first line is a contract with agent-pr-gate (shared-workflows#84): byte-exact.
+  grep -qx -- "pr comment $URL --body <!-- cr-automerge armed rule=brief head=$SHA1 -->" "$FAKE_GH_LOG"
+  : > "$FAKE_GH_LOG"
+  FAKE_COMMENT_FAIL=1 decide
+  [ "$output" = "armed rule=brief head=$SHA1" ]
+  ! grep -q -- "--disable-auto" "$FAKE_GH_LOG"
+}
+
+@test "a disarmed PR gets no armed record" {
+  decide ""
+  ! grep -q -- "pr comment" "$FAKE_GH_LOG"
 }
 
 @test "no rule named: disarmed, and the policy is never read" {

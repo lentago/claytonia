@@ -52,8 +52,11 @@ bats --print-output-on-failure test/
 - `test/automerge.bats` — `cr-automerge` (ADR-0009): arms only when the job named a
   rule, the default branch defines it and the PR fits it; disarms on every other case
   (no rule, failed job, no policy, a path or rename outside the globs, `*` crossing a
-  directory, title, author, draft, state, base, fork head, file count). Uses its own
-  `gh` stub serving the policy, the PR and its files.
+  directory, title, author, draft, state, base, fork head, file count). The head-SHA
+  rule (#178): the arm carries `--match-head-commit`; a push during the check or right
+  after the arm disarms; no readable head is never armed; an armed PR gets the
+  gate-readable comment, and a failed comment does not disarm. Uses its own `gh` stub
+  serving the policy, the PR, its files and a programmable sequence of head re-reads.
 - `test/rt-claude.bats` — the runtime seam (#167): run-job reaches the CLI only through
   `bin/rt-claude`, and the move changes nothing a Claude job files. The raw output lands
   byte-for-byte as `logs/<runid>.json`; the CLI argv, the `.runid` sidecar and the `.meta`

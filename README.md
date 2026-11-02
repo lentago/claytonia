@@ -157,7 +157,14 @@ survives any worker being down. A slot up to `catchup_min` minutes late still
 fires once; DST is handled by the `tz`. `"enabled": false` pauses a spec. The
 queued copy carries `submitter: schedule:<name>`. `automerge` names a rule from
 the target repo's `.claytonia/automerge.json` (ADR-0009); without it the PR waits
-for a human like any other.
+for a human like any other. `cr-automerge` arms the head it evaluated and no other
+(ADR-0014 point 5, #178): the arm carries `--match-head-commit`, and a push during the
+check, or before the head is read again just after the arm, disarms. The `.meta`
+records `automerge=armed rule=<rule> head=<sha>`, and the PR gets a comment naming the
+rule and that head. GitHub's auto-merge does not pin a commit once armed, so a push
+after that is caught only by `agent-pr-gate`, which reads the comment (only from the
+runner App) and is pending in shared-workflows#84; until it runs, such a push is not
+caught.
 
 `cr-submit` always writes the JSON form, so every job it queues carries a
 `submitter`. Hand-dropped `.txt`/`.md` jobs still work; they just have no submitter.
