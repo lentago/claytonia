@@ -126,6 +126,33 @@ stamp_time() { sed -n 's/.*(commit time \([0-9]*\)).*/\1/p' "$JOBS_ROOT/README.m
   grep -qE '^\*[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*[[:space:]]+claude[[:space:]]+/opt/claude-runner/bin/cr-publish-share$' "$REPO_ROOT/cron/claude-runner"
 }
 
+@test "the stamp still comes from git when the checkout belongs to another user (root, on a worker)" {
+  unset CR_PUBLISH_STAMP
+  git init -q "$TEST_TMP/co" && mkdir -p "$TEST_TMP/co/docs/share"
+  printf '# from git\n' > "$TEST_TMP/co/docs/share/README.md"
+  git -C "$TEST_TMP/co" add -A
+  GIT_COMMITTER_DATE='@1762004321 +0000' git -C "$TEST_TMP/co" -c user.name=t -c user.email=t@t commit -q -m readme
+  # git's own hook for its "dubious ownership" refusal: the workers' checkout is root's.
+  # Prove the hook works here first, or this test would pass on the unfixed code too.
+  if GIT_TEST_ASSUME_DIFFERENT_OWNER=1 git -C "$TEST_TMP/co" status >/dev/null 2>&1; then
+    skip "this git ignores GIT_TEST_ASSUME_DIFFERENT_OWNER; the ownership case is untested here"
+  fi
+  GIT_TEST_ASSUME_DIFFERENT_OWNER=1 CR_PUBLISH_SRC="$TEST_TMP/co/docs/share/README.md" publish
+  [ "$(stamp_time)" = 1762004321 ]
+  ! grep -q '@unknown' "$JOBS_ROOT/README.md"
+}
+
+@test "a source whose commit cannot be read is noted once, and never replaces a stamped copy" {
+  unset CR_PUBLISH_STAMP
+  mkdir -p "$TEST_TMP/nogit/docs/share" && printf '# not in git\n' > "$TEST_TMP/nogit/docs/share/README.md"
+  CR_PUBLISH_STAMP="dddddddddddddddddddddddddddddddddddddddd 1762000000" publish     # a stamped copy is live
+  CR_PUBLISH_SRC="$TEST_TMP/nogit/docs/share/README.md" publish
+  CR_PUBLISH_SRC="$TEST_TMP/nogit/docs/share/README.md" publish
+  [ "$(stamp_time)" = 1762000000 ]
+  ! grep -q 'not in git' "$JOBS_ROOT/README.md"
+  [ "$(grep -c 'cannot read the commit' "$FAKE_SYSTEMD_CAT_LOG")" -eq 1 ]
+}
+
 @test "the stamp comes from the source's last commit when the checkout is a git repo" {
   unset CR_PUBLISH_STAMP
   git init -q "$TEST_TMP/co" && mkdir -p "$TEST_TMP/co/docs/share"

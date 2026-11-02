@@ -24,11 +24,13 @@ set -uo pipefail
 JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
 STATE="${CR_PUBLISH_STATE:-${XDG_RUNTIME_DIR:-/tmp}/cr-publish-share.last}"
 
-# note_once <message> — log to journald only when the message differs from the last.
+# note_once <message> — log a message to journald the first time it occurs; the
+# state file remembers every one seen (one per line) until the next publish clears it.
 note_once() {
-  [ "$(cat "$STATE" 2>/dev/null)" = "$1" ] && return 0
-  printf '%s' "$1" > "$STATE" 2>/dev/null || true
-  echo "cr-publish-share: $1" | systemd-cat -t claude-runner -p notice 2>/dev/null || true
+  local m="${1//$'\n'/ }"
+  grep -qxF -- "$m" "$STATE" 2>/dev/null && return 0
+  printf '%s\n' "$m" >> "$STATE" 2>/dev/null || true
+  echo "cr-publish-share: $m" | systemd-cat -t claude-runner -p notice 2>/dev/null || true
 }
 all_clear() { rm -f "$STATE" 2>/dev/null || true; }
 
@@ -41,8 +43,22 @@ fi
 [ -n "$src" ] && [ -s "$src" ] || { note_once "no docs/share/README.md in the gitops checkout; nothing published"; exit 0; }
 [ -d "$JOBS_ROOT/inbox" ] || { note_once "no queue at $JOBS_ROOT; nothing published"; exit 0; }
 
-# The commit the source came from, and when it was committed.
-stamp="${CR_PUBLISH_STAMP:-$(git -C "$(dirname "$src")" log -1 --format='%H %ct' -- "$(basename "$src")" 2>/dev/null)}"
+# The commit the source came from, and when it was committed. The checkout is
+# root-owned (the gitops loop writes it) and this runs as claude, so git refuses it
+# as "dubious ownership" unless told otherwise (#188). safe.directory is trusted
+# from the command line and names only this checkout, for one read-only `git log`.
+# The path is resolved physically (pwd -P), the form git compares safe.directory to.
+# A source whose commit cannot be read is stamped "unknown", time 0, which is older
+# than any real stamp: such a worker may replace an unstamped copy but never one
+# published from a known commit. The failure is noted once, with git's reason.
+top="$(cd "$(dirname "$src")/../.." 2>/dev/null && pwd -P)"
+srcrel="${src#"$(cd "$(dirname "$src")" 2>/dev/null && cd ../.. && pwd)"/}"
+if [ -n "${CR_PUBLISH_STAMP:-}" ]; then
+  stamp="$CR_PUBLISH_STAMP"
+elif ! stamp="$(git -c safe.directory="$top" -C "$top" log -1 --format='%H %ct' -- "$srcrel" 2>&1)" || [ -z "$stamp" ]; then
+  note_once "cannot read the commit of $src, so it is stamped unknown and will not replace a stamped copy: $(printf '%s' "${stamp:-no commit touches it}" | head -c 200 | tr '\n' ' ')"
+  stamp=""
+fi
 sha="${stamp%% *}"; ct="${stamp##* }"
 case "$ct" in ''|*[!0-9]*) sha=unknown; ct=0 ;; esac
 
