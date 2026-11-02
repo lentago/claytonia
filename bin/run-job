@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # run-job <jobfile> — execute ONE agent job headless and file its output.
 # The agent CLI is reached only through its runtime adapter, bin/rt-<runtime>
-# (contract in the rt-claude header; #166). Today the runtime is always claude.
+# (contract in the rt-claude header; #166). The runtime resolves like model and
+# limits: spec "runtime" > project registry > CLAUDE_RUNNER_RUNTIME > claude (#168).
 # Job = plain text (whole file is the prompt) OR a .json spec:
-#   {"prompt":"...", "project":"name", "model":"...", "cwd":"...",
+#   {"prompt":"...", "project":"name", "runtime":"claude", "model":"...", "cwd":"...",
 #    "max_turns":N, "issue":N, "max_budget_usd":N, "timeout_sec":N, "allowed_tools":"...",
 #    "submitter":"...", "automerge":"<rule>"}
 # "submitter" (#21, stamped by cr-submit) names who queued the job; it is recorded
@@ -39,13 +40,15 @@ export CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}"
 export HOME="${HOME:-/home/claude}"
 export PATH="${CLAUDE_RUNNER_PATH:-/home/claude/.local/bin:/usr/local/bin:/usr/bin:/bin:$RUNNER_ROOT/bin}"  # override lets the test harness inject stub bins
 
-DEF_MODEL="${CLAUDE_RUNNER_MODEL:-}"
+DEF_RUNTIME="${CLAUDE_RUNNER_RUNTIME:-claude}"
+DEF_MODEL="${CLAUDE_RUNNER_MODEL:-}"   # written for DEF_RUNTIME, and applied only to it
 DEF_CWD="${CLAUDE_RUNNER_CWD:-/home/claude/work}"
 DEF_MAXTURNS="${CLAUDE_RUNNER_MAX_TURNS:-}"
 DEF_BUDGET="${CLAUDE_RUNNER_MAX_BUDGET_USD:-}"
 DEF_TIMEOUT="${CLAUDE_RUNNER_TIMEOUT_SEC:-}"
 KILL_AFTER=30        # grace after TERM before KILL: a worker is held at most timeout+30s
 RC_TIMEOUT=7         # distinct exit for a wall-clock limit hit (run-job's own codes are 0-6)
+RC_RUNTIME=8         # refused at claim: unknown runtime, or a spec model that runtime does not take
 
 jobfile="${1:-}"
 [ -n "$jobfile" ] && [ -f "$jobfile" ] || { echo "run-job: no such jobfile: $jobfile" >&2; exit 2; }
@@ -70,6 +73,7 @@ started=%s
 origname=%s
 ' "$(hostname)" "$(date -u +%s)" "$base" > "$proc.owner" 2>/dev/null || true
 
+runtime=""; model_from_spec=0
 prompt=""; cwd="$DEF_CWD"; model=""; max_turns=""; max_budget=""; timeout_sec=""; allowed=""; project=""; spec_issue=""; spec_issue_set=0; submitter=""; automerge_rule=""
 case "$base" in
   *.json)
@@ -82,7 +86,8 @@ case "$base" in
     prompt="$(jq -r '.prompt // empty' "$proc")"
     project="$(jq -r '.project // empty' "$proc")"
     c="$(jq -r '.cwd // empty' "$proc")";        [ -n "$c" ]  && cwd="$c"
-    m="$(jq -r '.model // empty' "$proc")";       [ -n "$m" ]  && model="$m"
+    m="$(jq -r '.model // empty' "$proc")";       [ -n "$m" ]  && { model="$m"; model_from_spec=1; }
+    runtime="$(jq -r '.runtime // empty | tostring' "$proc")"
     max_turns="$(jq -r '.max_turns // empty' "$proc")"
     max_budget="$(jq -r '.max_budget_usd // empty' "$proc")"
     timeout_sec="$(jq -r '.timeout_sec // empty' "$proc")"
@@ -109,6 +114,31 @@ fi
 errlog="$JOBS_ROOT/logs/${runid}.stderr"; : > "$errlog"
 repo=""; branch=""; user_prompt="$prompt"
 
+# check_runtime — refuse the job at claim time, before any checkout, when its
+# resolved runtime has no adapter or a spec model is not one that runtime takes
+# (the adapter decides: rt-<runtime> accepts-model). The name is checked before it
+# becomes a path, so a spec can never point run-job at another executable.
+check_runtime() {
+  [ "${_rt_checked:-0}" = 1 ] && return 0
+  local why="" tag=""
+  case "$runtime" in
+    ''|-*|*[!a-z0-9-]*) why="invalid runtime name '$runtime'"; tag="invalid-runtime" ;;
+    *) [ -x "$RT_DIR/rt-$runtime" ] || { why="unknown runtime '$runtime' (no $RT_DIR/rt-$runtime)"; tag="unknown-runtime"; } ;;
+  esac
+  if [ -z "$why" ] && [ "$model_from_spec" = 1 ] \
+     && ! "$RT_DIR/rt-$runtime" accepts-model --model "$model" 2>/dev/null; then
+    why="model '$model' is not a $runtime model (the spec names runtime '$runtime')"; tag="model-not-for-runtime"
+  fi
+  if [ -n "$why" ]; then
+    echo "run-job: $why" >>"$errlog"
+    mv -f "$proc" "$JOBS_ROOT/failed/$runid" 2>/dev/null || true
+    rm -f "$proc.owner" 2>/dev/null || true
+    echo "run-job FAIL runid=$runid $tag runtime=$runtime model=${model:-default}" | systemd-cat -t claude-runner -p err
+    exit "$RC_RUNTIME"
+  fi
+  _rt_checked=1
+}
+
 if [ -n "$project" ]; then
   if [ ! -f "$REGISTRY" ] || ! jq -e --arg p "$project" 'has($p)' "$REGISTRY" >/dev/null 2>&1; then
     echo "run-job: unknown project '$project' (not in $REGISTRY)" >>"$errlog"
@@ -119,7 +149,12 @@ if [ -n "$project" ]; then
   pj="$(jq -c --arg p "$project" '.[$p]' "$REGISTRY")"
   repo="$(printf '%s' "$pj" | jq -r '.repo // empty')"
   branch="$(printf '%s' "$pj" | jq -r '.default_branch // "main"')"
-  [ -z "$model" ] && model="$(printf '%s' "$pj" | jq -r '.model // empty')"
+  # The entry's model was written for the entry's runtime (default claude), so it
+  # applies only when the job runs on that runtime.
+  pj_runtime="$(printf '%s' "$pj" | jq -r '.runtime // empty | tostring')"
+  [ -z "$runtime" ] && runtime="${pj_runtime:-$DEF_RUNTIME}"
+  check_runtime
+  [ -z "$model" ] && [ "$runtime" = "${pj_runtime:-claude}" ] && model="$(printf '%s' "$pj" | jq -r '.model // empty')"
   [ -z "$max_turns" ]   && max_turns="$(printf '%s' "$pj" | jq -r '.max_turns // empty')"
   [ -z "$max_budget" ]  && max_budget="$(printf '%s' "$pj" | jq -r '.max_budget_usd // empty')"
   [ -z "$timeout_sec" ] && timeout_sec="$(printf '%s' "$pj" | jq -r '.timeout_sec // empty')"
@@ -184,8 +219,13 @@ if [ -n "$project" ]; then
   prompt="$(cat "$ptmp")"; rm -f "$ptmp"
 fi
 
-# Model precedence: spec > project registry > global default ($DEF_MODEL) > account default.
-[ -z "$model" ] && model="$DEF_MODEL"
+[ -z "$runtime" ] && runtime="$DEF_RUNTIME"
+check_runtime
+
+# Model precedence: spec > project registry > global default ($DEF_MODEL) > the
+# runtime's own default. Each default applies only to the runtime it was written
+# for (#168): the registry's to the entry's runtime, the global to DEF_RUNTIME.
+[ -z "$model" ] && [ "$runtime" = "$DEF_RUNTIME" ] && model="$DEF_MODEL"
 
 # Limits, same precedence: spec > project registry > runner.env default (blank
 # default = uncapped). An override must be a positive number (integers for turns
@@ -260,7 +300,6 @@ outresult="$JOBS_ROOT/logs/${runid}.result.json" # the adapter's normalized resu
 outtxt="$JOBS_ROOT/logs/${runid}.txt"
 meta="$JOBS_ROOT/logs/${runid}.meta"
 
-runtime=claude
 rt="$RT_DIR/rt-$runtime"
 rtargs=( --cwd "$cwd" --runid "$runid" --session-id "$sid" )
 [ -n "$model" ]      && rtargs+=( --model "$model" )
@@ -274,7 +313,7 @@ claim_id=""; claim_head=""
 if [ -n "$issue" ]; then
   _live=""
   [ -n "$GRAFANA_URL" ] && _live=" Live: ${GRAFANA_URL%/}/d/claude-runner-fleet?var-runid=${runid}."
-  claim_head="run \`${runid}\` on ${HOSTNAME:-$(hostname)} (${model:-default}), started $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  claim_head="run \`${runid}\` on ${HOSTNAME:-$(hostname)} (${runtime}, ${model:-default}), started $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
   claim_id="$(gh_issue_api "$repo" "repos/$repo/issues/$issue/comments" \
     -f body="🤖 claytonia is working this — ${claim_head}.${_live}" --jq .id)" || claim_id=""
   case "$claim_id" in ''|*[!0-9]*) claim_id="" ;; esac
@@ -282,7 +321,7 @@ if [ -n "$issue" ]; then
 fi
 
 # notice, not info: claude-inbox.service sets LogLevelMax=notice (#118).
-echo "run-job START runid=$runid project=${project:-none} model=${model:-default} cwd=$cwd" | systemd-cat -t claude-runner -p notice
+echo "run-job START runid=$runid project=${project:-none} runtime=$runtime model=${model:-default} cwd=$cwd" | systemd-cat -t claude-runner -p notice
 cr-emit started "$runid" "${project:-}" "${model:-}" "${submitter:-}" 2>/dev/null || true
 start=$(date -u +%s)
 # Heartbeat: mark this worker as underway in Loki (event=job_running) every 10s while
@@ -396,7 +435,7 @@ fi
 
 if [ "$rc" -eq 0 ]; then
   mv -f "$proc" "$JOBS_ROOT/done/$runid" 2>/dev/null || true
-  echo "run-job DONE runid=$runid project=${project:-none} dur=${dur}s cost=${cost:-?}" | systemd-cat -t claude-runner -p notice
+  echo "run-job DONE runid=$runid project=${project:-none} runtime=$runtime dur=${dur}s cost=${cost:-?}" | systemd-cat -t claude-runner -p notice
   if [ -n "$claim_id" ]; then
     if [ -n "${prurl:-}" ]; then _outcome="opened ${prurl}"; else _outcome="no PR opened"; fi
     gh_issue_api "$repo" -X PATCH "repos/$repo/issues/comments/$claim_id" \
@@ -405,7 +444,7 @@ if [ "$rc" -eq 0 ]; then
   fi
 else
   mv -f "$proc" "$JOBS_ROOT/failed/$runid" 2>/dev/null || true
-  echo "run-job FAIL runid=$runid project=${project:-none} rc=$rc${limit:+ limit=$limit} dur=${dur}s (logs/${runid}.stderr)" | systemd-cat -t claude-runner -p err
+  echo "run-job FAIL runid=$runid project=${project:-none} runtime=$runtime rc=$rc${limit:+ limit=$limit} dur=${dur}s (logs/${runid}.stderr)" | systemd-cat -t claude-runner -p err
   # Option 1 (issue #37): comment on the originating GitHub issue so dispatchers see
   # failures where they already look. If a claim comment exists (#128) it is edited
   # in place rather than adding a second comment; otherwise a new one is posted.

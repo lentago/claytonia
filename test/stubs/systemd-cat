@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Stub `systemd-cat` for the queue-core test harness — the runner logs to
 # journald via `... | systemd-cat`. Tests have no journal, so drain stdin and
-# discard, keeping the harness hermetic and quiet.
-cat >/dev/null 2>&1 || true
+# discard, keeping the harness hermetic and quiet. With FAKE_SYSTEMD_CAT_LOG set,
+# the lines are appended there instead, so a test can assert what was logged.
+if [ -n "${FAKE_SYSTEMD_CAT_LOG:-}" ]; then
+  cat >> "$FAKE_SYSTEMD_CAT_LOG" 2>/dev/null || true
+else
+  cat >/dev/null 2>&1 || true
+fi
 exit 0

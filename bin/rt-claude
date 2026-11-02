@@ -24,6 +24,10 @@
 #       log is what a failure comment quotes.
 #   rt-<runtime> transcript --session-id UUID --out F
 #       Best-effort: copy the session transcript, if the runtime keeps one.
+#   rt-<runtime> accepts-model --model M
+#       Exit 0 when M is a model this runtime takes, 1 when it is not. run-job asks
+#       only about a model the job spec names, and refuses the job at claim time
+#       on a 1 (#168). Each adapter owns its own rule; none knows another's.
 #
 # Normalized result:
 #   {runtime, model, session_id, status, is_error, turns,
@@ -40,7 +44,7 @@
 set -uo pipefail
 CLAUDE_BIN="${CLAUDE_BIN:-/home/claude/.local/bin/claude}"
 
-usage() { echo "usage: rt-claude run|normalize|transcript [options]  (see the header)" >&2; exit 2; }
+usage() { echo "usage: rt-claude run|normalize|transcript|accepts-model [options]  (see the header)" >&2; exit 2; }
 
 cmd="${1:-}"; [ -n "$cmd" ] || usage; shift
 cwd=""; runid=""; sid=""; model=""; max_turns=""; max_budget=""; allowed=""
@@ -136,6 +140,16 @@ case "$cmd" in
       rm -f "$result.tmp" 2>/dev/null; exit 1
     fi
     exit 0
+    ;;
+
+  accepts-model)
+    # The Claude CLI's own aliases (optionally with its [1m] context suffix) and
+    # full claude-* model ids. Every model a fleet job has named to date is one.
+    base="${model%"[1m]"}"
+    case "$base" in
+      haiku|sonnet|opus|fable|opusplan|default|claude-*) exit 0 ;;
+      *) exit 1 ;;
+    esac
     ;;
 
   transcript)

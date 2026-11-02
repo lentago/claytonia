@@ -1,17 +1,33 @@
 #!/usr/bin/env bash
-# cr-newproject <name> <owner/repo> [model] [default_branch]
+# cr-newproject [-r <runtime>] <name> <owner/repo> [model] [default_branch]
+# -r records the project's runtime (#168). Without it a new entry has no runtime key
+# and its jobs run on the fleet default, and re-registering an existing entry keeps
+# the runtime it already records. The model is one that runtime takes.
 set -euo pipefail
 JOBS_ROOT="${JOBS_ROOT:-/srv/jobs}"
 REG="$JOBS_ROOT/projects/registry.json"
-name="${1:?usage: cr-newproject <name> <owner/repo> [model] [branch]}"
-repo="${2:?usage: cr-newproject <name> <owner/repo> [model] [branch]}"
+runtime=""
+if [ "${1:-}" = -r ]; then
+  runtime="${2:?usage: cr-newproject [-r <runtime>] <name> <owner/repo> [model] [branch]}"; shift 2
+  case "$runtime" in -*|*[!a-z0-9-]*) echo "cr-newproject: -r needs a runtime name (lowercase letters, digits, -)" >&2; exit 1 ;; esac
+fi
+name="${1:?usage: cr-newproject [-r <runtime>] <name> <owner/repo> [model] [branch]}"
+repo="${2:?usage: cr-newproject [-r <runtime>] <name> <owner/repo> [model] [branch]}"
 model="${3:-}"; branch="${4:-main}"
 mkdir -p "$JOBS_ROOT/projects/$name"
 [ -f "$REG" ] || echo '{}' > "$REG"
+# Re-registering rebuilds the entry; never drop its runtime silently, since its model
+# is written for that runtime.
+kept=""
+if [ -z "$runtime" ]; then
+  runtime="$(jq -r --arg n "$name" '.[$n].runtime // empty | tostring' "$REG")"
+  [ -n "$runtime" ] && kept=" (kept from the existing entry)"
+fi
 tmp="$(mktemp)"
-jq --arg n "$name" --arg r "$repo" --arg m "$model" --arg b "$branch" --arg c "$JOBS_ROOT/projects/$name" \
-   '.[$n] = {repo:$r, default_branch:$b, model:$m, context_dir:$c, setup:""}' "$REG" > "$tmp" && mv "$tmp" "$REG"
+jq --arg n "$name" --arg r "$repo" --arg m "$model" --arg b "$branch" --arg c "$JOBS_ROOT/projects/$name" --arg rt "$runtime" \
+   '.[$n] = ({repo:$r, default_branch:$b, model:$m, context_dir:$c, setup:""}
+             + (if $rt != "" then {runtime:$rt} else {} end))' "$REG" > "$tmp" && mv "$tmp" "$REG"
 mem="$JOBS_ROOT/projects/$name/memory.md"
 [ -f "$mem" ] || printf '# %s — accumulated project memory\n\n_Concise, dated, durable learnings only (conventions, gotchas, build quirks)._\n' "$name" > "$mem"
-echo "registered '$name' -> $repo (branch $branch, model ${model:-default})"
+echo "registered '$name' -> $repo (branch $branch${runtime:+, runtime $runtime$kept}, model ${model:-default})"
 jq --arg n "$name" '.[$n]' "$REG"
