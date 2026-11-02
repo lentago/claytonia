@@ -76,13 +76,15 @@ bats --print-output-on-failure test/
 - `test/gh-token.bats` — scoped installation tokens (#176): each access profile's exact
   permissions for one repository, nothing the App lacks, no installation-wide write
   token, a read-only token when no repo is named, refusals before any request, the
-  installation fallback, and the credential helper passing the job's profile through.
-  The broker (#177): a user who cannot read the key mints through `sudo -n
+  installation fallback, a failed mint ending in gh-token's own message, and the
+  credential helper passing the job's profile through. The broker (#177): a user who cannot read the key mints through `sudo -n
   /opt/claude-runner/bin/gh-token`, naming the profile and repo; a refused request
   never reaches sudo; the App config is parsed, never run; curl skips `.curlrc`.
   A stub `curl` plays the GitHub API and a stub `sudo` records how it was asked; the
   App key is generated per test.
-- `test/harden.bats` — `cr-harden` (#177): installs the one sudoers rule `0440` and
+- `test/harden.bats` — `cr-harden` (#177): the broker's directory and both scripts are
+  made the owner's and not writable by others, and a parent others can write is
+  reported once (a sticky one is fine); installs the one sudoers rule `0440` and
   replaces the blanket one; a steady state writes nothing; a rule `visudo` rejects is
   never installed (and the real `visudo`, where present, accepts the rule); the key,
   then its config, become `0600`; a grant beyond the broker, or none, is reported

@@ -34,7 +34,8 @@ done
 printf '%s %s %s\n' "$method" "$url" "$body" >> "$FAKE_CURL_LOG"
 case "$url" in
   */installation) [ -n "${FAKE_CURL_NO_LOOKUP:-}" ] && exit 22; echo '{"id": 111}' ;;
-  */access_tokens) [ -n "${FAKE_CURL_NO_TOKEN:-}" ] && { echo '{}'; exit 0; }; echo '{"token": "ghs_test"}' ;;
+  */access_tokens) [ -n "${FAKE_CURL_MINT_FAIL:-}" ] && exit 22
+                   [ -n "${FAKE_CURL_NO_TOKEN:-}" ] && { echo '{}'; exit 0; }; echo '{"token": "ghs_test"}' ;;
   *) exit 22 ;;
 esac
 EOF
@@ -121,6 +122,12 @@ mint_url()  { awk '$1 == "POST" { print $2 }' "$FAKE_CURL_LOG" | tail -1; }
   run "$REPO_ROOT/bin/gh-token" acme/proj
   [ "$status" -eq 1 ]
   [[ "$output" == *"returned no token"* ]]
+}
+
+@test "a mint request that fails outright still ends in gh-token's own message" {
+  FAKE_CURL_MINT_FAIL=1 run "$REPO_ROOT/bin/gh-token" acme/proj
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"gh-token: the mint returned no token (job for acme/proj)"* ]]
 }
 
 @test "the credential helper passes the job's profile through, and nothing when there is none" {

@@ -410,9 +410,10 @@ owned by kalmia's Terraform, not this repo's — products own their own capacity
   curl skips any `.curlrc`, and `gh-app.env` is parsed for its two numbers, never
   sourced. sudo logs each mint (user, profile, repo) to the auth journal.
   `bin/cr-harden` holds this state on every worker: cron runs it as root every minute,
-  it compares first, and on drift it installs the rule (checked with `visudo`,
-  renamed into place), sets the key and its config to `0600`, and logs one error if
-  sudo grants `claude` anything else. A rebuilt worker whose image still carries the
+  it compares first, and on drift it keeps the broker's directory and the two scripts
+  root's and not writable by others (a parent such as `/opt` is reported, not
+  changed), installs the rule (checked with `visudo`, renamed into place), sets the
+  key and its config to `0600`, and logs one error if sudo grants `claude` anything else. A rebuilt worker whose image still carries the
   old blanket rule is corrected on the first run. The agent can still ask the broker
   for any profile on any repo while it runs; what it cannot do any more is take the key,
   which signs tokens from anywhere until it is rotated. Jobs no longer have root

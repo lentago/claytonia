@@ -113,6 +113,6 @@ fi
 
 body="$(jq -cn --argjson p "$perms" --arg r "${repo#*/}" --arg named "$repo" \
   'if $named == "" then {permissions: $p} else {repositories: [$r], permissions: $p} end')"
-tok="$(ghapi -X POST -d "$body" "https://api.github.com/app/installations/$inst/access_tokens" | jq -r '.token // empty')"
+tok="$(ghapi -X POST -d "$body" "https://api.github.com/app/installations/$inst/access_tokens" | jq -r '.token // empty')" || tok=""
 [ -n "$tok" ] || { echo "gh-token: the mint returned no token ($access${repo:+ for $repo})" >&2; exit 1; }
 printf '%s\n' "$tok"

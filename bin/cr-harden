@@ -9,6 +9,12 @@
 # image may still carry the old blanket rule; the first run replaces it.
 #
 # Each run compares first, so a steady state writes nothing. On drift it:
+#   0. makes the broker's path root's: sudo runs whatever file sits at the broker's
+#      path, and cron runs this script as root from the same directory, so a user who
+#      could write either file, or a directory above it, could replace it and get
+#      root. The runner's directory, its bin/ and the two scripts are set to root's
+#      and not writable by group or others; a parent above them (/opt, /) is only
+#      reported, as it is not this repo's to change;
 #   1. writes RULE to a temp file in sudoers.d whose name has a dot (sudo skips such
 #      names), checks it with visudo, and renames it over the old file;
 #   2. sets the App key, then its config, to root:root 0600. Key first: gh-token run
@@ -20,7 +26,7 @@
 #      cannot add a grant, and each check is a line in the auth log.
 # kalmia's runner image writes the same RULE (forge/runner/substrate.sh); keep them
 # equal. Problems are journald notes, each logged once until it changes.
-# Seams for the tests: CR_HARDEN_SUDOERS_D, CR_HARDEN_APP_DIR, CR_HARDEN_OWNER,
+# Seams for the tests: CR_HARDEN_RUNNER_DIR, CR_HARDEN_SUDOERS_D, CR_HARDEN_APP_DIR, CR_HARDEN_OWNER,
 # CR_HARDEN_VISUDO, CR_HARDEN_SUDO_LIST (a file standing in for `sudo -l -U claude`),
 # CR_HARDEN_STATE (the note memory).
 set -uo pipefail
@@ -32,6 +38,7 @@ RULE="# Managed by claytonia bin/cr-harden (#177): a change made here is replace
 claude ALL=(root) NOPASSWD: $BROKER"
 GRANT="(root) NOPASSWD: $BROKER"   # how `sudo -l -U claude` lists RULE
 
+RUNNER_DIR="${CR_HARDEN_RUNNER_DIR:-/opt/claude-runner}"
 SUDOERS_D="${CR_HARDEN_SUDOERS_D:-/etc/sudoers.d}"
 APP_DIR="${CR_HARDEN_APP_DIR:-/etc/claude-runner}"
 OWNER="${CR_HARDEN_OWNER:-root:root}"
@@ -52,6 +59,28 @@ if [ "$EUID" -ne 0 ] && [ -z "${CR_HARDEN_SUDOERS_D:-}" ]; then
 fi
 
 changed=0
+
+# 0. The broker's path. A sticky parent that others can write (/tmp-like) is safe:
+#    no one can rename or remove an entry in it that they do not own.
+for p in "$RUNNER_DIR" "$RUNNER_DIR/bin" "$RUNNER_DIR/bin/gh-token" "$RUNNER_DIR/bin/cr-harden"; do
+  [ -e "$p" ] || continue
+  read -r og m <<<"$(stat -c '%U:%G %a' "$p")"
+  [ "$og" = "$OWNER" ] && ! (( 8#$m & 8#022 )) && continue
+  if err="$( { chown "$OWNER" "$p" && chmod go-w "$p"; } 2>&1 )"; then
+    changed=1; forget "could not make $p"
+    say "set $p to $OWNER, not writable by group or others (was $og $m)"
+  else
+    note_once err "could not make $p $OWNER and not writable by group or others: $(printf '%s' "$err" | head -c 200 | tr '\n' ' ')"
+  fi
+done
+d="$RUNNER_DIR"
+while [ "$d" != / ]; do
+  d="$(dirname "$d")"
+  read -r u m <<<"$(stat -c '%U %a' "$d")"
+  if { [ "$u" != root ] && [ "$u" != "${OWNER%%:*}" ]; } || { (( 8#$m & 8#022 )) && ! (( 8#$m & 8#1000 )); }; then
+    note_once err "$d is not root's alone (owner $u, mode $m): whoever can write it can replace $BROKER, which runs as root"
+  fi
+done
 
 # 1. The sudoers rule.
 dst="$SUDOERS_D/claude"

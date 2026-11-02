@@ -18,7 +18,11 @@ sudo_list() { # <grant line>... — what `sudo -l -U claude` prints for these gr
 setup() {
   TEST_TMP="$(mktemp -d "$(_tmpfs_base)/claytonia-harden.XXXXXX")"
   export CR_HARDEN_SUDOERS_D="$TEST_TMP/sudoers.d" CR_HARDEN_APP_DIR="$TEST_TMP/app"
-  mkdir -p "$CR_HARDEN_SUDOERS_D" "$CR_HARDEN_APP_DIR"
+  export CR_HARDEN_RUNNER_DIR="$TEST_TMP/runner"
+  mkdir -p "$CR_HARDEN_SUDOERS_D" "$CR_HARDEN_APP_DIR" "$CR_HARDEN_RUNNER_DIR/bin"
+  chmod 755 "$TEST_TMP" "$CR_HARDEN_RUNNER_DIR" "$CR_HARDEN_RUNNER_DIR/bin"
+  install -m 755 /dev/null "$CR_HARDEN_RUNNER_DIR/bin/gh-token"
+  install -m 755 /dev/null "$CR_HARDEN_RUNNER_DIR/bin/cr-harden"
   export CR_HARDEN_OWNER="$(id -un):$(id -gn)"
   export CR_HARDEN_STATE="$TEST_TMP/notes"
   export CR_HARDEN_SUDO_LIST="$TEST_TMP/sudo-l"; sudo_list "(root) NOPASSWD: /opt/claude-runner/bin/gh-token" > "$CR_HARDEN_SUDO_LIST"
@@ -53,10 +57,10 @@ no_temp_left() { [ "$(ls -A "$CR_HARDEN_SUDOERS_D")" = claude ]; }
 
 @test "a steady state writes nothing and says nothing" {
   harden
-  before="$(stat -c '%i %Y' "$CR_HARDEN_SUDOERS_D/claude" "$CR_HARDEN_APP_DIR"/gh-app.*)"
+  before="$(stat -c '%i %Y %a' "$CR_HARDEN_SUDOERS_D/claude" "$CR_HARDEN_APP_DIR"/gh-app.* "$CR_HARDEN_RUNNER_DIR" "$CR_HARDEN_RUNNER_DIR"/bin/*)"
   : > "$FAKE_SYSTEMD_CAT_LOG"
   sleep 1; harden
-  [ "$(stat -c '%i %Y' "$CR_HARDEN_SUDOERS_D/claude" "$CR_HARDEN_APP_DIR"/gh-app.*)" = "$before" ]
+  [ "$(stat -c '%i %Y %a' "$CR_HARDEN_SUDOERS_D/claude" "$CR_HARDEN_APP_DIR"/gh-app.* "$CR_HARDEN_RUNNER_DIR" "$CR_HARDEN_RUNNER_DIR"/bin/*)" = "$before" ]
   [ ! -s "$FAKE_SYSTEMD_CAT_LOG" ]
 }
 
@@ -85,6 +89,29 @@ no_temp_left() { [ "$(ls -A "$CR_HARDEN_SUDOERS_D")" = claude ]; }
   [ "$status" -eq 0 ]
   [ "$(mode "$CR_HARDEN_APP_DIR/gh-app.pem")" = 600 ]
   ! grep -q 'could not set' "$FAKE_SYSTEMD_CAT_LOG"
+}
+
+@test "the broker's directory and both scripts are made the owner's and not writable by others" {
+  chmod 775 "$CR_HARDEN_RUNNER_DIR/bin"; chmod 777 "$CR_HARDEN_RUNNER_DIR/bin/gh-token"; chmod 757 "$CR_HARDEN_RUNNER_DIR/bin/cr-harden"
+  harden
+  [ "$(mode "$CR_HARDEN_RUNNER_DIR/bin")" = 755 ]
+  [ "$(mode "$CR_HARDEN_RUNNER_DIR/bin/gh-token")" = 755 ]
+  [ "$(mode "$CR_HARDEN_RUNNER_DIR/bin/cr-harden")" = 755 ]
+  [ "$(grep -c 'not writable by group or others (was' "$FAKE_SYSTEMD_CAT_LOG")" -eq 3 ]
+  : > "$FAKE_SYSTEMD_CAT_LOG"; harden
+  [ ! -s "$FAKE_SYSTEMD_CAT_LOG" ]
+}
+
+@test "a parent above the runner that others can write is reported once, and left alone" {
+  mkdir -p "$TEST_TMP/open"; mv "$CR_HARDEN_RUNNER_DIR" "$TEST_TMP/open/runner"
+  export CR_HARDEN_RUNNER_DIR="$TEST_TMP/open/runner"
+  chmod 777 "$TEST_TMP/open"
+  harden; harden
+  [ "$(grep -c "$TEST_TMP/open is not root's alone" "$FAKE_SYSTEMD_CAT_LOG")" -eq 1 ]
+  [ "$(mode "$TEST_TMP/open")" = 777 ]
+  chmod 1777 "$TEST_TMP/open"; rm -f "$CR_HARDEN_STATE"; : > "$FAKE_SYSTEMD_CAT_LOG"
+  harden
+  ! grep -q "not root's alone" "$FAKE_SYSTEMD_CAT_LOG"
 }
 
 @test "a grant beyond the broker is reported once, with what sudo listed" {
