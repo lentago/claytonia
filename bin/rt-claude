@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# rt-claude — the Claude Code runtime adapter (#166, #167).
+#
+# run-job drives every agent runtime through one adapter, bin/rt-<runtime>, and
+# three subcommands. This is the contract a second runtime is built against:
+#
+#   rt-<runtime> run --cwd DIR --runid ID --session-id UUID [--model M]
+#                    [--max-turns N] [--max-budget-usd X] [--allowed-tools T]
+#       Run the agent headless. run-job has already cd'd to DIR; the prompt is on
+#       stdin (never argv: one argv string caps at 128 KiB); the runtime's raw
+#       output goes to stdout, which run-job files byte-for-byte as
+#       logs/<runid>.json; diagnostics go to stderr (logs/<runid>.stderr).
+#       run-job's timeout(1) wraps this call and signals its process group, so
+#       the adapter must neither outlive nor swallow TERM.
+#   rt-<runtime> normalize --raw F --result F --txt F --session-id UUID [--model M]
+#       Turn the raw output into the normalized result (F of --result, filed as
+#       logs/<runid>.result.json) and the final text (--txt, logs/<runid>.txt).
+#       Called after the run and outside the timeout, so a killed run is still
+#       filed. Raw output that is not JSON gets no result: run-job then lets the
+#       exit code alone decide, as it always has. Silent on stderr, because the
+#       last line of run-job's stderr log is what a failure comment quotes.
+#   rt-<runtime> transcript --session-id UUID --out F
+#       Best-effort: copy the session transcript, if the runtime keeps one.
+#
+# Normalized result:
+#   {runtime, model, session_id, status, is_error, turns,
+#    tokens: {in, cached, out, thinking}, cost_usd, final_text}
+#   status    ok | max_turns | max_budget | error. run-job maps max_turns and
+#             max_budget to limit=turns|budget and fails any status but ok.
+#   is_error  the runtime itself reported the run as failed; run-job sets exit 1.
+#   tokens    disjoint (#173): `in` excludes cached reads; `out` excludes thinking
+#             when the runtime reports thinking separately, else `thinking` is null.
+#   cost_usd  as the runtime reports it; null when it reports none (never 0).
+#
+# For Claude: `run` is the exact command run-job ran before the seam existed, and
+# it execs the CLI so the process tree under timeout(1) is unchanged.
+set -uo pipefail
+CLAUDE_BIN="${CLAUDE_BIN:-/home/claude/.local/bin/claude}"
+
+usage() { echo "usage: rt-claude run|normalize|transcript [options]  (see the header)" >&2; exit 2; }
+
+cmd="${1:-}"; [ -n "$cmd" ] || usage; shift
+cwd=""; runid=""; sid=""; model=""; max_turns=""; max_budget=""; allowed=""
+raw=""; result=""; txt=""; out=""
+while [ $# -gt 0 ]; do
+  [ $# -ge 2 ] || { echo "rt-claude: $1 needs a value" >&2; exit 2; }
+  case "$1" in
+    --cwd)            cwd="$2" ;;
+    --runid)          runid="$2" ;;
+    --session-id)     sid="$2" ;;
+    --model)          model="$2" ;;
+    --max-turns)      max_turns="$2" ;;
+    --max-budget-usd) max_budget="$2" ;;
+    --allowed-tools)  allowed="$2" ;;
+    --raw)            raw="$2" ;;
+    --result)         result="$2" ;;
+    --txt)            txt="$2" ;;
+    --out)            out="$2" ;;
+    *) echo "rt-claude: unknown option $1" >&2; exit 2 ;;
+  esac
+  shift 2
+done
+
+case "$cmd" in
+  run)
+    args=( -p --dangerously-skip-permissions --output-format json --session-id "$sid" )
+    [ -n "$model" ]      && args+=( --model "$model" )
+    [ -n "$max_turns" ]  && args+=( --max-turns "$max_turns" )
+    [ -n "$max_budget" ] && args+=( --max-budget-usd "$max_budget" )
+    [ -n "$allowed" ]    && args+=( --allowedTools "$allowed" )
+    # <sid>.runid sidecar next to the live transcript, so the worker Alloy can
+    # attach a runid label to the transcript stream without waiting for the run
+    # to end. The directory name mirrors Claude Code's cwd encoding (/ → -).
+    _sid_projdir="$HOME/.claude/projects/$(printf '%s' "$cwd" | tr '/' '-')"
+    mkdir -p "$_sid_projdir" 2>/dev/null || true
+    printf '%s\n' "$runid" > "$_sid_projdir/${sid}.runid" 2>/dev/null || true
+    exec "$CLAUDE_BIN" "${args[@]}"
+    ;;
+
+  normalize)
+    [ -n "$raw" ] && [ -n "$result" ] && [ -n "$txt" ] || usage
+    rm -f "$result" 2>/dev/null
+    if ! jq -e . "$raw" >/dev/null 2>&1; then
+      cp "$raw" "$txt" 2>/dev/null || true
+      exit 0
+    fi
+    jq -r '.result // .text // ""' "$raw" > "$txt" 2>/dev/null || true
+    # Field values are copied, never recomputed, so run-job reads back exactly
+    # the strings it used to read from the raw JSON (cost and turns land in the
+    # .meta as-is).
+    if jq -c --arg model "$model" --arg sid "$sid" '
+      def str: if . == null then "" else tostring end;
+      if type != "object" then
+        {runtime: "claude", model: (if $model == "" then null else $model end),
+         session_id: $sid, status: "ok", is_error: false, turns: null,
+         tokens: {in: null, cached: null, out: null, thinking: null},
+         cost_usd: null, final_text: null}
+      else
+        (.subtype | str) as $sub
+        | (((.is_error // false) | str) == "true") as $err
+        | {runtime: "claude",
+           model: (if $model == "" then null else $model end),
+           session_id: (if $sid == "" then .session_id else $sid end),
+           status: (if $sub == "error_max_turns" then "max_turns"
+                    elif $sub == "error_max_budget_usd" then "max_budget"
+                    elif ($sub | startswith("error_")) or $err then "error"
+                    else "ok" end),
+           is_error: $err,
+           turns: .num_turns,
+           # Claude reports cache writes and cache reads apart from input_tokens,
+           # and folds thinking into output_tokens. A malformed usage block yields
+           # null counts; it must never cost the job its result.
+           tokens: (try (.usage as $u
+             | if ($u | type) != "object" then error("no usage") else . end
+             | {in: (if $u.input_tokens == null then null
+                     else $u.input_tokens + ($u.cache_creation_input_tokens // 0) end),
+                cached: $u.cache_read_input_tokens,
+                out: $u.output_tokens,
+                thinking: null})
+             catch {in: null, cached: null, out: null, thinking: null}),
+           cost_usd: .total_cost_usd,
+           final_text: (.result // .text // "")}
+      end' "$raw" > "$result.tmp" 2>/dev/null
+    then mv -f "$result.tmp" "$result" 2>/dev/null
+    else rm -f "$result.tmp" 2>/dev/null
+    fi
+    exit 0
+    ;;
+
+  transcript)
+    # Claude Code writes the full session (assistant messages, thinking, tool calls
+    # and results) under ~/.claude/projects/<cwd-encoded>/<session-id>.jsonl.
+    [ -n "$sid" ] && [ -n "$out" ] || usage
+    tpath="$(find "$HOME/.claude/projects" -name "${sid}.jsonl" -print -quit 2>/dev/null)"
+    [ -n "$tpath" ] && cp -f "$tpath" "$out" 2>/dev/null
+    exit 0
+    ;;
+
+  *) usage ;;
+esac

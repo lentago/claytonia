@@ -13,7 +13,7 @@
 #
 # Scheduled from cron/claude-runner (weekly). Run by hand: cr-update [--now]
 #
-# The binary is called by absolute path, as run-job does: cron's PATH is
+# The binary is called by absolute path, as rt-claude does: cron's PATH is
 # /usr/local/bin:/usr/bin:/bin and the native installer puts claude in
 # ~/.local/bin, so a bare `claude` is "command not found" under cron (#162).
 set -uo pipefail

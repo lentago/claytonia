@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# run-job <jobfile> — execute ONE Claude job headless and file its output.
+# run-job <jobfile> — execute ONE agent job headless and file its output.
+# The agent CLI is reached only through its runtime adapter, bin/rt-<runtime>
+# (contract in the rt-claude header; #166). Today the runtime is always claude.
 # Job = plain text (whole file is the prompt) OR a .json spec:
 #   {"prompt":"...", "project":"name", "model":"...", "cwd":"...",
 #    "max_turns":N, "issue":N, "max_budget_usd":N, "timeout_sec":N, "allowed_tools":"...",
@@ -27,7 +29,9 @@ WORKROOT="${CLAUDE_RUNNER_WORKROOT:-/home/claude/work}"
 # under ~/.claude/projects/-home-claude-work*/, so a session whose cwd is here is
 # never streamed to Grafana Cloud; its full transcript still lands in the NAS logs.
 PRIVATE_WORKROOT="${CLAUDE_RUNNER_PRIVATE_WORKROOT:-/home/claude/private}"
-CLAUDE_BIN="${CLAUDE_BIN:-/home/claude/.local/bin/claude}"
+# Runtime adapters ship beside this script (gitops deploys all of bin/ together);
+# readlink keeps that true when run-job is reached through /usr/local/bin.
+RT_DIR="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")"
 
 [ -f "$RUNNER_ROOT/etc/runner.env" ] && . "$RUNNER_ROOT/etc/runner.env"
 [ -f /etc/claude-runner/token.env ] && . /etc/claude-runner/token.env
@@ -251,23 +255,18 @@ if [ -n "${project:-}" ] && [ -n "${repo:-}" ]; then
   fi
 fi
 
-outjson="$JOBS_ROOT/logs/${runid}.json"
+outjson="$JOBS_ROOT/logs/${runid}.json"          # the runtime's raw output, as-is
+outresult="$JOBS_ROOT/logs/${runid}.result.json" # the adapter's normalized result
 outtxt="$JOBS_ROOT/logs/${runid}.txt"
 meta="$JOBS_ROOT/logs/${runid}.meta"
 
-args=( -p --dangerously-skip-permissions --output-format json --session-id "$sid" )
-[ -n "$model" ]      && args+=( --model "$model" )
-[ -n "$max_turns" ]  && args+=( --max-turns "$max_turns" )
-[ -n "$max_budget" ] && args+=( --max-budget-usd "$max_budget" )
-[ -n "$allowed" ]    && args+=( --allowedTools "$allowed" )
-
-# Write <sid>.runid sidecar next to the live transcript so the worker Alloy can
-# attach a runid label to the transcript stream without waiting for the run to end.
-# Directory name mirrors Claude Code's cwd-encoding convention (/ → -).
-_sid_projdir="$HOME/.claude/projects/$(printf '%s' "$cwd" | tr '/' '-')"
-mkdir -p "$_sid_projdir" 2>/dev/null || true
-printf '%s\n' "$runid" > "$_sid_projdir/${sid}.runid" 2>/dev/null || true
-unset _sid_projdir
+runtime=claude
+rt="$RT_DIR/rt-$runtime"
+rtargs=( --cwd "$cwd" --runid "$runid" --session-id "$sid" )
+[ -n "$model" ]      && rtargs+=( --model "$model" )
+[ -n "$max_turns" ]  && rtargs+=( --max-turns "$max_turns" )
+[ -n "$max_budget" ] && rtargs+=( --max-budget-usd "$max_budget" )
+[ -n "$allowed" ]    && rtargs+=( --allowed-tools "$allowed" )
 
 # Claim comment (#128): tell the issue a worker has it, so nobody double-dispatches.
 # Edited in place at completion; the id is recorded in the .meta for that update.
@@ -297,38 +296,44 @@ hb_pid=$!
 # never reclaims the job, and process-inbox is serial behind its flock.
 tmo=()
 [ -n "$timeout_sec" ] && tmo=( timeout --signal=TERM --kill-after="$KILL_AFTER" "$timeout_sec" )
-( cd "$cwd" && printf '%s' "$prompt" | "${tmo[@]}" "$CLAUDE_BIN" "${args[@]}" ) >"$outjson" 2>>"$errlog"
+( cd "$cwd" && printf '%s' "$prompt" | "${tmo[@]}" "$rt" run "${rtargs[@]}" ) >"$outjson" 2>>"$errlog"
 rc=$?
 kill "$hb_pid" 2>/dev/null; wait "$hb_pid" 2>/dev/null
 dur=$(( $(date -u +%s) - start ))
 
-cost=""; turns=""; subtype=""; limit=""
-if jq -e . "$outjson" >/dev/null 2>&1; then
-  jq -r '.result // .text // ""' "$outjson" > "$outtxt" 2>/dev/null || true
-  [ "$(jq -r '.is_error // false' "$outjson" 2>/dev/null)" = "true" ] && rc=1
-  cost="$(jq -r '.total_cost_usd // empty' "$outjson" 2>/dev/null)"
-  turns="$(jq -r '.num_turns // empty' "$outjson" 2>/dev/null)"
-  subtype="$(jq -r '.subtype // empty' "$outjson" 2>/dev/null)"
-else
-  cp "$outjson" "$outtxt" 2>/dev/null || true
+# Normalize outside the timeout, so a killed run is still filed. No result means
+# the runtime produced nothing parseable: the exit code alone decides, and the
+# raw output doubles as the text (normalize copies it; this covers an adapter
+# that could not run at all).
+normargs=( --raw "$outjson" --result "$outresult" --txt "$outtxt" --session-id "$sid" )
+[ -n "$model" ] && normargs+=( --model "$model" )
+"$rt" normalize "${normargs[@]}" 2>>"$errlog" || true
+[ -f "$outtxt" ] || cp "$outjson" "$outtxt" 2>/dev/null || true
+
+cost=""; turns=""; status=""; limit=""
+if jq -e . "$outresult" >/dev/null 2>&1; then
+  [ "$(jq -r '.is_error // false' "$outresult" 2>/dev/null)" = "true" ] && rc=1
+  cost="$(jq -r '.cost_usd // empty' "$outresult" 2>/dev/null)"
+  turns="$(jq -r '.turns // empty' "$outresult" 2>/dev/null)"
+  status="$(jq -r '.status // empty' "$outresult" 2>/dev/null)"
 fi
 
 # Name a limit hit. timeout exits 124 (TERM worked) or 137 (needed the KILL);
 # the elapsed check keeps an unrelated SIGKILL (e.g. OOM) from reading as one.
-# The CLI reports its own caps as result subtypes, not always with is_error set,
-# so any error_* subtype is forced to a failure. The last errlog line is what
-# the failure issue comment quotes as the reason.
+# A runtime may report its own caps without flagging an error, so any status but
+# ok is forced to a failure. The last errlog line is what the failure issue
+# comment quotes as the reason.
 if [ -n "$timeout_sec" ] && { [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; } && [ "$dur" -ge "$timeout_sec" ]; then
   limit=timeout; rc=$RC_TIMEOUT
   echo "run-job: limit=timeout — killed after ${dur}s (timeout_sec=$timeout_sec, TERM then KILL after ${KILL_AFTER}s)" >>"$errlog"
 else
-  case "$subtype" in
-    error_max_turns)      limit=turns
+  case "$status" in
+    max_turns)  limit=turns
       echo "run-job: limit=turns — stopped at ${turns:-?} turns (max_turns=$max_turns)" >>"$errlog" ;;
-    error_max_budget_usd) limit=budget
+    max_budget) limit=budget
       echo "run-job: limit=budget — stopped at \$${cost:-?} (max_budget_usd=$max_budget)" >>"$errlog" ;;
   esac
-  case "$subtype" in error_*) [ "$rc" -eq 0 ] && rc=1 ;; esac
+  case "$status" in max_turns|max_budget|error) [ "$rc" -eq 0 ] && rc=1 ;; esac
 fi
 
 # Extract PR URL from output now — used for both the no-PR check and the
@@ -364,11 +369,10 @@ if [ "$rc" -eq 0 ] && [ -n "${project:-}" ] && [ -n "${repo:-}" ] && [ -z "$prur
 fi
 
 # Capture the full reasoning transcript (assistant messages, thinking blocks, tool
-# calls/results) that Claude Code wrote locally -> durable NAS log, keyed by runid.
+# calls/results) the runtime kept locally -> durable NAS log, keyed by runid.
 # Best-effort; toggle off with CLAUDE_RUNNER_CAPTURE_TRANSCRIPT=0.
 if [ "${CLAUDE_RUNNER_CAPTURE_TRANSCRIPT:-1}" != 0 ] && [ -n "$sid" ]; then
-  tpath="$(find "$HOME/.claude/projects" -name "${sid}.jsonl" -print -quit 2>/dev/null)"
-  [ -n "$tpath" ] && cp -f "$tpath" "$JOBS_ROOT/logs/${runid}.transcript.jsonl" 2>/dev/null || true
+  "$rt" transcript --session-id "$sid" --out "$JOBS_ROOT/logs/${runid}.transcript.jsonl" 2>/dev/null || true
 fi
 
 {

@@ -103,10 +103,12 @@ Operations patterns you can inspect end to end here — each row links to the co
         │
         ▼
   run-job:  resolve project → clean checkout → load repo CLAUDE.md + project memory
-            → claude -p (headless) → branch + PR (never merge)
+            → bin/rt-claude → claude -p (headless) → branch + PR (never merge)
         │
-        ├── output → logs/<runid>.{txt,json,meta,stderr,transcript.jsonl}
-        │            (transcript.jsonl = the full reasoning: thinking + tool calls)
+        ├── output → logs/<runid>.{txt,json,result.json,meta,stderr,transcript.jsonl}
+        │            (json = the CLI's raw output; result.json = the runtime adapter's
+        │             normalized result, #166; transcript.jsonl = the full reasoning:
+        │             thinking + tool calls)
         ├── prompt → done/<runid>  (or failed/<runid>)
         └── event  → Loki → Grafana ("Claytonia — Runner Fleet" dashboard)
 ```
