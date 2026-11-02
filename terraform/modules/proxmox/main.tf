@@ -82,9 +82,10 @@ resource "proxmox_virtual_environment_container" "worker" {
   # block plans as a perpetual add (kalmia import gotcha).
 
   lifecycle {
-    # Five live workers behind this resource; a plan that wants to replace
-    # one is a config bug, not a change to apply.
-    prevent_destroy = true
+    # Off for the #65 rebuild window (R1-R5): it is one literal for the whole
+    # resource, so it cannot be lifted for a single worker. Until #65's closing
+    # PR restores it, the guard is each R PR's plan showing exactly one -/+.
+    prevent_destroy = false
     # operating_system: create-only (above). mount_point: root@pam-attached
     # (above). pool_id: set at create (var.pool_id), never reconciled after;
     # the imported workers were placed in the pool root-side (README.md § Auth).
