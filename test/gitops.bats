@@ -24,7 +24,9 @@ teardown() {
 }
 
 hold_lock() { # <seconds> — hold the loop's lock in the background, as a running deploy would
-  flock "$CLAYTONIA_LOCK" sleep "$1" 3>&- &
+  # One process holds it: the subshell takes the lock, then becomes the sleep, so
+  # teardown's kill releases the lock and leaves nothing running.
+  ( exec 8>"$CLAYTONIA_LOCK"; flock 8; exec sleep "$1" ) 3>&- &
   HOLDER=$!
   for _ in $(seq 50); do ! flock -n "$CLAYTONIA_LOCK" true && return 0; sleep 0.1; done
   return 1
