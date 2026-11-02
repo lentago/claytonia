@@ -54,6 +54,12 @@ bats --print-output-on-failure test/
   (no rule, failed job, no policy, a path or rename outside the globs, `*` crossing a
   directory, title, author, draft, state, base, fork head, file count). Uses its own
   `gh` stub serving the policy, the PR and its files.
+- `test/rt-claude.bats` — the runtime seam (#167): run-job reaches the CLI only through
+  `bin/rt-claude`, and the move changes nothing a Claude job files. The raw output lands
+  byte-for-byte as `logs/<runid>.json`; the CLI argv, the `.runid` sidecar and the `.meta`
+  keys and order are pinned; each stub mode yields its normalized `logs/<runid>.result.json`
+  (none when the output is not JSON, so the exit code decides); token counts are disjoint;
+  `normalize` is silent on stderr; the transcript copy is best-effort.
 - `test/cr-update.bats` — `cr-update` runs under cron's PATH (`/usr/local/bin:/usr/bin:/bin`)
   and reaches claude only through `CLAUDE_BIN`: an update, an already-current run, a
   failed update (exit 1, logged with the prior version), and a held inbox lock that
