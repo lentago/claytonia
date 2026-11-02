@@ -57,7 +57,21 @@ base="$(basename "$jobfile")"
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 label="$(printf '%s' "${base%.*}" | tr -c 'A-Za-z0-9._-' '_')"
 runid="${ts}-${label}"
-sid="$(uuidgen)"
+# mint_uuid — the job's session id, never empty (#179). Two workers shipped without
+# uuid-runtime, and every job on them ran with no session id: no NAS transcript, no
+# live runid. So: uuidgen where installed, else the kernel's UUID source, else a
+# bash-only v4-shaped id that cannot fail. Each source counts only if it yields a
+# well-formed UUID (CLIs reject anything else as a session id).
+mint_uuid() {
+  local u re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  u="$(uuidgen 2>/dev/null | tr 'A-F' 'a-f')"
+  [[ $u =~ $re ]] && { printf '%s' "$u"; return; }
+  u="$(cat "${CLAUDE_RUNNER_UUID_SRC:-/proc/sys/kernel/random/uuid}" 2>/dev/null)"   # override: test seam
+  [[ $u =~ $re ]] && { printf '%s' "$u"; return; }
+  printf '%04x%04x-%04x-4%03x-%04x-%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM" \
+    "$(( RANDOM & 0xfff ))" "$(( (RANDOM & 0x3fff) | 0x8000 ))" "$RANDOM" "$RANDOM" "$RANDOM"
+}
+sid="$(mint_uuid)"
 
 mkdir -p "$JOBS_ROOT"/{processing,done,failed,logs} 2>/dev/null || true
 proc="$JOBS_ROOT/processing/$runid"
