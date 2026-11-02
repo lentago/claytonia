@@ -70,7 +70,11 @@ variable "template_file_id" {
   # a version — bump deliberately when a new image ships. Create-only and in the
   # resource's ignore_changes, so this affects NEW workers only; the imported
   # five are untouched. See provision/README.md § New worker.
+  # v3 (lentago/kalmia#255): kalmia e351a4c with claytonia@0e91b2a, adding the
+  # Gemini and Codex CLIs (#166); sha256 feb48f17ab7f8525e93253906fd5c019811911441171081ee40157e5bb064f44.
+  # Its sudoers file still holds the blanket rule; cr-harden narrows it to the
+  # token broker within a minute of first boot (#177).
   description = "LXC template (kalmia runner image) new workers are cut from."
   type        = string
-  default     = "neptune:vztmpl/claytonia-runner-v1.tar.zst"
+  default     = "neptune:vztmpl/claytonia-runner-v3.tar.zst"
 }
