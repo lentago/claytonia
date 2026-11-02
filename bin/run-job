@@ -6,7 +6,9 @@
 # Job = plain text (whole file is the prompt) OR a .json spec:
 #   {"prompt":"...", "project":"name", "runtime":"claude", "model":"...", "cwd":"...",
 #    "max_turns":N, "issue":N, "max_budget_usd":N, "timeout_sec":N, "allowed_tools":"...",
-#    "submitter":"...", "automerge":"<rule>"}
+#    "submitter":"...", "automerge":"<rule>", "workflows":true}
+# "workflows": true (#176) lets the job's GitHub token change .github/workflows/;
+# without it the token lacks workflows:write and such a push is refused.
 # "submitter" (#21, stamped by cr-submit) names who queued the job; it is recorded
 # in the .meta and carried on the metrics events. Distinct from processing/<runid>.owner,
 # which names the WORKER that claimed the job.
@@ -49,6 +51,13 @@ DEF_TIMEOUT="${CLAUDE_RUNNER_TIMEOUT_SEC:-}"
 KILL_AFTER=30        # grace after TERM before KILL: a worker is held at most timeout+30s
 RC_TIMEOUT=7         # distinct exit for a wall-clock limit hit (run-job's own codes are 0-6)
 RC_RUNTIME=8         # refused at claim: unknown runtime, or a spec model that runtime does not take
+# The line an agent ends with when the task needs a workflow change its token cannot
+# make (#176), and the start of GitHub's answer to a push lacking workflows:write.
+# That phrase is assembled from two quoted halves so this file never holds it whole:
+# an agent that reads run-job must not put it into its own transcript.
+WORKFLOWS_MARKER="NEEDS-WORKFLOWS-PERMISSION"
+WORKFLOWS_REFUSAL="refusing to allow a GitHub App to create or ""update workflow"
+
 
 jobfile="${1:-}"
 [ -n "$jobfile" ] && [ -f "$jobfile" ] || { echo "run-job: no such jobfile: $jobfile" >&2; exit 2; }
@@ -91,7 +100,7 @@ origname=%s
 ' "$(hostname)" "$(date -u +%s)" "$base" > "$proc.owner" 2>/dev/null || true
 
 runtime=""; model_from_spec=0
-prompt=""; cwd="$DEF_CWD"; model=""; max_turns=""; max_budget=""; timeout_sec=""; allowed=""; project=""; spec_issue=""; spec_issue_set=0; submitter=""; automerge_rule=""
+prompt=""; cwd="$DEF_CWD"; model=""; max_turns=""; max_budget=""; timeout_sec=""; allowed=""; project=""; spec_issue=""; spec_issue_set=0; submitter=""; automerge_rule=""; workflows=0
 case "$base" in
   *.json)
     if ! jq -e . "$proc" >/dev/null 2>&1; then
@@ -112,6 +121,7 @@ case "$base" in
     # One line, no tabs: it lands in the key=value .meta and the Loki line as-is.
     submitter="$(jq -r '.submitter // empty | tostring | gsub("[\n\r\t]"; " ")' "$proc")"
     automerge_rule="$(jq -r '.automerge // empty | tostring' "$proc")"
+    [ "$(jq -r '.workflows // false | tostring' "$proc")" = true ] && workflows=1
     # Presence, not value, makes the spec authoritative: "issue": null / "" / "x" means
     # "no issue" and must not fall back to parsing the prompt (#130).
     if jq -e 'has("issue")' "$proc" >/dev/null 2>&1; then
@@ -178,6 +188,11 @@ if [ -n "$project" ]; then
   context_dir="$(printf '%s' "$pj" | jq -r '.context_dir // empty')"
   [ -z "$context_dir" ] && context_dir="$JOBS_ROOT/projects/$project"
   setup="$(printf '%s' "$pj" | jq -r '.setup // empty')"
+  # Every token this job's agent holds is limited to this repo (#176). It may change
+  # .github/workflows/ only when the spec opts in; the credential helper (git push)
+  # reads the profile from GH_TOKEN_ACCESS.
+  gh_access=job; [ "$workflows" = 1 ] && gh_access=job-workflows
+  export GH_TOKEN_ACCESS="$gh_access"
   # gh-token (and the git credential helper behind it) mint for the installation
   # that covers this repo, so a project outside the org installation still clones
   # and pushes. gh also takes GH_REPO as its default repo, which is this one.
@@ -206,7 +221,7 @@ if [ -n "$project" ]; then
   fi
   cwd="$ckout"
 
-  if tok="$(gh-token 2>>"$errlog")"; then
+  if tok="$(gh-token --access "$gh_access" "$repo" 2>>"$errlog")"; then
     printf '%s' "$tok" | gh auth login --with-token >>"$errlog" 2>&1 || true
   fi
   [ -n "$setup" ] && ( cd "$ckout" && bash -lc "$setup" ) >>"$errlog" 2>&1 || true
@@ -226,7 +241,10 @@ if [ -n "$project" ]; then
     # "rebase before merge" is to open the PR current with the base. main often moves
     # during a long job; a PR opened behind it is the #19->#20 clobber waiting to happen.
     printf -- '- Immediately before `gh pr create`: run `git fetch origin` and rebase your branch onto `origin/%s` (then `git push --force-with-lease`), so the PR opens up to date even if `%s` moved during the job. If the rebase conflicts, `git rebase --abort`, merge `origin/%s` into your branch instead, resolve the conflicts, `git push`, and say so in the PR body.\n' "$branch" "$branch" "$branch"
-    printf -- '- `gh` is pre-authenticated and `git push` is pre-credentialed. If a gh call returns an auth error, run: `gh-token | gh auth login --with-token`.\n'
+    printf -- '- `gh` is pre-authenticated and `git push` is pre-credentialed, for this repository only. If a gh call returns an auth error, run: `gh-token --access %s | gh auth login --with-token`.\n' "$gh_access"
+    if [ "$workflows" != 1 ]; then
+      printf -- '- This job may not create or change anything under `.github/workflows/`: its GitHub token lacks the workflows permission, and such a push is refused. If the task needs a workflow change, do not work around it: push nothing, and end your reply with the line `%s` so the dispatcher can resubmit the job with `"workflows": true`.\n' "$WORKFLOWS_MARKER"
+    fi
     printf -- '- If (and only if) you learn something DURABLE about this project (a convention, gotcha, or build quirk), append ONE concise dated bullet to `%s`. Do not log routine task details.\n\n' "$memfile"
     printf '## Accumulated project memory\n\n'
     cat "$memfile"
@@ -289,7 +307,7 @@ issue_of_prompt() {
 # response is on stdout, failures return non-zero after a one-line journald note.
 gh_issue_api() {
   local _repo="$1" _tok _out; shift
-  if ! _tok="$(timeout -k 2 "$GH_API_TIMEOUT" gh-token "$_repo" 2>/dev/null)" || [ -z "$_tok" ]; then
+  if ! _tok="$(timeout -k 2 "$GH_API_TIMEOUT" gh-token --access comment "$_repo" 2>/dev/null)" || [ -z "$_tok" ]; then
     echo "run-job: gh-token failed for $_repo ($runid); issue comment skipped" | systemd-cat -t claude-runner -p warning
     return 1
   fi
@@ -420,7 +438,7 @@ fi
 if [ "$rc" -eq 0 ] && [ -n "${project:-}" ] && [ -n "${repo:-}" ] && [ -z "$prurl" ]; then
   _ab="$(git -C "$ckout" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   if [ -n "$_ab" ] && [ "$_ab" != "HEAD" ] && [ "$_ab" != "$branch" ]; then
-    prurl="$(GH_TOKEN="$(gh-token 2>/dev/null)" gh pr list \
+    prurl="$(GH_TOKEN="$(gh-token --access read "$repo" 2>/dev/null)" gh pr list \
       --repo "$repo" --head "$_ab" --state open \
       --json url --jq '.[0].url' 2>/dev/null || true)"
     if [ -z "$prurl" ]; then
@@ -436,6 +454,23 @@ fi
 # Best-effort; toggle off with CLAUDE_RUNNER_CAPTURE_TRANSCRIPT=0.
 if [ "${CLAUDE_RUNNER_CAPTURE_TRANSCRIPT:-1}" != 0 ] && [ -n "$sid" ]; then
   "$rt" transcript --session-id "$sid" --out "$JOBS_ROOT/logs/${runid}.transcript.jsonl" 2>/dev/null || true
+fi
+
+# A job that needed workflows:write without opting in (#176) fails loudly, with the
+# fix in the reason line its issue comment quotes, rather than as a puzzling missing
+# PR. Two signals: the agent's own marker line (the preamble asks for it), or GitHub's
+# refusal in the run's output or transcript.
+if [ -n "${project:-}" ] && [ "$workflows" != 1 ]; then
+  _tr="$JOBS_ROOT/logs/${runid}.transcript.jsonl"
+  if grep -qxE "[[:space:]\`*>-]*${WORKFLOWS_MARKER}[[:space:]\`*.]*" "$outtxt" 2>/dev/null \
+     || grep -qF "$WORKFLOWS_REFUSAL" "$outtxt" "$_tr" 2>/dev/null; then
+    # Any PR it did open lacks the workflow change. The failed rc makes cr-automerge
+    # disarm it below, and the reason line names it, so a human sees it is partial.
+    echo "run-job: this job needed to change .github/workflows/, which its token may not; resubmit it with \"workflows\": true (cr-submit --workflows)${prurl:+; its PR $prurl lacks that change and is left for a human}" >>"$errlog"
+    echo "run-job: $runid needed workflows:write, not granted (project=$project)" | systemd-cat -t claude-runner -p warning
+    [ "$rc" -eq 0 ] && rc=1
+  fi
+  unset _tr
 fi
 
 {
@@ -493,14 +528,14 @@ fi
 if [ -n "${prurl:-}" ]; then
   _am="${CLAUDE_RUNNER_BIN:-$RUNNER_ROOT/bin}/cr-automerge"
   if [ -x "$_am" ]; then
-    _decision="$(GH_TOKEN="$(gh-token 2>/dev/null)" timeout -k 5 180 "$_am" "$prurl" "$repo" "$branch" "$automerge_rule" "$rc" 2>>"$errlog" | tail -1)"
+    _decision="$(GH_TOKEN="$(gh-token --access merge "$repo" 2>/dev/null)" timeout -k 5 180 "$_am" "$prurl" "$repo" "$branch" "$automerge_rule" "$rc" 2>>"$errlog" | tail -1)"
     [ -n "$_decision" ] || _decision="disarmed: cr-automerge gave no answer"
     case "$_decision" in
       armed*) ;;
-      *) GH_TOKEN="$(gh-token 2>/dev/null)" gh pr merge "$prurl" --disable-auto >/dev/null 2>&1 || true ;;
+      *) GH_TOKEN="$(gh-token --access merge "$repo" 2>/dev/null)" gh pr merge "$prurl" --disable-auto >/dev/null 2>&1 || true ;;
     esac
   else
-    GH_TOKEN="$(gh-token 2>/dev/null)" gh pr merge "$prurl" --disable-auto >/dev/null 2>&1 || true
+    GH_TOKEN="$(gh-token --access merge "$repo" 2>/dev/null)" gh pr merge "$prurl" --disable-auto >/dev/null 2>&1 || true
     _decision="disarmed: bot PRs are human-reviewed"
   fi
   echo "automerge=${_decision}" >> "$meta"

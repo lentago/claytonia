@@ -1,3 +1,5 @@
 #!/usr/bin/env bash
-# Stub gh-token: a fake token, no network.
+# Stub gh-token: a fake token, no network. With FAKE_GH_TOKEN_LOG set, each call's
+# argv is appended there as one line (#176: which access profile each caller asks for).
+[ -n "${FAKE_GH_TOKEN_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_GH_TOKEN_LOG"
 echo "stub-token"

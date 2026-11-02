@@ -70,6 +70,16 @@ bats --print-output-on-failure test/
   runtime-scoped model defaults, `cr-submit -r`, `cr-newproject -r`, `cr-schedule`.
 - `test/runtime-stubs.bats` — the Gemini and Codex stubs replay the captured CLI output
   shapes (`test/fixtures/runtimes/`) and honour their seams.
+- `test/gh-token.bats` — scoped installation tokens (#176): each access profile's exact
+  permissions for one repository, nothing the App lacks, no installation-wide write
+  token, a read-only token when no repo is named, refusals before any request, the
+  installation fallback, and the credential helper passing the job's profile through.
+  A stub `curl` plays the GitHub API; the App key is generated per test.
+- `test/token-scope.bats` — run-job asks for the least each step needs (`job`,
+  `comment`, `read`, `merge`, always for the job's repo); `"workflows": true` and
+  `cr-submit --workflows`; and a job that needed workflows:write without it fails with
+  the fix in its reason line, from the agent's marker or GitHub's refusal, while a
+  transcript that merely quotes run-job does not trip it.
 - `test/cr-update.bats` — `cr-update` runs under cron's PATH (`/usr/local/bin:/usr/bin:/bin`)
   and reaches claude only through `CLAUDE_BIN`: an update, an already-current run, a
   failed update (exit 1, logged with the prior version), and a held inbox lock that
@@ -87,7 +97,8 @@ value, so nothing here changes how a real worker behaves):
 - `CLAUDE_BIN` — points at `test/stubs/claude`
 
 `test/stubs/` holds no-op / canned-output stand-ins for `claude`, `gemini`, `codex`,
-`cr-emit`, `gh`, `gh-token`, and `systemd-cat`. The `gemini` and `codex` stubs replay real
+`cr-emit`, `gh`, `gh-token`, and `systemd-cat`. The `gh-token` stub logs its argv to
+`FAKE_GH_TOKEN_LOG` when set. The `gemini` and `codex` stubs replay real
 output captured from the CLIs (`test/fixtures/runtimes/README.md` says what and when);
 each takes `FAKE_<CLI>_MODE` (`ok` / `error` / `nonzero`), `FAKE_<CLI>_ARGS`,
 `FAKE_<CLI>_STDIN` and a `FAKE_HANG` prompt, like the `claude` stub. The `gh` stub logs its argv to `FAKE_GH_LOG`; with

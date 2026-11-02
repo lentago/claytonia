@@ -131,6 +131,7 @@ cr-submit "a quick ad-hoc prompt"                  # runs in /home/claude/work
 cr-submit -p site-icecreamtofightwith-com "fix broken doc links" # project job: clean checkout + PR
 cr-submit -m opus -p site-icecreamtofightwith-com "big refactor" # override the model for this one job
 cr-submit -r claude -p claytonia "pin the runtime"   # name the runtime (default: the project's, else claude)
+cr-submit --workflows -p claytonia "edit ci.yml"     # let the job change .github/workflows/ (#176)
 cr-submit -i 130 -p claytonia "work this issue"     # name the target issue explicitly (see below)
 cr-submit -o batch-7 -p claytonia "batch chunk 3"    # tag who submitted it (default below)
 cr-submit -w -p claytonia "run when a worker frees up" # at a terminal: wait for a free worker first
@@ -166,7 +167,7 @@ A job is **plain text** (the whole file is the prompt) or a **JSON spec**:
 ```json
 { "project": "site-icecreamtofightwith-com", "prompt": "…", "runtime": "claude", "model": "sonnet",
   "submitter": "alice@laptop", "issue": 130, "max_turns": 30, "max_budget_usd": 5, "timeout_sec": 1800,
-  "cwd": "…", "allowed_tools": "Read Bash" }
+  "cwd": "…", "allowed_tools": "Read Bash", "workflows": true }
 ```
 
 **Runtime resolution** (#166, #168), the same way: the job spec's `runtime` (or
@@ -377,7 +378,17 @@ owned by kalmia's Terraform, not this repo's — products own their own capacity
   installation tokens from the App key; `gh-credential-helper` feeds git per-op so no
   token is persisted. The token is for the installation that covers the job's repo
   (`run-job` exports `GH_REPO`), so a project may live under another owner that has
-  installed the App; `INSTALLATION_ID` is the fallback. The App has been **public**
+  installed the App; `INSTALLATION_ID` is the fallback. **Every token a project job uses
+  covers that one repository and only the access its step needs** (#176): the agent's `gh` login and
+  `git push` get `contents`, `issues` and `pull_requests` write; issue comments get
+  `issues` write; the PR lookup gets read; `cr-automerge` gets `contents` and
+  `pull_requests` write. `workflows: write` is granted only to a job whose spec sets
+  `"workflows": true` (`cr-submit --workflows`). Without it, a push that changes
+  `.github/workflows/` is refused, and the job fails with a reason saying to resubmit
+  with the flag. No write token is minted for a whole installation; a job with no
+  repo gets a read-only token, which does span the installation. This bounds what a leaked token is worth (a token can
+  surface in a transcript or a log). It is not a boundary against the agent itself,
+  which can run `gh-token` too; see #117. The App has been **public**
   since 2026-10-28 so the maintainer's personal account could install it on one
   repository (a private App installs only on the account that owns it). Public means
   installable, not usable: acting as the App takes the private key on the workers, and
