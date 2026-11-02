@@ -378,15 +378,15 @@ owned by kalmia's Terraform, not this repo's — products own their own capacity
   installation tokens from the App key; `gh-credential-helper` feeds git per-op so no
   token is persisted. The token is for the installation that covers the job's repo
   (`run-job` exports `GH_REPO`), so a project may live under another owner that has
-  installed the App; `INSTALLATION_ID` is the fallback. **Every token covers that one
-  repository and only the access its step needs** (#176): the agent's `gh` login and
+  installed the App; `INSTALLATION_ID` is the fallback. **Every token a project job uses
+  covers that one repository and only the access its step needs** (#176): the agent's `gh` login and
   `git push` get `contents`, `issues` and `pull_requests` write; issue comments get
   `issues` write; the PR lookup gets read; `cr-automerge` gets `contents` and
   `pull_requests` write. `workflows: write` is granted only to a job whose spec sets
   `"workflows": true` (`cr-submit --workflows`). Without it, a push that changes
   `.github/workflows/` is refused, and the job fails with a reason saying to resubmit
   with the flag. No write token is minted for a whole installation; a job with no
-  repo gets a read-only one. This bounds what a leaked token is worth (a token can
+  repo gets a read-only token, which does span the installation. This bounds what a leaked token is worth (a token can
   surface in a transcript or a log). It is not a boundary against the agent itself,
   which can run `gh-token` too; see #117. The App has been **public**
   since 2026-10-28 so the maintainer's personal account could install it on one

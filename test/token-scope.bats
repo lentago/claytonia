@@ -105,6 +105,9 @@ EOF
   run_spec '{"prompt":"go","project":"proj"}'
   [ "$status" -eq 1 ]
   tail -1 "$JOBS_ROOT"/logs/*.stderr | grep -qF 'resubmit it with "workflows": true'
+  # the partial PR is named, and cr-automerge (told the job failed) disarms it
+  tail -1 "$JOBS_ROOT"/logs/*.stderr | grep -qF 'its PR https://github.com/acme/proj/pull/9 lacks that change and is left for a human'
+  grep -q '^automerge=disarmed' "$JOBS_ROOT"/logs/*.meta
 }
 
 @test "a transcript that merely quotes run-job (or the marker mid-sentence) does not trip it" {

@@ -464,7 +464,9 @@ if [ -n "${project:-}" ] && [ "$workflows" != 1 ]; then
   _tr="$JOBS_ROOT/logs/${runid}.transcript.jsonl"
   if grep -qxE "[[:space:]\`*>-]*${WORKFLOWS_MARKER}[[:space:]\`*.]*" "$outtxt" 2>/dev/null \
      || grep -qF "$WORKFLOWS_REFUSAL" "$outtxt" "$_tr" 2>/dev/null; then
-    echo "run-job: this job needed to change .github/workflows/, which its token may not; resubmit it with \"workflows\": true (cr-submit --workflows)" >>"$errlog"
+    # Any PR it did open lacks the workflow change. The failed rc makes cr-automerge
+    # disarm it below, and the reason line names it, so a human sees it is partial.
+    echo "run-job: this job needed to change .github/workflows/, which its token may not; resubmit it with \"workflows\": true (cr-submit --workflows)${prurl:+; its PR $prurl lacks that change and is left for a human}" >>"$errlog"
     echo "run-job: $runid needed workflows:write, not granted (project=$project)" | systemd-cat -t claude-runner -p warning
     [ "$rc" -eq 0 ] && rc=1
   fi
