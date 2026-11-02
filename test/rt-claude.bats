@@ -64,7 +64,9 @@ only_runid() { basename "$(find "$JOBS_ROOT/logs" -name '*.meta' | head -1)" .me
   [ "$status" -eq 0 ]
   runid="$(only_runid)"
   sid="$(sed -n 's/^session_id=//p' "$JOBS_ROOT/logs/$runid.meta")"
-  side="$HOME/.claude/projects/$(printf '%s' "$CLAUDE_RUNNER_CWD" | tr '/' '-')/$sid.runid"
+  cwd="$(sed -n 's/^cwd=//p' "$JOBS_ROOT/logs/$runid.meta")"   # the cwd the job ran in
+  [ -n "$sid" ] && [ -n "$cwd" ]
+  side="$HOME/.claude/projects/$(printf '%s' "$cwd" | tr '/' '-')/$sid.runid"
   [ "$(cat "$side")" = "$runid" ]
 }
 
@@ -105,6 +107,16 @@ only_runid() { basename "$(find "$JOBS_ROOT/logs" -name '*.meta' | head -1)" .me
   [ -z "$output" ]
   [ ! -e "$TEST_TMP/res" ]
   cmp "$TEST_TMP/raw" "$TEST_TMP/txt"
+}
+
+@test "rt-claude normalize: empty output (a run killed before it printed) gets no result, on any jq" {
+  # jq 1.6 (the workers' Debian 12) exits 0 for `jq -e .` on empty input; 1.7+ exits 4.
+  : > "$TEST_TMP/raw"
+  run "$RT" normalize --raw "$TEST_TMP/raw" --result "$TEST_TMP/res" --txt "$TEST_TMP/txt" --session-id S
+  [ "$status" -eq 0 ]
+  [ ! -e "$TEST_TMP/res" ]
+  [ ! -e "$TEST_TMP/res.tmp" ]
+  [ -e "$TEST_TMP/txt" ]
 }
 
 @test "rt-claude transcript: a kept session transcript is copied; a missing one is not an error" {

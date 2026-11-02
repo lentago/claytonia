@@ -120,9 +120,9 @@ case "$cmd" in
              catch {in: null, cached: null, out: null, thinking: null}),
            cost_usd: .total_cost_usd,
            final_text: (.result // .text // "")}
-      end' "$raw" > "$result.tmp" 2>/dev/null
+      end' "$raw" > "$result.tmp" 2>/dev/null && [ -s "$result.tmp" ]
     then mv -f "$result.tmp" "$result" 2>/dev/null
-    else rm -f "$result.tmp" 2>/dev/null
+    else rm -f "$result.tmp" 2>/dev/null   # jq 1.6 passes `jq -e .` on empty output (a killed run): no result
     fi
     exit 0
     ;;
