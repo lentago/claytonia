@@ -41,8 +41,12 @@ fi
 [ -n "$src" ] && [ -s "$src" ] || { note_once "no docs/share/README.md in the gitops checkout; nothing published"; exit 0; }
 [ -d "$JOBS_ROOT/inbox" ] || { note_once "no queue at $JOBS_ROOT; nothing published"; exit 0; }
 
-# The commit the source came from, and when it was committed.
-stamp="${CR_PUBLISH_STAMP:-$(git -C "$(dirname "$src")" log -1 --format='%H %ct' -- "$(basename "$src")" 2>/dev/null)}"
+# The commit the source came from, and when it was committed. The checkout is
+# root-owned (the gitops loop writes it) and this runs as claude, so git refuses it
+# as "dubious ownership" unless told otherwise (#188). safe.directory is trusted
+# from the command line and names only this checkout, for one read-only `git log`.
+top="$(cd "$(dirname "$src")/../.." 2>/dev/null && pwd)"
+stamp="${CR_PUBLISH_STAMP:-$(git -c safe.directory="$top" -C "$top" log -1 --format='%H %ct' -- "${src#"$top"/}" 2>/dev/null)}"
 sha="${stamp%% *}"; ct="${stamp##* }"
 case "$ct" in ''|*[!0-9]*) sha=unknown; ct=0 ;; esac
 
