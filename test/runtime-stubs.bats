@@ -22,7 +22,9 @@ PROMPT='stub prompt on stdin'
 
 @test "gemini stub error: empty stdout, the JSON error report on stderr, exit 1" {
   export FAKE_GEMINI_MODE=error
-  printf '%s' "$PROMPT" | "$STUBS_DIR/gemini" -p '' -o json > "$TEST_TMP/out" 2> "$TEST_TMP/err" && false || [ $? -eq 1 ]
+  rc=0
+  printf '%s' "$PROMPT" | "$STUBS_DIR/gemini" -p '' -o json > "$TEST_TMP/out" 2> "$TEST_TMP/err" || rc=$?
+  [ "$rc" -eq 1 ]
   [ ! -s "$TEST_TMP/out" ]
   grep -q 'ModelNotFoundError' "$TEST_TMP/err"
 }
