@@ -12,7 +12,7 @@ locals {
   workers = {
     "claude-runner"   = { vm_id = 110, ip = "192.168.139.10", mac = "BC:24:11:7A:1A:E1" }
     "claude-runner-2" = { vm_id = 111, ip = "192.168.139.11", mac = "BC:24:11:A8:C7:AF" }
-    "claude-runner-3" = { vm_id = 112, ip = "192.168.139.12", mac = "BC:24:11:05:FD:71" }
+    "claude-runner-3" = { vm_id = 112, ip = "192.168.139.12", mac = "BC:24:11:05:FD:71", rebuild = "claytonia#65: rebuilt" }
     "claude-runner-4" = { vm_id = 116, ip = "192.168.139.17", mac = "BC:24:11:FA:D4:3E", rebuild = "claytonia#65: rebuilt" }
     "claude-runner-5" = { vm_id = 117, ip = "192.168.139.18", mac = "BC:24:11:BE:09:18", rebuild = "claytonia#65: rebuilt" }
   }
