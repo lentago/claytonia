@@ -1,6 +1,7 @@
 # ADR-0009: Policy-gated auto-merge for scheduled routine PRs
 
 **Status:** Accepted (2026-10-28). Amends [ADR-0002](0002-workers-branch-and-pr-never-merge.md).
+Updated 2026-11-02 (#186): `cr-automerge` pins the reviewed head and records its SHA in the job's `.meta`.
 
 ## Context
 
@@ -40,7 +41,7 @@ PR, and only when the target repository has opted that kind of PR in.**
   5. it changes between one and `max_files` (default 50) paths, and every path,
      including a rename's old path, matches one of the rule's `paths` globs.
 - Any error, missing field or doubt disarms. The decision is written to the
-  job's `.meta` as `automerge=armed rule=<rule>` or `automerge=disarmed: <reason>`.
+  job's `.meta` as `automerge=armed rule=<rule> head=<sha>` or `automerge=disarmed: <reason>`.
 - The standing prompt is unchanged: the agent itself still never arms or merges.
   Required status checks still gate the merge; auto-merge only removes the click.
 - `run-job` now takes only a PR in the project's own repository as the job's PR
