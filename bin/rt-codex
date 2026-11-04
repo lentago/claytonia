@@ -19,7 +19,7 @@
 #   needs no trust entry; an untrusted repo's .codex/ config and hooks stay unloaded.
 #   Codex's default shell environment policy drops every *KEY* and *TOKEN* variable
 #   from the agent's commands (0.166's defaults, read from the binary). That keeps
-#   OPENAI_API_KEY out of them, but it also drops GH_TOKEN_ACCESS, the profile
+#   CODEX_API_KEY out of them, but it also drops GH_TOKEN_ACCESS, the profile
 #   gh-credential-helper mints for (#176); the `set` override puts that one back.
 #
 # Auth (judgment B): `run` sources /etc/claude-runner/codex.env (root:claude 0640,
@@ -36,14 +36,19 @@
 #   CODEX_HOME is pinned to ~/.codex, so an ambient one cannot bring another login or
 #   config. `run` creates it (0700) when it is missing, as on a freshly built worker,
 #   because 0.166 will not start without it; a home it cannot create or write is one
-#   stderr line and exit 78 before the CLI starts. CODEX_API_KEY, CODEX_ACCESS_TOKEN and the Claude and Gemini credentials
-#   are unset, so the key is the only credential in the CLI's environment.
-#   0.166 reads OPENAI_API_KEY and CODEX_API_KEY as API-key auth (its doctor warns
-#   when several auth variables are set, hence exactly one). forced_login_method="api"
-#   makes Codex refuse ChatGPT auth ("API key login is required, but ChatGPT is
-#   currently being used. Logging out."), so a cached login is never what
-#   authenticates. These, and the variable names above, are read from the binary;
-#   the first live job confirms them.
+#   stderr line and exit 78 before the CLI starts.
+#   The file names the key OPENAI_API_KEY (its name in OpenAI's console and in
+#   README § Auth), but `codex exec` 0.166 reads an API key from the environment only
+#   as CODEX_API_KEY. OPENAI_API_KEY is just what `codex login --with-api-key` reads
+#   on stdin. So `run` hands the key to the CLI as CODEX_API_KEY and unsets
+#   OPENAI_API_KEY. Checked live on claude-runner-3 (#171, 2026-11-04): with only
+#   OPENAI_API_KEY set, every request is "401 Unauthorized: Missing bearer or basic
+#   authentication in header"; with only CODEX_API_KEY it answers. CODEX_ACCESS_TOKEN
+#   and the Claude and Gemini credentials are unset too, so the key is the only
+#   credential in the CLI's environment (its doctor warns when several auth variables
+#   are set). forced_login_method="api" makes Codex refuse ChatGPT auth ("API key
+#   login is required, but ChatGPT is currently being used. Logging out."), so a
+#   cached login is never what authenticates.
 #   The key is not a secret from the agent. The agent runs as `claude`, which must
 #   read codex.env for the CLI to start, so a job can read the file (as it can
 #   token.env for Claude), sandbox or not. The shell policy above keeps the key out
@@ -182,9 +187,10 @@ case "$cmd" in
       echo "rt-codex: $envf sets no OPENAI_API_KEY (judgment B, #171)" >&2
       exit "$EX_CONFIG"
     fi
-    export OPENAI_API_KEY
-    # One key, API-key auth only, and no other runtime's credential.
-    unset CODEX_API_KEY CODEX_ACCESS_TOKEN OPENAI_FEDERATION_RULE_ID OPENAI_IDENTITY_TOKEN_FILE \
+    # exec reads an API key from the environment only as CODEX_API_KEY (header, Auth),
+    # so the key moves there. One key, API-key auth only, no other runtime's credential.
+    export CODEX_API_KEY="$OPENAI_API_KEY"
+    unset OPENAI_API_KEY CODEX_ACCESS_TOKEN OPENAI_FEDERATION_RULE_ID OPENAI_IDENTITY_TOKEN_FILE \
           OPENAI_WORKLOAD_IDENTITY_CONTEXT CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY \
           ANTHROPIC_AUTH_TOKEN GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GENAI_API_KEY
     export CODEX_HOME="$CODEX_DIR"
