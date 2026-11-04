@@ -14,7 +14,7 @@ Status legend: `proposed` → `researched` → `in-progress` → `shipped`.
 
 ### Goal
 
-A live board — on the *Claude Runner Fleet* Grafana
+A live board — on the *Claytonia — Runner Fleet* Grafana
 dashboard — where each job **glows amber the instant a worker claims it** and **flips
 green (and becomes a clickable link to its PR) when the PR opens**. The classic CI
 *build radiator / extreme-feedback-device / information radiator* pattern, applied to
@@ -84,7 +84,7 @@ amber→green vision needs *lifecycle* events. Surgical changes:
 3. *(Optional)* **Fire `pr_opened` (green + link)** with `pr_url` the moment
    `gh pr create` returns, rather than only scraping it into the terminal event —
    tightens green→link latency. Terminal `job_complete` stays for cost/turns/duration.
-4. **Build the panel** on the *Claude Runner Fleet* dashboard (uid
+4. **Build the panel** on the *Claytonia — Runner Fleet* dashboard (uid
    `claude-runner-fleet`): Canvas (icon color by `status` threshold) or Status history
    (row per `runid`), with the PR as a data link / Loki derived field.
 
