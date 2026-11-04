@@ -27,9 +27,9 @@ shipper (below).
 ## New worker, from the image
 
 1. **Create the LXC** — add a map entry in
-   [`terraform/main.tf`](../terraform/main.tf) and apply, then add the VMID to the
-   `claytonia` PVE pool. The image supplies the substrate + an enabled gitops
-   loop; sizing defaults live in the module. See
+   [`terraform/main.tf`](../terraform/main.tf) and apply; Terraform puts the
+   container in the `claytonia` pool when it creates it. The image supplies the
+   substrate + an enabled gitops loop; sizing defaults live in the module. See
    [`terraform/README.md`](../terraform/README.md) § Scale-out.
 2. **Bind-mount the NAS job dir** (root@pam-only, so not baked): `pct set <id>
    -mp0 /mnt/neptune-lentago/claude-jobs,mp=/srv/jobs`, plus a drop-in on
