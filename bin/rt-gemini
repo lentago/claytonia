@@ -45,6 +45,17 @@
 #   be parsed. Any other checkout settings file gets a one-line stderr note.
 #   GEMINI_CLI_TRUST_WORKSPACE=true: headless 0.66 exits 55 in an untrusted cwd.
 #   NO_COLOR=1 keeps ANSI codes out of the stderr line a failure comment quotes.
+#   Git credentials: 0.66's shell tool starts every command with seven git config
+#   overrides appended through GIT_CONFIG_COUNT, the first an empty
+#   credential.helper. Command-line scope comes after ~/.gitconfig, so the empty
+#   value clears the worker's credential.https://github.com.helper
+#   (gh-credential-helper), and `git push` fails with "could not read Username"
+#   (first live run, #170). The tool passes every GIT_CONFIG_* variable it is
+#   started with through to the command, GIT_CONFIG_PARAMETERS (the `git -c`
+#   channel) included, and git applies that after GIT_CONFIG_COUNT. So `run` copies
+#   the helper from ~/.gitconfig into GIT_CONFIG_PARAMETERS under the same
+#   https://github.com scope, and no other host is ever offered the App token.
+#   The other six overrides (hooks, fsmonitor, sshCommand, pager, editors) stay.
 #   Limits: --max-turns N becomes model.maxSessionTurns N, which allows N model
 #   requests. --max-budget-usd cannot be enforced (the CLI has no spend cap) and
 #   --allowed-tools is Claude tool syntax with no Gemini counterpart that matters
@@ -189,6 +200,18 @@ case "$cmd" in
     fi
     if [ -f "$wsset" ]; then
       echo "rt-gemini: the checkout's .gemini/settings.json overrides this run's Gemini settings (context files); usage statistics stay off through the system settings" >&2
+    fi
+
+    # Put the GitHub credential helper back for the agent's git commands (see the
+    # header: the shell tool's empty credential.helper would clear it). Same key and
+    # scope as ~/.gitconfig, quoted the way `git -c` writes GIT_CONFIG_PARAMETERS.
+    helper_key='credential.https://github.com.helper'
+    helper="$(git config --global --get "$helper_key" 2>/dev/null)" || helper=""
+    if [ -n "$helper" ]; then
+      sq="'\\''"
+      export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }'$helper_key'='${helper//\'/$sq}'"
+    else
+      echo "rt-gemini: no $helper_key in ~/.gitconfig; the agent's git push will have no credential" >&2
     fi
 
     export GEMINI_CLI_HOME="$ghome" GEMINI_CLI_TRUST_WORKSPACE=true NO_COLOR=1

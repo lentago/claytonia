@@ -19,7 +19,26 @@ setup() {
   export GEMINI_BIN="$STUBS_DIR/gemini" CLAUDE_RUNNER_GEMINI_ENV="$TEST_TMP/gemini.env"
   printf '%s\n' GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=fake-project-4471 \
     GOOGLE_CLOUD_LOCATION=global > "$CLAUDE_RUNNER_GEMINI_ENV"
+  # As on a provisioned worker: the GitHub credential helper in ~/.gitconfig.
+  git config --global "$HELPER_KEY" /usr/local/bin/gh-credential-helper
   export FAKE_GEMINI_MODE=ok
+}
+
+HELPER_KEY='credential.https://github.com.helper'
+# The git config overrides Gemini CLI 0.66's shell tool appends to every command it
+# runs (getSafeGitEnv / the shell executor's defaultGitOverrides; #170 live gate).
+GEMINI_GIT_OVERRIDES=( GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS=
+  GIT_CONFIG_COUNT=7
+  GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0= GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=
+  GIT_CONFIG_KEY_2=core.hooksPath GIT_CONFIG_VALUE_2= GIT_CONFIG_KEY_3=core.sshCommand GIT_CONFIG_VALUE_3=
+  GIT_CONFIG_KEY_4=core.pager GIT_CONFIG_VALUE_4=cat GIT_CONFIG_KEY_5=core.editor GIT_CONFIG_VALUE_5=
+  GIT_CONFIG_KEY_6=sequence.editor GIT_CONFIG_VALUE_6= )
+# cred_user <host> <GIT_CONFIG_PARAMETERS> — the username git's credential lookup
+# yields under Gemini's overrides plus the given parameters; empty when none.
+cred_user() {
+  printf 'protocol=https\nhost=%s\n\n' "$1" \
+    | env "${GEMINI_GIT_OVERRIDES[@]}" GIT_CONFIG_PARAMETERS="$2" git credential fill 2>/dev/null \
+    | sed -n 's/^username=//p'
 }
 
 RT="$REPO_ROOT/bin/rt-gemini"
@@ -117,6 +136,35 @@ norm() {
   [ "$(count_in done)" -eq 1 ]
   grep -qx 'GOOGLE_GENAI_USE_VERTEXAI=true' "$FAKE_GEMINI_ENV"
   [ "$(grep -cE '^(GEMINI_API_KEY|GOOGLE_API_KEY|GOOGLE_GENAI_API_KEY)=' "$FAKE_GEMINI_ENV")" -eq 0 ]
+}
+
+@test "rt-gemini run: the agent's git keeps the GitHub credential helper through the shell tool's overrides (#170)" {
+  export FAKE_GEMINI_ENV="$TEST_TMP/env"
+  # A probe helper stands in for gh-credential-helper, so no token is ever minted.
+  git config --global "$HELPER_KEY" '!f(){ echo username=probe-user; echo password=probe-pass; }; f'
+  rt_run
+  [ "$RC" -eq 0 ]
+  [ ! -s "$TEST_TMP/raw.stderr" ]
+  params="$(sed -n 's/^GIT_CONFIG_PARAMETERS=//p' "$FAKE_GEMINI_ENV")"
+  [ -n "$params" ]
+  [ -z "$(cred_user github.com "")" ]                  # the overrides alone clear it
+  [ "$(cred_user github.com "$params")" = probe-user ] # the parameters bring it back
+  [ -z "$(cred_user example.com "$params")" ]          # and never for another host
+}
+
+@test "rt-gemini run: an existing GIT_CONFIG_PARAMETERS is kept; no helper in ~/.gitconfig is one stderr line" {
+  export FAKE_GEMINI_ENV="$TEST_TMP/env"
+  export GIT_CONFIG_PARAMETERS="'core.quotepath'='false'"
+  rt_run
+  [ "$RC" -eq 0 ]
+  grep -qxF "GIT_CONFIG_PARAMETERS='core.quotepath'='false' '$HELPER_KEY'='/usr/local/bin/gh-credential-helper'" "$FAKE_GEMINI_ENV"
+  unset GIT_CONFIG_PARAMETERS
+  git config --global --unset "$HELPER_KEY"
+  rt_run
+  [ "$RC" -eq 0 ]
+  [ "$(wc -l < "$TEST_TMP/raw.stderr")" -eq 1 ]
+  grep -qF "no $HELPER_KEY in ~/.gitconfig" "$TEST_TMP/raw.stderr"
+  [ "$(grep -c '^GIT_CONFIG_PARAMETERS=' "$FAKE_GEMINI_ENV")" -eq 0 ]
 }
 
 @test "rt-gemini run: each run gets its own Gemini home outside the checkout, with the fleet's settings" {
