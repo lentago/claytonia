@@ -129,6 +129,26 @@ EOF
   fi
 }
 
+@test "rt-codex run: a missing ~/.codex is created private before the CLI starts (#171 live gate)" {
+  [ ! -e "$HOME/.codex" ]
+  run_codex
+  [ "$RC" -eq 0 ]
+  [ -d "$HOME/.codex" ]
+  [ "$(stat -c %a "$HOME/.codex")" = 700 ]
+  [ ! -s "$TEST_TMP/err" ]
+}
+
+@test "rt-codex run: a Codex home it cannot create is one stderr line and exit 78; the CLI never starts" {
+  printf 'not a directory\n' > "$HOME/.codex"
+  rm -f "$FAKE_CODEX_ARGS"
+  run_codex
+  [ "$RC" -eq 78 ]
+  [ "$(wc -l < "$TEST_TMP/err")" -eq 1 ]
+  grep -qF "cannot create or write Codex's home $HOME/.codex" "$TEST_TMP/err"
+  refute grep -qF "$KEY" "$TEST_TMP/err" "$TEST_TMP/raw"
+  [ ! -e "$FAKE_CODEX_ARGS" ]
+}
+
 @test "rt-codex run: a limit or tool allowlist Codex cannot enforce is one stderr note, and no flag" {
   run_codex --max-turns 5 --max-budget-usd 1.5 --allowed-tools 'Bash(git:*) Read'
   [ "$RC" -eq 0 ]
