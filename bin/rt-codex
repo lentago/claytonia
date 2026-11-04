@@ -24,7 +24,8 @@
 #
 # Auth (judgment B): `run` sources /etc/claude-runner/codex.env (root:claude 0640,
 #   installed by hand; CLAUDE_RUNNER_CODEX_ENV overrides the path, like rt-claude's
-#   CLAUDE_RUNNER_TOKEN_ENV) for OPENAI_API_KEY, just before it execs the CLI; run-job
+#   CLAUDE_RUNNER_TOKEN_ENV) for the key the file names OPENAI_API_KEY, and hands it
+#   to the CLI renamed as CODEX_API_KEY (below), just before it execs the CLI; run-job
 #   holds no vendor secret (#170). A missing or unreadable file, or one that sets no
 #   key, is one stderr line and exit 78 (EX_CONFIG) before the CLI starts. The file's
 #   own output is discarded, so a malformed line never echoes the key. Every
@@ -43,7 +44,9 @@
 #   on stdin. So `run` hands the key to the CLI as CODEX_API_KEY and unsets
 #   OPENAI_API_KEY. Checked live on claude-runner-3 (#171, 2026-11-04): with only
 #   OPENAI_API_KEY set, every request is "401 Unauthorized: Missing bearer or basic
-#   authentication in header"; with only CODEX_API_KEY it answers. CODEX_ACCESS_TOKEN
+#   authentication in header"; with only CODEX_API_KEY it answers. The bats test
+#   checks the rename against a stub, so a Codex update must re-check the name live
+#   (#172). CODEX_ACCESS_TOKEN
 #   and the Claude and Gemini credentials are unset too, so the key is the only
 #   credential in the CLI's environment (its doctor warns when several auth variables
 #   are set). forced_login_method="api" makes Codex refuse ChatGPT auth ("API key
