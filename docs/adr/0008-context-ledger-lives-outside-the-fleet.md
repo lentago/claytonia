@@ -1,6 +1,6 @@
 # ADR-0008: The context ledger lives outside the fleet it audits
 
-**Status:** Retired (2026-09-21) — superseded by nothing; the ledger was decommissioned.
+**Status:** Retired (2026-09-21) — superseded by nothing; the ledger was decommissioned. Accepted (2026-08-09; reconstructed 2026-08-13).
 
 > **Retired 2026-09-21.** The context ledger was turned down entirely at the
 > operator's request: all seven timers (five worker `context-snapshot`, the
