@@ -5,11 +5,8 @@ on: the NAS-inbox queue. They drive the **real** `bin/run-job` and
 `bin/process-inbox` against a fake inbox on tmpfs, with the agent, metrics, and
 journald calls stubbed, so a run touches no network, no NAS, and no real Claude.
 
-Framework is [bats](https://github.com/bats-core/bats-core). They're meant to
-run on every PR alongside the ShellCheck gate. The workflow ships at
-`test/ci/queue-tests.yml`; a maintainer activates it with
-`git mv test/ci/queue-tests.yml .github/workflows/` (the runner GitHub App can't
-push under `.github/workflows/` itself — it lacks the `workflows` permission).
+Framework is [bats](https://github.com/bats-core/bats-core). The suite runs on
+every PR from `.github/workflows/queue-tests.yml` alongside the ShellCheck gate.
 
 ## Run locally
 
