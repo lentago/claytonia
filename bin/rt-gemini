@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+# rt-gemini — the Gemini CLI runtime adapter (#166, #170).
+#
+# Implements the adapter contract in the rt-claude header: run, normalize,
+# transcript and accepts-model, and the normalized result schema. It is inert
+# until a job resolves runtime=gemini; run-job reaches it only as bin/rt-gemini.
+# Written against Gemini CLI 0.66.0, the version on the workers, from the CLI's
+# bundled source and the captures in test/fixtures/runtimes/.
+#
+# run
+#   Execs  gemini -p "" -o json --approval-mode yolo --session-id <uuid> [-m <model>]
+#   with the prompt on stdin: `-p ""` makes the stdin text the whole prompt.
+#   Exec keeps the tree under run-job's timeout(1) to the CLI's own two node
+#   processes (it relaunches itself once). timeout(1) signals that whole process
+#   group, and the parent also forwards TERM to the child.
+#   Credentials (judgment A): `run` sources $CLAUDE_RUNNER_GEMINI_ENV (default
+#   /etc/claude-runner/gemini.env, root:claude 0640, installed by hand). The file
+#   sets GOOGLE_GENAI_USE_VERTEXAI=true, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION=global
+#   and GOOGLE_APPLICATION_CREDENTIALS=/etc/claude-runner/gemini-sa.json, a
+#   service account with Vertex AI User only. Nothing else reads the file, and no
+#   value from it is ever printed. Before the exec, `run` unsets the Claude and
+#   OpenAI credential variables, so the Gemini process holds no other vendor's
+#   secret. A project's .env cannot override these: Gemini never replaces a
+#   variable that is already set.
+#   Settings: every run gets its own Gemini home, $XDG_STATE_HOME (default
+#   ~/.local/state)/claytonia/gemini/<session-id>, passed as GEMINI_CLI_HOME, so
+#   it is outside every checkout and an agent's `git add -A` cannot commit it.
+#   Its .gemini/settings.json turns vendor usage statistics off
+#   (privacy.usageStatisticsEnabled), loads the repo's CLAUDE.md as context
+#   (context.fileName ["GEMINI.md","AGENTS.md","CLAUDE.md"]) and carries the turn
+#   cap. A fresh home also keeps Gemini's global memory (its save_memory tool) and
+#   session history from carrying one job's context into the next; durable
+#   learnings belong in the project's memory.md. Homes older than 7 days are swept
+#   at the next run (run-job has copied the transcript to the NAS by then).
+#   Why not a system settings file: 0.66 loads one (GEMINI_CLI_SYSTEM_SETTINGS_PATH)
+#   only when the file and every directory above it are owned by root and not
+#   writable by group or others, which a file this adapter writes as `claude` can
+#   never be. Precedence in 0.66, lowest first: these user settings, then the
+#   checkout's .gemini/settings.json (loaded, because the run trusts the workspace),
+#   then /etc/gemini-cli/settings.json (absent on the workers). `run` notes on
+#   stderr when the checkout carries a .gemini/settings.json, since it can lift the
+#   turn cap or turn usage statistics back on.
+#   GEMINI_CLI_TRUST_WORKSPACE=true: headless 0.66 exits 55 in an untrusted cwd.
+#   NO_COLOR=1 keeps ANSI codes out of the stderr line a failure comment quotes.
+#   Limits: --max-turns N becomes model.maxSessionTurns N, which allows N model
+#   requests. --max-budget-usd cannot be enforced (the CLI has no spend cap) and
+#   --allowed-tools is Claude tool syntax with no Gemini counterpart that matters
+#   under yolo approval; each is ignored with one stderr line. Recording an
+#   unenforced limit in the .meta is #173.
+#   Exit codes: 2 for a usage error or a session id the CLI would refuse; 3 when
+#   the credentials file or the run's Gemini home is unusable, before the CLI
+#   starts; otherwise the CLI's own (0 ok, 1 error, 41 auth, 42 input, 44 sandbox,
+#   52 config, 53 turn cap, 54 tool, 55 untrusted workspace, 130 cancelled).
+#
+# normalize
+#   From the -o json object on stdout:
+#     final_text  .response
+#     status      max_turns when .warnings has "Maximum session turns exceeded",
+#                 else error when .error is set or .response is missing, else ok
+#     is_error    .error is set
+#     turns       .stats.tools.totalCalls: tool calls, not model requests
+#     tokens      summed over .stats.models.*.tokens (never .roles, which repeat
+#                 them): in = input + tool, cached = cached, out = candidates,
+#                 thinking = thoughts. Disjoint (#173): 0.66 computes input as
+#                 prompt - cached, so input excludes cache reads; candidates exclude
+#                 thoughts; tool (tool-use prompt tokens) is input outside prompt.
+#     cost_usd    null: the CLI reports no cost (drosera prices the tokens)
+#     model       the --model asked for, else null (the CLI's own default)
+#   A turn cap reaches the output one of two ways in 0.66. The run loop's own
+#   check prints nothing on stdout and the JSON error report (FatalTurnLimitedError)
+#   on stderr, and exits 53. The client's check adds the warning above to an
+#   otherwise normal stdout object and exits 0. For the first, normalize reads the
+#   stderr log run-job keeps beside the raw output (logs/<runid>.stderr next to
+#   logs/<runid>.json) and files status max_turns only when that report names the
+#   turn cap. Any other run with no JSON on stdout gets no result, and the exit
+#   code decides, as the contract says.
+#
+# transcript
+#   Copies the session file Gemini keeps in the run's home,
+#   .gemini/tmp/<project>/chats/session-<time>-<first 8 of the id>.jsonl, checked
+#   against the full session id on its first line. Subagent sessions (in a
+#   directory named after the session) are not copied.
+#
+# accepts-model
+#   gemini-* model ids, and 0.66's aliases: auto, pro, flash, flash-lite and
+#   auto-gemini-*. Everything else, every Claude and OpenAI model included, is no.
+set -uo pipefail
+GEMINI_BIN="${GEMINI_BIN:-/usr/bin/gemini}"
+GEMINI_ENV="${CLAUDE_RUNNER_GEMINI_ENV:-/etc/claude-runner/gemini.env}"
+KEEP_DAYS=7
+CONTEXT_FILES='["GEMINI.md","AGENTS.md","CLAUDE.md"]'
+TURN_CAP_WARNING='Maximum session turns exceeded'
+
+usage() { echo "usage: rt-gemini run|normalize|transcript|accepts-model [options]  (see the header)" >&2; exit 2; }
+# The per-run Gemini homes, outside any checkout.
+state_root() { printf '%s/claytonia/gemini' "${XDG_STATE_HOME:-$HOME/.local/state}"; }
+# The CLI's own rule for --session-id; it also keeps the id safe in a path.
+valid_sid() { [[ $1 =~ ^[A-Za-z0-9_-]+$ ]]; }
+
+cmd="${1:-}"; [ -n "$cmd" ] || usage; shift
+cwd=""; sid=""; model=""; max_turns=""; max_budget=""; allowed=""
+raw=""; result=""; txt=""; out=""
+while [ $# -gt 0 ]; do
+  [ $# -ge 2 ] || { echo "rt-gemini: $1 needs a value" >&2; exit 2; }
+  case "$1" in
+    --cwd)            cwd="$2" ;;
+    --runid)          ;;   # contract input; Gemini gets no .runid sidecar (live transcript: drosera#305)
+    --session-id)     sid="$2" ;;
+    --model)          model="$2" ;;
+    --max-turns)      max_turns="$2" ;;
+    --max-budget-usd) max_budget="$2" ;;
+    --allowed-tools)  allowed="$2" ;;
+    --raw)            raw="$2" ;;
+    --result)         result="$2" ;;
+    --txt)            txt="$2" ;;
+    --out)            out="$2" ;;
+    *) echo "rt-gemini: unknown option $1" >&2; exit 2 ;;
+  esac
+  shift 2
+done
+
+case "$cmd" in
+  run)
+    valid_sid "$sid" || { echo "rt-gemini: --session-id must be letters, digits, - and _ only" >&2; exit 2; }
+    if [ -n "$max_turns" ] && ! [[ $max_turns =~ ^[1-9][0-9]*$ ]]; then
+      echo "rt-gemini: --max-turns must be a positive integer" >&2; exit 2
+    fi
+
+    if [ ! -f "$GEMINI_ENV" ] || [ ! -r "$GEMINI_ENV" ]; then
+      echo "rt-gemini: cannot read the Gemini credentials file $GEMINI_ENV (installed by hand on the worker; see the rt-gemini header); not running" >&2
+      exit 3
+    fi
+    # Export everything the file sets. Its stderr is dropped, because a malformed
+    # line could echo part of a value; set -u is lifted, because an unset name in
+    # the file would otherwise end this script without a word.
+    set -a; set +u
+    # shellcheck source=/dev/null
+    { . "$GEMINI_ENV"; } 2>/dev/null
+    set -u; set +a
+    if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ ! -r "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
+      echo "rt-gemini: GOOGLE_APPLICATION_CREDENTIALS, set in $GEMINI_ENV, does not name a readable file; not running" >&2
+      exit 3
+    fi
+    # No other vendor's credential reaches the Gemini process (#166).
+    unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN OPENAI_API_KEY CODEX_API_KEY
+
+    root="$(state_root)"; ghome="$root/$sid"
+    find "$root" -mindepth 1 -maxdepth 1 -type d -name '*-*-*-*-*' -mtime +"$KEEP_DAYS" \
+      -exec rm -rf -- {} + 2>/dev/null || true
+    if ! mkdir -p "$ghome/.gemini" 2>/dev/null \
+       || ! jq -n --argjson files "$CONTEXT_FILES" --arg turns "$max_turns" '
+            {privacy: {usageStatisticsEnabled: false}, context: {fileName: $files}}
+            + (if $turns == "" then {} else {model: {maxSessionTurns: ($turns | tonumber)}} end)' \
+            > "$ghome/.gemini/settings.json" 2>/dev/null; then
+      echo "rt-gemini: cannot write this run's Gemini settings under $ghome; not running" >&2
+      exit 3
+    fi
+
+    if [ -n "$max_budget" ]; then
+      echo "rt-gemini: max_budget_usd=$max_budget is not enforced: Gemini CLI has no spend cap (turns and the wall clock still bound the run)" >&2
+    fi
+    if [ -n "$allowed" ]; then
+      echo "rt-gemini: allowed_tools is not passed to Gemini: it is Claude tool syntax, and yolo approval already runs every tool" >&2
+    fi
+    if [ -f "${cwd:-.}/.gemini/settings.json" ]; then
+      echo "rt-gemini: the checkout's .gemini/settings.json overrides this run's Gemini settings (turn cap, usage statistics, context files)" >&2
+    fi
+
+    export GEMINI_CLI_HOME="$ghome" GEMINI_CLI_TRUST_WORKSPACE=true NO_COLOR=1
+    args=( -p "" -o json --approval-mode yolo --session-id "$sid" )
+    [ -n "$model" ] && args+=( -m "$model" )
+    exec "$GEMINI_BIN" "${args[@]}"
+    ;;
+
+  normalize)
+    [ -n "$raw" ] && [ -n "$result" ] && [ -n "$txt" ] || usage
+    rm -f "$result" "$result.tmp" 2>/dev/null
+    # Every write below goes through result.tmp: written whole, then moved in place.
+    # No result can be written while the output was readable: exit 1, so run-job
+    # fails the job rather than file a run it cannot read as a success.
+    file_result() {
+      if [ -s "$result.tmp" ]; then
+        mv -f "$result.tmp" "$result" 2>/dev/null || { rm -f "$result.tmp" 2>/dev/null; exit 1; }
+      else
+        rm -f "$result.tmp" 2>/dev/null
+      fi
+    }
+    if [ ! -s "$raw" ] || ! jq -e . "$raw" >/dev/null 2>&1; then
+      cp "$raw" "$txt" 2>/dev/null || true
+      # Nothing on stdout. Only a turn cap the CLI reported on stderr gets a result.
+      case "$raw" in
+        *.json)
+          if grep -qE '"type": "FatalTurnLimitedError"|Reached max session turns for this session' \
+               "${raw%.json}.stderr" 2>/dev/null; then
+            { jq -n -c --arg model "$model" --arg sid "$sid" '
+                {runtime: "gemini", model: (if $model == "" then null else $model end),
+                 session_id: (if $sid == "" then null else $sid end),
+                 status: "max_turns", is_error: false, turns: null,
+                 tokens: {in: null, cached: null, out: null, thinking: null},
+                 cost_usd: null, final_text: ""}' > "$result.tmp"; } 2>/dev/null \
+              || { rm -f "$result.tmp" 2>/dev/null; exit 1; }
+            file_result
+          fi ;;
+      esac
+      exit 0
+    fi
+    # The last JSON value is the result object (0.66 prints exactly one).
+    { jq -r -s 'if length == 0 then "" else (last | if type == "object" and (.response | type) == "string"
+                then .response else "" end) end' "$raw" > "$txt"; } 2>/dev/null || true
+    # Plain jq 1.6 (the workers' Debian 12): every `if` has an `else`. A malformed
+    # stats block yields null counts; it must never cost the job its result. The
+    # braces keep a failed redirect's shell message off stderr.
+    if { jq -c -s --arg model "$model" --arg sid "$sid" --arg cap "$TURN_CAP_WARNING" '
+      def num: if type == "number" then . else error("not a number") end;
+      def total(f): map(f | num) | add;
+      (if $model == "" then null else $model end) as $m
+      | (if length == 0 then empty else last end)
+      | if type != "object" then
+          {runtime: "gemini", model: $m, session_id: (if $sid == "" then null else $sid end),
+           status: "error", is_error: false, turns: null,
+           tokens: {in: null, cached: null, out: null, thinking: null},
+           cost_usd: null, final_text: ""}
+        else
+          ([.warnings[]? | select(. == $cap)] | length > 0) as $capped
+          | (.error != null) as $err
+          | {runtime: "gemini",
+             model: $m,
+             session_id: (if $sid == "" then .session_id else $sid end),
+             status: (if $capped then "max_turns"
+                      elif $err or ((.response | type) != "string") then "error"
+                      else "ok" end),
+             is_error: $err,
+             turns: (try (.stats.tools.totalCalls | num) catch null),
+             tokens: (try ([.stats.models[] | .tokens]
+                 | if length == 0 then error("no models") else . end
+                 | {in: (total(.input) + total(.tool // 0)),
+                    cached: total(.cached),
+                    out: total(.candidates),
+                    thinking: total(.thoughts)})
+               catch {in: null, cached: null, out: null, thinking: null}),
+             cost_usd: null,
+             final_text: (if (.response | type) == "string" then .response else "" end)}
+        end' "$raw" > "$result.tmp"; } 2>/dev/null
+    then
+      file_result   # empty output (whitespace only, or a jq that passed it): no result
+    else
+      rm -f "$result.tmp" 2>/dev/null; exit 1
+    fi
+    exit 0
+    ;;
+
+  accepts-model)
+    case "$model" in
+      gemini-?*|auto|auto-gemini-?*|pro|flash|flash-lite) exit 0 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+
+  transcript)
+    [ -n "$sid" ] && [ -n "$out" ] || usage
+    valid_sid "$sid" || exit 0
+    short="${sid:0:8}"
+    while IFS= read -r f; do
+      if [ "$(head -n 1 "$f" 2>/dev/null | jq -r '.sessionId // empty' 2>/dev/null)" = "$sid" ]; then
+        cp -f "$f" "$out" 2>/dev/null
+        break
+      fi
+    done < <(find "$(state_root)/$sid/.gemini/tmp" -type f -path '*/chats/session-*' \
+               -name "session-*-${short}.jsonl" 2>/dev/null | sort)
+    exit 0
+    ;;
+
+  *) usage ;;
+esac

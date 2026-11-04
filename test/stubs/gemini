@@ -7,14 +7,19 @@
 #   error   -> nothing on stdout, the real error report on stderr, exit 1. A failed
 #              call writes its JSON error to stderr, never stdout.
 #   nonzero -> non-JSON on stdout, exit 9
-# The session-turn cap's output shape is not captured yet; #170 adds a `turns` mode.
+#   turns   -> the session-turn cap (#170): nothing on stdout, the JSON error report
+#              behind "[ERROR] " on stderr, exit 53. Not captured live: the shape is
+#              read from the 0.66 source (handleMaxTurnsExceededError, JsonFormatter,
+#              the headless feedback handler). Recapture on the first real cap hit.
 # A prompt containing FAKE_HANG sleeps FAKE_GEMINI_SLEEP (default 60) seconds first.
-# FAKE_GEMINI_ARGS receives the argv (one per line); FAKE_GEMINI_STDIN the prompt read.
+# FAKE_GEMINI_ARGS receives the argv (one per line); FAKE_GEMINI_STDIN the prompt read;
+# FAKE_GEMINI_ENV the environment the CLI was started with (`env`, #170).
 set -u
 FIX="$(cd "$(dirname "$0")/../fixtures/runtimes" && pwd)"
 prompt="$(cat 2>/dev/null)" || true
 [ -n "${FAKE_GEMINI_ARGS:-}" ] && printf '%s\n' "$@" > "$FAKE_GEMINI_ARGS"
 [ -n "${FAKE_GEMINI_STDIN:-}" ] && printf '%s' "$prompt" > "$FAKE_GEMINI_STDIN"
+[ -n "${FAKE_GEMINI_ENV:-}" ] && env > "$FAKE_GEMINI_ENV"
 case "$prompt" in *FAKE_HANG*) sleep "${FAKE_GEMINI_SLEEP:-60}" ;; esac
 
 sid=""; prev=""
@@ -23,6 +28,12 @@ for a in "$@"; do [ "$prev" = --session-id ] && sid="$a"; prev="$a"; done
 case "${FAKE_GEMINI_MODE:-ok}" in
   error)   cat "$FIX/gemini-error.stderr" >&2; exit 1 ;;
   nonzero) printf 'stub crashed before emitting JSON\n'; exit 9 ;;
+  turns)
+    printf '[ERROR] %s\n' "$(jq -n --arg s "$sid" '(if $s == "" then {} else {session_id: $s} end)
+      + {error: {type: "FatalTurnLimitedError",
+                 message: "Reached max session turns for this session. Increase the number of turns by specifying maxSessionTurns in settings.json.",
+                 code: 53}}')" >&2
+    exit 53 ;;
   *)
     if [ -n "$sid" ]; then jq -c --arg s "$sid" '.session_id = $s' "$FIX/gemini-ok.json"
     else cat "$FIX/gemini-ok.json"; fi
