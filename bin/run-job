@@ -37,8 +37,11 @@ PRIVATE_WORKROOT="${CLAUDE_RUNNER_PRIVATE_WORKROOT:-/home/claude/private}"
 RT_DIR="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")"
 
 [ -f "$RUNNER_ROOT/etc/runner.env" ] && . "$RUNNER_ROOT/etc/runner.env"
-[ -f /etc/claude-runner/token.env ] && . /etc/claude-runner/token.env
-export CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+# No vendor secret is held here (#170). Each adapter sources its own env file
+# (rt-claude reads token.env), so the project setup hook, git and gh, and every
+# other runtime's process never inherit the Claude token, from the file or from
+# whatever environment run-job was started in.
+unset CLAUDE_CODE_OAUTH_TOKEN
 export HOME="${HOME:-/home/claude}"
 export PATH="${CLAUDE_RUNNER_PATH:-/home/claude/.local/bin:/usr/local/bin:/usr/bin:/bin:$RUNNER_ROOT/bin}"  # override lets the test harness inject stub bins
 

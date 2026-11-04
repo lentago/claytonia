@@ -58,6 +58,26 @@ only_runid() { basename "$(find "$JOBS_ROOT/logs" -name '*.meta' | head -1)" .me
   diff "$TEST_TMP/want" "$FAKE_CLAUDE_ARGS"
 }
 
+@test "rt-claude run: the CLI gets the Claude token from token.env, read by the adapter alone (#170)" {
+  export FAKE_CLAUDE_ENV="$TEST_TMP/env"
+  printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' fake-token-from-file > "$CLAUDE_RUNNER_TOKEN_ENV"
+  drop_job "tok.txt" "go"
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$FAKE_CLAUDE_ENV")" = "CLAUDE_CODE_OAUTH_TOKEN=fake-token-from-file" ]
+}
+
+@test "run-job drops an inherited Claude token: with no token.env the CLI gets an empty one (#170)" {
+  export FAKE_CLAUDE_ENV="$TEST_TMP/env"
+  export CLAUDE_CODE_OAUTH_TOKEN=inherited-from-the-environment
+  rm -f "$CLAUDE_RUNNER_TOKEN_ENV"
+  drop_job "notok.txt" "go"
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$FAKE_CLAUDE_ENV")" = "CLAUDE_CODE_OAUTH_TOKEN=" ]
+  ! grep -rq inherited-from-the-environment "$JOBS_ROOT/logs"
+}
+
 @test "rt-claude run: the .runid sidecar lands next to the live transcript" {
   drop_job "side.txt" "go"
   run "$REPO_ROOT/bin/process-inbox"

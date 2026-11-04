@@ -384,7 +384,9 @@ owned by kalmia's Terraform, not this repo's — products own their own capacity
 
 - **Claude**: a subscription OAuth token (`claude setup-token`) in
   `/etc/claude-runner/token.env` (`CLAUDE_CODE_OAUTH_TOKEN`). Headless `claude -p`
-  draws from the Agent SDK credit pool.
+  draws from the Agent SDK credit pool. Only `bin/rt-claude` reads the file, just
+  before it starts the CLI. `run-job` holds no vendor secret, so a project's setup
+  hook, git and gh, and any other runtime's process never inherit the token (#170).
 - **GitHub**: a GitHub App (`lentago-claude-runner`). `gh-token` mints short-lived
   installation tokens from the App key; `gh-credential-helper` feeds git per-op so no
   token is persisted. The token is for the installation that covers the job's repo

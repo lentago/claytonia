@@ -43,6 +43,9 @@
 # it execs the CLI so the process tree under timeout(1) is unchanged.
 set -uo pipefail
 CLAUDE_BIN="${CLAUDE_BIN:-/home/claude/.local/bin/claude}"
+# The Claude token (root:claude 0640). Only `run` reads it, just before it execs
+# the CLI; run-job holds no vendor secret (#170).
+TOKEN_ENV="${CLAUDE_RUNNER_TOKEN_ENV:-/etc/claude-runner/token.env}"
 
 usage() { echo "usage: rt-claude run|normalize|transcript|accepts-model [options]  (see the header)" >&2; exit 2; }
 
@@ -81,6 +84,9 @@ case "$cmd" in
     _sid_projdir="$HOME/.claude/projects/$(printf '%s' "$cwd" | tr '/' '-')"
     mkdir -p "$_sid_projdir" 2>/dev/null || true
     printf '%s\n' "$runid" > "$_sid_projdir/${sid}.runid" 2>/dev/null || true
+    # shellcheck source=/dev/null
+    [ -f "$TOKEN_ENV" ] && . "$TOKEN_ENV"
+    export CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}"
     exec "$CLAUDE_BIN" "${args[@]}"
     ;;
 
