@@ -82,15 +82,29 @@ refute() { if "$@"; then echo "unexpectedly true: $*"; return 1; fi; }
 @test "rt-codex run: the key comes from the env file, is the CLI's only credential, and is never printed" {
   cat > "$TEST_TMP/envcodex" <<EOF
 #!/usr/bin/env bash
-env | grep -E '^(OPENAI_API_KEY|CODEX_API_KEY|CODEX_ACCESS_TOKEN|CLAUDE_CODE_OAUTH_TOKEN)=' | sort > "$TEST_TMP/env.seen"
+env | grep -E '^(OPENAI_|CODEX_(API_KEY|ACCESS_TOKEN|HOME)=|CLAUDE_CODE_OAUTH_TOKEN=|ANTHROPIC_(API_KEY|AUTH_TOKEN)=|GEMINI_API_KEY=|GOOGLE_(API_KEY|GENAI_API_KEY)=)' \
+  | sort > "$TEST_TMP/env.seen"
 exec "$STUBS_DIR/codex" "\$@"
 EOF
   chmod +x "$TEST_TMP/envcodex"
-  export CODEX_BIN="$TEST_TMP/envcodex" CLAUDE_CODE_OAUTH_TOKEN=claude-token CODEX_API_KEY=stale CODEX_ACCESS_TOKEN=stale
+  # Everything ambient that could carry a credential or redirect auth or the endpoint.
+  export CODEX_BIN="$TEST_TMP/envcodex" CLAUDE_CODE_OAUTH_TOKEN=claude-token ANTHROPIC_API_KEY=a \
+    ANTHROPIC_AUTH_TOKEN=a GEMINI_API_KEY=g GOOGLE_API_KEY=g GOOGLE_GENAI_API_KEY=g \
+    CODEX_API_KEY=stale CODEX_ACCESS_TOKEN=stale CODEX_HOME="$TEST_TMP/stray-home" \
+    OPENAI_API_KEY=ambient OPENAI_BASE_URL=https://elsewhere.invalid OPENAI_ORGANIZATION=org-other \
+    OPENAI_FEDERATION_RULE_ID=r OPENAI_IDENTITY_TOKEN_FILE=/f OPENAI_WORKLOAD_IDENTITY_CONTEXT=c
   run_codex
   [ "$RC" -eq 0 ]
-  [ "$(cat "$TEST_TMP/env.seen")" = "OPENAI_API_KEY=$KEY" ]
+  printf '%s\n' "CODEX_HOME=$HOME/.codex" "OPENAI_API_KEY=$KEY" > "$TEST_TMP/want"
+  diff "$TEST_TMP/want" "$TEST_TMP/env.seen"
   refute grep -qF "$KEY" "$TEST_TMP/raw" "$TEST_TMP/err" "$FAKE_CODEX_ARGS"
+
+  # The env file itself may point Codex at another endpoint, and a plain assignment
+  # there still reaches the CLI.
+  printf 'OPENAI_API_KEY=%s\nOPENAI_BASE_URL=https://proxy.invalid/v1\n' "$KEY" > "$CLAUDE_RUNNER_CODEX_ENV"
+  run_codex
+  [ "$RC" -eq 0 ]
+  grep -qx 'OPENAI_BASE_URL=https://proxy.invalid/v1' "$TEST_TMP/env.seen"
 }
 
 @test "rt-codex run: no readable env file, or no key in it, stops before the CLI with one line and exit 78" {
@@ -233,11 +247,13 @@ EOF
   [ "$status" -eq 0 ]
   [ ! -e "$TEST_TMP/tr2" ]
 
-  # CODEX_HOME moves the sessions with it.
+  # The home is pinned to ~/.codex: an ambient CODEX_HOME is not searched.
   export CODEX_HOME="$TEST_TMP/codex-home"; mkdir -p "$CODEX_HOME/sessions/x"
-  echo '{"rollout":"moved"}' > "$CODEX_HOME/sessions/x/rollout-x-$TID.jsonl"
+  echo '{"rollout":"stray"}' > "$CODEX_HOME/sessions/x/rollout-x-$TID.jsonl"
+  rm -f "$d/rollout-2026-11-04T10-00-00-$TID.jsonl"
   run "$RT" transcript --session-id "$TID" --out "$TEST_TMP/tr3"
-  [ "$(cat "$TEST_TMP/tr3")" = '{"rollout":"moved"}' ]
+  [ "$status" -eq 0 ]
+  [ ! -e "$TEST_TMP/tr3" ]
 }
 
 @test "rt-codex accepts-model: OpenAI ids yes; Claude, Gemini and malformed names no" {

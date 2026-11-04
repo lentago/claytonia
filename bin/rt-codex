@@ -27,13 +27,20 @@
 #   CLAUDE_RUNNER_TOKEN_ENV) for OPENAI_API_KEY, just before it execs the CLI; run-job
 #   holds no vendor secret (#170). A missing or unreadable file, or one that sets no
 #   key, is one stderr line and exit 78 (EX_CONFIG) before the CLI starts. The file's
-#   own output is discarded, so a malformed line never echoes the key.
-#   CLAUDE_CODE_OAUTH_TOKEN, CODEX_API_KEY and CODEX_ACCESS_TOKEN are unset, so the
-#   key is the only credential in the CLI's environment. 0.166 reads OPENAI_API_KEY
-#   and CODEX_API_KEY as API-key auth (its doctor warns when several auth variables
-#   are set, hence exactly one). forced_login_method="api" makes Codex refuse ChatGPT
-#   auth ("API key login is required, but ChatGPT is currently being used. Logging
-#   out."), so a cached login is never what authenticates. Both are from the binary;
+#   own output is discarded, so a malformed line never echoes the key. Every
+#   assignment in it is exported, so it may also set OPENAI_BASE_URL or
+#   OPENAI_ORGANIZATION on purpose; ambient values of those, of the workload-identity
+#   variables (OPENAI_FEDERATION_RULE_ID, OPENAI_IDENTITY_TOKEN_FILE,
+#   OPENAI_WORKLOAD_IDENTITY_CONTEXT) and of the other auth variables are cleared
+#   first, so nothing in run-job's environment can redirect auth or the endpoint.
+#   CODEX_HOME is pinned to ~/.codex, so an ambient one cannot bring another login or
+#   config. CODEX_API_KEY, CODEX_ACCESS_TOKEN and the Claude and Gemini credentials
+#   are unset, so the key is the only credential in the CLI's environment.
+#   0.166 reads OPENAI_API_KEY and CODEX_API_KEY as API-key auth (its doctor warns
+#   when several auth variables are set, hence exactly one). forced_login_method="api"
+#   makes Codex refuse ChatGPT auth ("API key login is required, but ChatGPT is
+#   currently being used. Logging out."), so a cached login is never what
+#   authenticates. These, and the variable names above, are read from the binary;
 #   the first live job confirms them.
 #   The key is not a secret from the agent. The agent runs as `claude`, which must
 #   read codex.env for the CLI to start, so a job can read the file (as it can
@@ -43,7 +50,7 @@
 #   spend against the key, and the key's own project scope and usage limits are
 #   what bound the damage.
 #
-# Context: --ignore-user-config skips $CODEX_HOME/config.toml, so nothing on a worker
+# Context: --ignore-user-config skips ~/.codex/config.toml, so nothing on a worker
 #   (an MCP server, a model, a profile) changes a fleet run and nothing needs baking:
 #   every setting is a -c override above. project_doc_fallback_filenames loads the
 #   repo CLAUDE.md when the repo has no AGENTS.md (checked on 0.166: `codex debug
@@ -106,9 +113,9 @@
 #   holding the Codex thread id for `transcript`, which run-job also calls with its
 #   own UUID. Each run prunes files there older than two days.
 #
-# transcript: copies $CODEX_HOME/sessions/**/*<thread id>.jsonl (CODEX_HOME defaults
-#   to ~/.codex) as-is. Best-effort; a --session-id with no thread recorded is tried
-#   as a thread id itself.
+# transcript: copies ~/.codex/sessions/**/*<thread id>.jsonl (the pinned CODEX_HOME)
+#   as-is. Best-effort; a --session-id with no thread recorded is tried as a thread
+#   id itself.
 #
 # accepts-model: OpenAI model ids Codex takes: gpt-*, codex-* and the o-series (o3,
 #   o4-mini, …), in lowercase letters, digits, '.' and '-'. Claude and Gemini names,
@@ -123,6 +130,8 @@
 set -uo pipefail
 CODEX_BIN="${CODEX_BIN:-/usr/local/bin/codex}"
 STATE="${XDG_CACHE_HOME:-${HOME:-/home/claude}/.cache}/rt-codex"
+# Codex's home is pinned: an ambient CODEX_HOME could hold another login or config.
+CODEX_DIR="${HOME:-/home/claude}/.codex"
 EX_CONFIG=78
 
 usage() { echo "usage: rt-codex run|normalize|transcript|accepts-model [options]  (see the header)" >&2; exit 2; }
@@ -159,17 +168,24 @@ case "$cmd" in
       echo "rt-codex: cannot read $envf, which holds OPENAI_API_KEY for Codex jobs (judgment B, #171)" >&2
       exit "$EX_CONFIG"
     fi
-    unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN
-    set +u
+    # Whatever steers Codex's auth or endpoint comes from codex.env or from nowhere:
+    # nothing ambient survives into the CLI.
+    unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN OPENAI_BASE_URL OPENAI_ORGANIZATION \
+          OPENAI_FEDERATION_RULE_ID OPENAI_IDENTITY_TOKEN_FILE OPENAI_WORKLOAD_IDENTITY_CONTEXT
+    set +u; set -a
     # shellcheck source=/dev/null
     . "$envf" >/dev/null 2>&1   # silenced: an error line would quote the key
-    set -u
+    set +a; set -u
     if [ -z "${OPENAI_API_KEY:-}" ]; then
       echo "rt-codex: $envf sets no OPENAI_API_KEY (judgment B, #171)" >&2
       exit "$EX_CONFIG"
     fi
     export OPENAI_API_KEY
-    unset CLAUDE_CODE_OAUTH_TOKEN CODEX_API_KEY CODEX_ACCESS_TOKEN
+    # One key, API-key auth only, and no other runtime's credential.
+    unset CODEX_API_KEY CODEX_ACCESS_TOKEN OPENAI_FEDERATION_RULE_ID OPENAI_IDENTITY_TOKEN_FILE \
+          OPENAI_WORKLOAD_IDENTITY_CONTEXT CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY \
+          ANTHROPIC_AUTH_TOKEN GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GENAI_API_KEY
+    export CODEX_HOME="$CODEX_DIR"
 
     unenforced=()
     [ -n "$max_turns" ]  && unenforced+=( "max_turns=$max_turns" )
@@ -278,7 +294,7 @@ case "$cmd" in
     # Only a UUID is matched against file names: anything shorter could suffix-match
     # another session's file.
     if [[ "$tid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
-      tpath="$(find "${CODEX_HOME:-${HOME:-/home/claude}/.codex}/sessions" -type f -name "*${tid}.jsonl" -print -quit 2>/dev/null)"
+      tpath="$(find "$CODEX_DIR/sessions" -type f -name "*${tid}.jsonl" -print -quit 2>/dev/null)"
       [ -n "$tpath" ] && cp -f "$tpath" "$out" 2>/dev/null
     fi
     [ -n "$key" ] && rm -f "$STATE/$key.thread" 2>/dev/null
