@@ -32,6 +32,8 @@ jobs:
         bin/gh-credential-helper
         bin/claude-set-token
         bin/transcript-shipper-sync
+        bin/rt-claude
+        bin/rt-gemini
         gitops/claytonia-gitops.sh
         gitops/install.sh
         provision/01-create-container.sh
