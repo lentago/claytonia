@@ -12,9 +12,11 @@
 # first, so one job in a batch can blow its timeout while the rest run normally.
 # FAKE_CLAUDE_ARGS, if set, receives the argv (one per line) for assertions;
 # FAKE_CLAUDE_STDIN, if set, receives the prompt read from stdin (#169).
+# FAKE_CLAUDE_ENV, if set, receives the Claude token as the CLI sees it (#170).
 set -u
 prompt="$(cat 2>/dev/null)" || true   # drain the piped prompt; never fail on a closed pipe
 [ -n "${FAKE_CLAUDE_ARGS:-}" ] && printf '%s\n' "$@" > "$FAKE_CLAUDE_ARGS"
+[ -n "${FAKE_CLAUDE_ENV:-}" ] && printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "${CLAUDE_CODE_OAUTH_TOKEN-<unset>}" > "$FAKE_CLAUDE_ENV"
 [ -n "${FAKE_CLAUDE_STDIN:-}" ] && printf '%s' "$prompt" > "$FAKE_CLAUDE_STDIN"
 case "$prompt" in *FAKE_HANG*) sleep "${FAKE_CLAUDE_SLEEP:-60}" ;; esac
 

@@ -36,6 +36,7 @@ setup() {
   export CLAUDE_RUNNER_BIN="$REPO_ROOT/bin"
   export CLAUDE_INBOX_LOCK="$TEST_TMP/inbox.lock"   # per-run lock; never the prod singleton
   export CLAUDE_BIN="$STUBS_DIR/claude"
+  export CLAUDE_RUNNER_TOKEN_ENV="$TEST_TMP/token.env"   # never a real token, even on a worker
   export CLAUDE_RUNNER_PATH="$STUBS_DIR:$PATH"
   export PATH="$STUBS_DIR:$PATH"
 
