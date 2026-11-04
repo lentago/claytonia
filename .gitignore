@@ -2,6 +2,10 @@
 **/token.env
 **/gh-app.pem
 **/gh-app.env
+**/google.env
+**/gemini.env
+**/gemini-sa.json
+**/codex.env
 *.pem
 # …except the PVE root CA: a public trust anchor (no key material), needed
 # by terraform/ for insecure=false against the cluster API.

@@ -186,6 +186,11 @@ case "$cmd" in
           OPENAI_WORKLOAD_IDENTITY_CONTEXT CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY \
           ANTHROPIC_AUTH_TOKEN GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GENAI_API_KEY
     export CODEX_HOME="$CODEX_DIR"
+    # Codex keeps one session file per run under ~/.codex/sessions and never prunes
+    # them. run-job copies each to the NAS at the end of its run, so files older than
+    # 7 days are swept here, as rt-gemini sweeps its per-run homes (#203 review).
+    find "$CODEX_DIR/sessions" -type f -name '*.jsonl' -mtime +7 -delete 2>/dev/null || true
+    find "$CODEX_DIR/sessions" -mindepth 1 -type d -empty -delete 2>/dev/null || true
 
     unenforced=()
     [ -n "$max_turns" ]  && unenforced+=( "max_turns=$max_turns" )

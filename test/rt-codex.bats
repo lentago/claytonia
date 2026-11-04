@@ -293,3 +293,15 @@ EOF
   tail -1 "$JOBS_ROOT/logs/$runid.stderr" | grep -q "rt-codex: cannot read $TEST_TMP/missing.env"
   [ ! -e "$FAKE_CODEX_ARGS" ]
 }
+
+@test "rt-codex run: session files older than 7 days are swept from ~/.codex/sessions; newer ones stay (#203 review)" {
+  old="$HOME/.codex/sessions/2026/10/01/rollout-old-$TID.jsonl"
+  new="$HOME/.codex/sessions/2026/11/04/rollout-new-$TID.jsonl"
+  mkdir -p "$(dirname "$old")" "$(dirname "$new")"
+  echo '{}' > "$old"; echo '{}' > "$new"
+  touch -d '10 days ago' "$old"
+  run_codex
+  [ "$RC" -eq 0 ]
+  [ ! -e "$old" ] && [ ! -d "$HOME/.codex/sessions/2026/10/01" ]
+  [ -e "$new" ]
+}
