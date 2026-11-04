@@ -39,3 +39,9 @@ jobs:
         provision/03-github-app.sh
         provision/04-project-layer.sh
         provision/05-reaper-heartbeat.sh
+        provision/rebuild/r1-unpushed.sh
+        provision/rebuild/r2-stage-secrets.sh
+        provision/rebuild/r3-drain.sh
+        provision/rebuild/r4-r6-restore.sh
+        provision/rebuild/verify.sh
+        provision/rebuild/gate.sh

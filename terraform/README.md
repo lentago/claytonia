@@ -129,6 +129,33 @@ install dir with its own systemd service.
    state (default-block); classify it or force FireMain re-evaluation if the
    worker can't reach the internet.
 
+## Rebuilding a worker
+
+A worker is rebuilt by a Terraform trigger, never by repair on the box. Each map
+entry in [`main.tf`](main.tf) carries a `rebuild` string. Changing it updates
+`terraform_data.rebuild[<worker>]`, and the container's `replace_triggered_by`
+then destroys that worker and creates it again from `template_file_id`, the
+current kalmia runner image. Its VMID, IP and MAC stay the same (all five workers
+were rebuilt this way under #65). The triggers stay as the standing way to
+rebuild a worker: Decision D, Chris, 2026-11-04.
+
+`prevent_destroy` is on, and it is one literal for every worker, so a rebuild
+takes two PRs:
+
+1. **The rebuild PR** changes that worker's `rebuild` string (for example
+   `"<issue>: rebuilt"`) and sets `prevent_destroy = false` in
+   [`modules/proxmox/main.tf`](modules/proxmox/main.tf). Its plan must read
+   `1 to add, 1 to change, 1 to destroy`, all for that worker. With the guard
+   off, that plan is the only check, so read it.
+2. **The guard PR**, right after, sets `prevent_destroy = true` again. Its plan
+   reads `No changes`.
+
+**Merging the rebuild PR is the rebuild.** The apply runs on merge, so the PR is
+armed only after the worker is drained. The root-side steps around the merge are
+the runbook in [`provision/README.md`](../provision/README.md) § Rebuilding a
+worker: stage the secrets, drain, restore, verify, and run a gate job before the
+next worker.
+
 ## Import gotchas inherited from kalmia
 
 - `operating_system.template_file_id` is required but create-only — set real

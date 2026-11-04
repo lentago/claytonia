@@ -2,7 +2,7 @@
 # transcript-shipper-sync — keep this worker's live fleet transcript shipper in
 # sync with its canonical config in lentago/drosera.
 #
-# Deployed to /opt/claude-runner/bin by the bullpen gitops loop; run as root by
+# Deployed to /opt/claude-runner/bin by the claytonia gitops loop; run as root by
 # transcript-shipper-sync.timer. Pulls origin/main of the obs checkout and
 # re-runs that repo's deploy script ONLY when it actually changed — so a steady
 # state is a silent no-op and the alloy-transcript service isn't restarted for

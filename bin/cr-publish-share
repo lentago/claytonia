@@ -3,10 +3,9 @@
 # main (#185), so the copy dispatchers read is an artifact of a merged commit and
 # never a hand edit.
 #
-# Source: docs/share/README.md in this worker's gitops checkout of claytonia, which
-# the gitops loop resets to origin/main every 5 minutes: /opt/claytonia, or
-# /opt/bullpen on a worker not yet rebuilt under #65. cron runs this every minute
-# on every worker.
+# Source: docs/share/README.md in this worker's gitops checkout of claytonia
+# (/opt/claytonia), which the gitops loop resets to origin/main every 5 minutes.
+# cron runs this every minute on every worker.
 #
 # The published copy is the source plus one last line stamping the commit it came
 # from and that commit's time. A worker never overwrites a copy stamped newer than
@@ -36,9 +35,7 @@ all_clear() { rm -f "$STATE" 2>/dev/null || true; }
 
 src="${CR_PUBLISH_SRC:-}"
 if [ -z "$src" ]; then
-  for d in /opt/claytonia /opt/bullpen; do
-    [ -f "$d/docs/share/README.md" ] && { src="$d/docs/share/README.md"; break; }
-  done
+  [ -f /opt/claytonia/docs/share/README.md ] && src=/opt/claytonia/docs/share/README.md
 fi
 [ -n "$src" ] && [ -s "$src" ] || { note_once "no docs/share/README.md in the gitops checkout; nothing published"; exit 0; }
 [ -d "$JOBS_ROOT/inbox" ] || { note_once "no queue at $JOBS_ROOT; nothing published"; exit 0; }

@@ -73,7 +73,6 @@ EOF
 }
 
 @test "install.sh runs the first deploy in the foreground, then enables the timer" {
-  [ ! -e /etc/systemd/system/bullpen-gitops.timer ] || skip "this host runs the pre-rename loop"
   stub_install_env
   run "$REPO_ROOT/gitops/install.sh"
   [ "$status" -eq 0 ]
@@ -81,7 +80,6 @@ EOF
 }
 
 @test "a failed first deploy still enables the timer, and install.sh exits non-zero saying so" {
-  [ ! -e /etc/systemd/system/bullpen-gitops.timer ] || skip "this host runs the pre-rename loop"
   stub_install_env
   FAKE_DEPLOY_RC=1 run "$REPO_ROOT/gitops/install.sh"
   [ "$status" -eq 1 ]
