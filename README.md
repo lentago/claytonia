@@ -464,8 +464,15 @@ owned by kalmia's Terraform, not this repo's — products own their own capacity
   outside every checkout, which is swept after 7 days. The transcript's durable copy is
   the one on the NAS.
 
+- **Codex (peer runtime, #166/#171)**: `/etc/claude-runner/codex.env` holds
+  `OPENAI_API_KEY`, an OpenAI API key; workers carry no ChatGPT login. It is installed
+  `root:claude 0640` by hand on every worker. Only `bin/rt-codex` reads it, for a job
+  whose runtime is `codex`, and it starts the CLI with `forced_login_method="api"`, so
+  no cached login is ever what authenticates. Codex has no budget cap of its own: until
+  #173, the usage limit on the key's OpenAI project bounds what a job can spend.
+
 Secrets (`token.env`, `gh-app.pem`, `google.env`, and the peer-runtime files
-`gemini.env` and `gemini-sa.json`) live on the workers, never in this repo.
+`gemini.env`, `gemini-sa.json` and `codex.env`) live on the workers, never in this repo.
 `gh-app.pem` and `gh-app.env` are `root:root 0600`. The rest are `root:claude 0640`,
 because the agent's CLI and `google-read` read them as `claude`. Each runtime adapter
 sources only its own file (#166). The rebuild runbook carries them across a rebuild
