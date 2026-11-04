@@ -25,8 +25,10 @@ the code disagree, the code wins, and this page should be fixed.
 `run-job` drives every job through the same steps. Only the parts marked
 **adapter** belong to the runtime; everything else is runtime-neutral.
 
-1. **Claim.** `process-inbox` moves the job file `inbox/ → processing/` (atomic
-   rename) and starts `run-job`.
+1. **Claim.** `process-inbox` hands each inbox file to `run-job`, which claims it
+   with one atomic rename, `inbox/ → processing/`. A worker that loses the race
+   finds the file gone and exits with no side effects. That rename is the
+   single-winner point (ADR-0001).
 2. **Resolve the runtime.** Spec `runtime` → the project registry's `runtime` →
    `CLAUDE_RUNNER_RUNTIME` in `etc/runner.env` → `claude` (#168). A default model
    applies only to the runtime it was written for (README § Runtime resolution).
@@ -174,8 +176,8 @@ An adapter whose file is missing refuses before the CLI starts, with one stderr 
 | `turns` counts | model turns | tool calls | completed action items (commands, file changes, tool calls) |
 | `cost_usd` | reported | `null` | `null` |
 | transcript | `~/.claude/projects/…/<uuid>.jsonl` | the run home's `chats/session-*.jsonl` | `~/.codex/sessions/**/*<thread>.jsonl` |
-| local state | Claude Code's own session files, kept by its own retention | the per-run Gemini home, swept after 7 days | `~/.codex/sessions` files, swept after 7 days |
-| models | `haiku`, `sonnet`, `opus`, `fable`, `claude-*` | `gemini-*`, `auto`, `pro`, `flash`, `flash-lite` | `gpt-*`, `codex-*`, o-series |
+| local state | Claude Code's own session files, kept by its own retention | the per-run Gemini home, swept after 7 days | `~/.codex/sessions` files, swept after 7 days; the adapter's per-run hand-off files (last message, thread id) under `~/.cache/rt-codex`, swept after 2 days |
+| models | `haiku`, `sonnet`, `opus`, `fable`, `opusplan`, `default`, `claude-*` (optionally with `[1m]`) | `gemini-*`, `auto`, `auto-gemini-*`, `pro`, `flash`, `flash-lite` | `gpt-*`, `codex-*`, o-series (`o3`, `o4-mini`, …), lowercase |
 
 No runtime runs a sandbox of its own: the worker, an unprivileged LXC, is the
 sandbox. Codex's own sandbox starts in the LXC, but it makes `.git` read-only and
@@ -196,7 +198,7 @@ the optional `runtime` key.
    it lands.
 4. The adapter in the explicit list in `.github/workflows/shellcheck.yml`.
 5. Its secret, if any: the README § Auth entry, `provision/rebuild/` R-2 and R-4, and
-   `verify.sh`.
+   `provision/rebuild/verify.sh`.
 6. The CLI in the runner image (lentago/kalmia's forge), because workers are cattle:
    every worker carries every CLI, and the poller does no capability matching (#166
    judgment C).
