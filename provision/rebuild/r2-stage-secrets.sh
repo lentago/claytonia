@@ -5,6 +5,10 @@
 #   ssh root@pve.local "ssh pve4 bash -s -- <vmid>" < provision/rebuild/r2-stage-secrets.sh
 set -euo pipefail
 ID="${1:?vmid}"
+# Act only on a claytonia pool worker, never on another guest.
+HOST="$(pct config "$ID" | sed -n 's/^hostname: //p')"
+case "$HOST" in claude-runner|claude-runner-[0-9]*) ;; *) echo "CT $ID is '$HOST', not a claude-runner worker: refusing" >&2; exit 1 ;; esac
+pvesh get /pools/claytonia --output-format json | grep -Eq "\"vmid\":${ID}[,}]" || { echo "CT $ID is not in the claytonia pool: refusing" >&2; exit 1; }
 D="/root/rebuild-$ID"
 pct status "$ID" | grep -q running || { echo "CT $ID is not running" >&2; exit 1; }
 install -d -m 700 "$D"
@@ -22,5 +26,5 @@ done
 pct pull "$ID" /etc/default/alloy-transcript "$D/alloy-transcript"
 chmod 600 "$D"/*
 for f in "$D"/*; do [ -s "$f" ] || { echo "EMPTY: $f" >&2; exit 1; }; done
-echo "staged for CT $ID ($(pct config "$ID" | sed -n 's/^hostname: //p')):"
+echo "staged for CT $ID ($HOST):"
 stat -c '  %n %s bytes' "$D"/*

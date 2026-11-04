@@ -7,11 +7,23 @@
 #   ssh root@pve.local "ssh pve4 bash -s -- <vmid>" < provision/rebuild/r4-r6-restore.sh
 set -euo pipefail
 ID="${1:?vmid}"
+# Act only on a claytonia pool worker, never on another guest.
+HOST="$(pct config "$ID" | sed -n 's/^hostname: //p')"
+case "$HOST" in claude-runner|claude-runner-[0-9]*) ;; *) echo "CT $ID is '$HOST', not a claude-runner worker: refusing" >&2; exit 1 ;; esac
+pvesh get /pools/claytonia --output-format json | grep -Eq "\"vmid\":${ID}[,}]" || { echo "CT $ID is not in the claytonia pool: refusing" >&2; exit 1; }
 D="/root/rebuild-$ID"
 [ -d "$D" ] || { echo "no staged secrets at $D (R-2 not run?)" >&2; exit 1; }
 pct status "$ID" | grep -q running || { echo "CT $ID is not running" >&2; exit 1; }
 pct exec "$ID" -- test -d /opt/claytonia || { echo "CT $ID has no /opt/claytonia: not a rebuilt worker?" >&2; exit 1; }
 G="$(pct exec "$ID" -- id -g claude)"
+# A stop part-way leaves the staged secrets in place, root-only, so a rerun can
+# finish the job. The rerun repeats every step, including the reboot, and shreds
+# the staging copy only at the end.
+on_exit() {
+  local rc=$?
+  [ "$rc" = 0 ] || echo "R-4..R-6 STOPPED (exit $rc) on CT $ID ($HOST): staging kept at $D (root-only). Fix the cause, then rerun this script." >&2
+}
+trap on_exit EXIT
 
 echo ">>> R-4 secrets (token.env, google.env and the peer-runtime files 640 root:claude; gh-app.* 600 root:root, #177)"
 for f in token.env google.env; do

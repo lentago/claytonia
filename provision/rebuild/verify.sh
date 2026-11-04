@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Read-only post-rebuild check for one worker (provision/README.md § Rebuilding a
-# worker; first used for claytonia#65). Runs on pve4. Prints no secret values.
+# worker; first used for claytonia#65). Runs on pve4. Writes nothing to the
+# worker's disk (a throwaway HOME for the CLI version checks is removed) and
+# prints no secret values.
 #   ssh root@pve.local "ssh pve4 bash -s -- <vmid>" < provision/rebuild/verify.sh
 set -uo pipefail
 ID="${1:?vmid}"; fail=0
+# Act only on a claytonia pool worker, never on another guest.
+HOST="$(pct config "$ID" | sed -n 's/^hostname: //p')"
+case "$HOST" in claude-runner|claude-runner-[0-9]*) ;; *) echo "CT $ID is '$HOST', not a claude-runner worker: refusing" >&2; exit 1 ;; esac
+pvesh get /pools/claytonia --output-format json | grep -Eq "\"vmid\":${ID}[,}]" || { echo "CT $ID is not in the claytonia pool: refusing" >&2; exit 1; }
 ok(){ echo "OK   $*"; }; bad(){ echo "FAIL $*"; fail=1; }
 cfg="$(pct config "$ID")"
 HOST="$(sed -n 's/^hostname: //p' <<<"$cfg")"
@@ -20,8 +26,8 @@ findmnt -n /srv/jobs >/dev/null && ok "/srv/jobs mounted" || bad "/srv/jobs not 
 a="/srv/jobs/workers/$(hostname).alive"; age=$(( $(date +%s) - $(stat -c %Y "$a" 2>/dev/null || echo 0) ))
 [ "$age" -lt 90 ] && ok "heartbeat ${age}s old" || bad "heartbeat ${age}s old"
 [ "$(git -C /opt/claytonia rev-parse --abbrev-ref HEAD 2>/dev/null)" = main ] && ok "/opt/claytonia on main" || bad "/opt/claytonia branch"
-git -C /opt/claytonia fetch -q origin main 2>/dev/null
-[ "$(git -C /opt/claytonia rev-parse HEAD)" = "$(git -C /opt/claytonia rev-parse origin/main)" ] && ok "HEAD == origin/main" || bad "HEAD behind origin/main"
+remote="$(git -C /opt/claytonia ls-remote origin refs/heads/main 2>/dev/null | cut -f1)"
+[ -n "$remote" ] && [ "$(git -C /opt/claytonia rev-parse HEAD)" = "$remote" ] && ok "HEAD == origin/main" || bad "HEAD $(git -C /opt/claytonia rev-parse --short HEAD) != origin/main ${remote:0:7}"
 for u in claytonia-gitops.timer claude-inbox.timer claude-heartbeat.timer alloy-transcript.service; do
   systemctl is-active -q "$u" && ok "$u active" || bad "$u not active"
 done
@@ -29,9 +35,13 @@ systemctl is-enabled -q claytonia-gitops.timer && ok "claytonia-gitops.timer ena
 # The transcript shipper's checkout is /opt/drosera since drosera#169.
 [ -d /opt/drosera/.git ] && ok "shipper checkout /opt/drosera" || bad "no /opt/drosera shipper checkout"
 [ -e /opt/homelab-observability ] && bad "old shipper checkout /opt/homelab-observability present"
+# Regression check: the pre-rename names must not come back (a worker cut from an
+# old image would carry them).
+old=0
 for p in /opt/bullpen /usr/local/sbin/bullpen-gitops /etc/systemd/system/bullpen-gitops.service /etc/systemd/system/bullpen-gitops.timer; do
-  [ -e "$p" ] && bad "old name present: $p"
-done; ok "no bullpen-gitops artifacts checked"
+  [ -e "$p" ] && { bad "old name present: $p"; old=1; }
+done
+[ "$old" = 0 ] && ok "no pre-rename artifacts"
 cmp -s /usr/local/sbin/claytonia-gitops /opt/claytonia/gitops/claytonia-gitops.sh && ok "installed loop == checkout" || bad "installed loop differs"
 grep -q FATAL /var/log/claytonia-gitops.log 2>/dev/null && bad "FATAL in gitops log" || ok "no FATAL in gitops log"
 grep -q 'unit verify reported issues' /var/log/claytonia-gitops.log 2>/dev/null && bad "verify warning still logged" || ok "no verify warning"
