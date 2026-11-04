@@ -32,6 +32,11 @@ contract_entry() {
       printf 'GOOGLE_GENAI_USE_VERTEXAI=true\n' > "$CLAUDE_RUNNER_GEMINI_ENV"   # never real credentials
       STUB_ARGS=FAKE_GEMINI_ARGS; STUB_STDIN=FAKE_GEMINI_STDIN; MODE_VAR=FAKE_GEMINI_MODE
       MODEL_OK=gemini-3.5-flash-lite; MODEL_BAD=sonnet ;;
+    codex)
+      export CODEX_BIN="$STUBS_DIR/codex" CLAUDE_RUNNER_CODEX_ENV="$TEST_TMP/codex.env"
+      printf 'OPENAI_API_KEY=sk-contract-test\n' > "$CLAUDE_RUNNER_CODEX_ENV"   # never a real key
+      STUB_ARGS=FAKE_CODEX_ARGS; STUB_STDIN=FAKE_CODEX_STDIN; MODE_VAR=FAKE_CODEX_MODE
+      MODEL_OK=gpt-5-codex; MODEL_BAD=sonnet ;;
     *) return 1 ;;
   esac
   export "$STUB_ARGS=$TEST_TMP/$1.argv" "$STUB_STDIN=$TEST_TMP/$1.stdin"

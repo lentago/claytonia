@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# rt-codex — the Codex CLI runtime adapter (#166, #171).
+#
+# The contract (subcommands, arguments, the normalized result) is in the rt-claude
+# header; this adapter implements it for Codex CLI 0.166 (`codex exec --json`). It is
+# inert until a job resolves runtime=codex (spec, registry or CLAUDE_RUNNER_RUNTIME).
+#
+# run — the command:
+#   codex exec --json -C <cwd> --dangerously-bypass-approvals-and-sandbox
+#     --ignore-user-config -c forced_login_method="api"
+#     -c project_doc_fallback_filenames=["CLAUDE.md"]
+#     [-c shell_environment_policy.set.GH_TOKEN_ACCESS="<profile>"]
+#     -o <cache>/<session-id>.last-message [-m <model>] [--skip-git-repo-check]
+#   The prompt is on stdin (with no PROMPT argument, exec reads stdin), and the CLI is
+#   exec'd, so the process tree under run-job's timeout(1) is the CLI alone.
+#   --skip-git-repo-check goes only to a cwd that is not a git work tree (ad-hoc jobs).
+#   exec's one trust gate is "Not inside a trusted directory and --skip-git-repo-check
+#   was not specified" (0.166's own message), and a fresh checkout is a repo, so it
+#   needs no trust entry; an untrusted repo's .codex/ config and hooks stay unloaded.
+#   Codex's default shell environment policy drops every *KEY* and *TOKEN* variable
+#   from the agent's commands (0.166's defaults, read from the binary). That keeps
+#   OPENAI_API_KEY out of them, but it also drops GH_TOKEN_ACCESS, the profile
+#   gh-credential-helper mints for (#176); the `set` override puts that one back.
+#
+# Auth (judgment B): `run` sources /etc/claude-runner/codex.env (root:claude 0640,
+#   installed by hand; CLAUDE_RUNNER_CODEX_ENV overrides the path, like rt-claude's
+#   CLAUDE_RUNNER_TOKEN_ENV) for OPENAI_API_KEY, just before it execs the CLI; run-job
+#   holds no vendor secret (#170). A missing or unreadable file, or one that sets no
+#   key, is one stderr line and exit 78 (EX_CONFIG) before the CLI starts. The file's
+#   own output is discarded, so a malformed line never echoes the key.
+#   CLAUDE_CODE_OAUTH_TOKEN, CODEX_API_KEY and CODEX_ACCESS_TOKEN are unset, so the
+#   key is the only credential the CLI holds. 0.166 reads OPENAI_API_KEY
+#   and CODEX_API_KEY as API-key auth (its doctor warns when several auth variables
+#   are set, hence exactly one). forced_login_method="api" makes Codex refuse ChatGPT
+#   auth ("API key login is required, but ChatGPT is currently being used. Logging
+#   out."), so a cached login is never what authenticates. Both are from the binary;
+#   the first live job confirms them.
+#
+# Context: --ignore-user-config skips $CODEX_HOME/config.toml, so nothing on a worker
+#   (an MCP server, a model, a profile) changes a fleet run and nothing needs baking:
+#   every setting is a -c override above. project_doc_fallback_filenames loads the
+#   repo CLAUDE.md when the repo has no AGENTS.md (checked on 0.166: `codex debug
+#   prompt-input` in a repo holding only CLAUDE.md includes it with the override and
+#   omits it without).
+#
+# Sandbox verification (#171; CT 117 claude-runner-5, codex-cli 0.166.0, 2026-11-04).
+#   `codex sandbox -P <profile> -C <dir> -- <cmd>` runs one command under the sandbox
+#   with no model and no auth. 0.166's Linux sandbox is bubblewrap (vendored) plus a
+#   seccomp filter; Landlock is a deprecated opt-in.
+#   - It starts in the unprivileged LXC. Inside: uid_map "1000 0 1", Seccomp 2,
+#     NoNewPrivs 1, CapEff 0.
+#   - :workspace enforces its policy: writes in the workspace and /tmp succeed; $HOME,
+#     an extra root and any other path are a read-only file system; the network is
+#     off (DNS fails). A profile extending :workspace with a filesystem write grant
+#     and network={enabled=true} writes the extra root and reaches GitHub (curl
+#     api.github.com: 200; git ls-remote works). The legacy keys #171's command used,
+#     sandbox_workspace_write.writable_roots and .network_access, changed neither.
+#   - Two findings rule the sandbox out for fleet jobs:
+#     1. .git is read-only under :workspace, so `git commit` fails on index.lock
+#        unless the profile grants <cwd>/.git (with the grant it works).
+#     2. no_new_privs stops sudo: "The 'no new privileges' flag is set, which prevents
+#        sudo from running as root". gh-token reaches the App key only through its
+#        one sudoers rule (#177), so under the sandbox gh-credential-helper cannot
+#        mint: `git push` and the preamble's gh re-auth would both fail.
+#   Verdict, per #171 step 2: --dangerously-bypass-approvals-and-sandbox (it also
+#   means approval never), the posture rt-claude runs with
+#   (--dangerously-skip-permissions) on a worker that is itself the sandbox. With no
+#   sandbox, --add-dir and sandbox_workspace_write.* would widen nothing, so they are
+#   not passed. A sandboxed Codex needs a token path that runs no sudo inside the run.
+#   Not yet exercised: a real `codex exec` (no key is installed anywhere). The first
+#   live jobs confirm auth, the CLAUDE.md load, git push and gh pr create end to end.
+#
+# normalize: --raw is the JSONL event stream. Lines that are not JSON objects are
+#   skipped, so a run killed mid-line still files what it printed; no events at all
+#   is no result (the exit code decides, as the contract says).
+#   session_id  thread.started.thread_id. Codex mints its own and cannot take run-job's
+#               UUID; --session-id stands in only when no thread started.
+#   final_text  the -o file, else the last item.completed agent_message.
+#   status      ok when a turn completed, none failed and there is a final message;
+#               else error. The exit code is not visible here; run-job fails a
+#               non-zero exit whatever the status says.
+#   is_error    a turn.failed, or an error event with no completed turn.
+#   turns       completed action items: every item.completed whose type is not
+#               agent_message, reasoning, todo_list or error (command_execution,
+#               file_change, mcp_tool_call, web_search, …). An exec run is usually
+#               one model turn, so this counts what the run did instead.
+#   tokens      turn.completed usage, summed, per #173. OpenAI counts cached reads
+#               inside input_tokens and reasoning inside output_tokens, so
+#               in = input - cached_input, cached = cached_input,
+#               out = output - reasoning_output, thinking = reasoning_output.
+#               cache_write_input_tokens is part of input and stays in `in`.
+#   cost_usd    null: Codex reports none; drosera prices tokens.
+#
+# Where the -o file lives: normalize gets no runid, but run and normalize both get
+#   --session-id (run-job's UUID for this run). So the last message goes to
+#   ${XDG_CACHE_HOME:-$HOME/.cache}/rt-codex/<session-id>.last-message, outside any
+#   checkout. normalize reads it, falls back to the raw stream when it is missing (a
+#   killed run, an unwritable cache), deletes it, and leaves <session-id>.thread
+#   holding the Codex thread id for `transcript`, which run-job also calls with its
+#   own UUID. Each run prunes files there older than two days.
+#
+# transcript: copies $CODEX_HOME/sessions/**/*<thread id>.jsonl (CODEX_HOME defaults
+#   to ~/.codex) as-is. Best-effort; a --session-id with no thread recorded is tried
+#   as a thread id itself.
+#
+# accepts-model: OpenAI model ids Codex takes: gpt-*, codex-* and the o-series (o3,
+#   o4-mini, …), in lowercase letters, digits, '.' and '-'. Claude and Gemini names,
+#   and Claude's aliases, are refused.
+#
+# Limits: Codex has no native turn or budget cap and no tool allowlist. When
+#   --max-turns, --max-budget-usd or --allowed-tools is set, `run` writes one stderr
+#   line naming what is not enforced. The wall clock (run-job's timeout(1)) applies as
+#   for every runtime; recording the gap in .meta is #173.
+set -uo pipefail
+CODEX_BIN="${CODEX_BIN:-/usr/local/bin/codex}"
+STATE="${XDG_CACHE_HOME:-${HOME:-/home/claude}/.cache}/rt-codex"
+EX_CONFIG=78
+
+usage() { echo "usage: rt-codex run|normalize|transcript|accepts-model [options]  (see the header)" >&2; exit 2; }
+
+cmd="${1:-}"; [ -n "$cmd" ] || usage; shift
+cwd=""; sid=""; model=""; max_turns=""; max_budget=""; allowed=""
+raw=""; result=""; txt=""; out=""
+while [ $# -gt 0 ]; do
+  [ $# -ge 2 ] || { echo "rt-codex: $1 needs a value" >&2; exit 2; }
+  case "$1" in
+    --cwd)            cwd="$2" ;;
+    --runid)          ;;   # part of the contract; Codex keys nothing on it
+    --session-id)     sid="$2" ;;
+    --model)          model="$2" ;;
+    --max-turns)      max_turns="$2" ;;
+    --max-budget-usd) max_budget="$2" ;;
+    --allowed-tools)  allowed="$2" ;;
+    --raw)            raw="$2" ;;
+    --result)         result="$2" ;;
+    --txt)            txt="$2" ;;
+    --out)            out="$2" ;;
+    *) echo "rt-codex: unknown option $1" >&2; exit 2 ;;
+  esac
+  shift 2
+done
+
+# The per-run file stem in $STATE: the session id, reduced to a safe file name.
+key="$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_-')"
+
+case "$cmd" in
+  run)
+    envf="${CLAUDE_RUNNER_CODEX_ENV:-/etc/claude-runner/codex.env}"
+    if [ ! -r "$envf" ]; then
+      echo "rt-codex: cannot read $envf, which holds OPENAI_API_KEY for Codex jobs (judgment B, #171)" >&2
+      exit "$EX_CONFIG"
+    fi
+    unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN
+    set +u
+    # shellcheck source=/dev/null
+    . "$envf" >/dev/null 2>&1   # silenced: an error line would quote the key
+    set -u
+    if [ -z "${OPENAI_API_KEY:-}" ]; then
+      echo "rt-codex: $envf sets no OPENAI_API_KEY (judgment B, #171)" >&2
+      exit "$EX_CONFIG"
+    fi
+    export OPENAI_API_KEY
+    unset CLAUDE_CODE_OAUTH_TOKEN CODEX_API_KEY CODEX_ACCESS_TOKEN
+
+    unenforced=()
+    [ -n "$max_turns" ]  && unenforced+=( "max_turns=$max_turns" )
+    [ -n "$max_budget" ] && unenforced+=( "max_budget_usd=$max_budget" )
+    [ -n "$allowed" ]    && unenforced+=( "allowed_tools" )
+    [ ${#unenforced[@]} -gt 0 ] \
+      && echo "rt-codex: Codex has no turn cap, budget cap or tool allowlist; not enforced: ${unenforced[*]} (the wall clock still applies)" >&2
+
+    args=( exec --json )
+    [ -n "$cwd" ] && args+=( -C "$cwd" )
+    args+=( --dangerously-bypass-approvals-and-sandbox --ignore-user-config
+            -c 'forced_login_method="api"' -c 'project_doc_fallback_filenames=["CLAUDE.md"]' )
+    case "${GH_TOKEN_ACCESS:-}" in
+      ''|*[!a-z-]*) ;;
+      *) args+=( -c "shell_environment_policy.set.GH_TOKEN_ACCESS=\"$GH_TOKEN_ACCESS\"" ) ;;
+    esac
+    if [ -n "$key" ] && ( umask 077; mkdir -p "$STATE" ) 2>/dev/null; then
+      find "$STATE" -maxdepth 1 -type f -mtime +2 -delete 2>/dev/null
+      rm -f "$STATE/$key.last-message" "$STATE/$key.thread" 2>/dev/null
+      args+=( -o "$STATE/$key.last-message" )
+    fi
+    [ -n "$model" ] && args+=( -m "$model" )
+    git -C "${cwd:-.}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || args+=( --skip-git-repo-check )
+    exec "$CODEX_BIN" "${args[@]}"
+    ;;
+
+  normalize)
+    [ -n "$raw" ] && [ -n "$result" ] && [ -n "$txt" ] || usage
+    rm -f "$result" 2>/dev/null
+    nev="$(jq -n -R '[inputs | fromjson? | objects] | length' "$raw" 2>/dev/null)"
+    case "$nev" in ''|0|*[!0-9]*)
+      cp "$raw" "$txt" 2>/dev/null || true
+      exit 0 ;;
+    esac
+    lastf=/dev/null; haslast=0
+    if [ -n "$key" ] && [ -f "$STATE/$key.last-message" ]; then
+      lastf="$STATE/$key.last-message"; haslast=1
+    fi
+    # One program for the text and the result, so the two never disagree.
+    # shellcheck disable=SC2016  # jq variables, not shell ones
+    prog='
+      def events: [inputs | fromjson? | objects];
+      def agent_text($ev): [$ev[] | select(.type == "item.completed") | .item | objects
+                             | select(.type == "agent_message") | .text | strings] | last // "";
+      def final($ev): if $haslast == "1" and ($last | length) > 0
+                      then ($last | if endswith("\n") then .[:-1] else . end)
+                      else agent_text($ev) end;
+      def total($us; $k): [$us[] | (.[$k] // 0)]
+                          | if all(type == "number") then add else error("usage") end;
+      def tokens($ev):
+        [$ev[] | select(.type == "turn.completed") | .usage | objects] as $us
+        | if ($us | length) == 0 then {in: null, cached: null, out: null, thinking: null}
+          else {in: (total($us; "input_tokens") - total($us; "cached_input_tokens")),
+                cached: total($us; "cached_input_tokens"),
+                out: (total($us; "output_tokens") - total($us; "reasoning_output_tokens")),
+                thinking: total($us; "reasoning_output_tokens")} end;
+      def result($ev):
+        final($ev) as $ft
+        | ([$ev[] | select(.type == "turn.completed")] | length) as $done
+        | ($ev | any(.type == "turn.failed")) as $failed
+        | {runtime: "codex",
+           model: (if $model == "" then null else $model end),
+           session_id: ([$ev[] | select(.type == "thread.started") | .thread_id | strings] | first
+                        // (if $sid == "" then null else $sid end)),
+           status: (if $done > 0 and ($failed | not) and $ft != "" then "ok" else "error" end),
+           is_error: ($failed or ($done == 0 and ($ev | any(.type == "error")))),
+           turns: ([$ev[] | select(.type == "item.completed") | .item | objects | .type | strings
+                    | select(. != "agent_message" and . != "reasoning" and . != "todo_list" and . != "error")]
+                   | length),
+           tokens: (try tokens($ev) catch {in: null, cached: null, out: null, thinking: null}),
+           cost_usd: null,
+           final_text: $ft};
+      events as $ev | if $what == "text" then final($ev) else result($ev) end'
+    jqn() { jq -n -R --arg model "$model" --arg sid "$sid" --arg haslast "$haslast" \
+              --rawfile last "$lastf" --arg what "$1" "${@:2}" "$prog" "$raw"; }
+    { jqn text -r > "$txt"; } 2>/dev/null || true
+    if { jqn result -c > "$result.tmp"; } 2>/dev/null && [ -s "$result.tmp" ]; then
+      mv -f "$result.tmp" "$result" 2>/dev/null || { rm -f "$result.tmp" 2>/dev/null; exit 1; }
+    else
+      # Events were read, but no result could be written: run-job fails the job rather
+      # than file a run it cannot read as a success.
+      rm -f "$result.tmp" 2>/dev/null; exit 1
+    fi
+    # Hand the thread id to `transcript`; the last message is consumed.
+    if [ -n "$key" ]; then
+      tid="$(jq -r '.session_id // empty' "$result" 2>/dev/null)"
+      [ -n "$tid" ] && [ "$tid" != "$sid" ] && ( umask 077; mkdir -p "$STATE" && printf '%s\n' "$tid" > "$STATE/$key.thread" ) 2>/dev/null
+      rm -f "$STATE/$key.last-message" 2>/dev/null
+    fi
+    exit 0
+    ;;
+
+  accepts-model)
+    case "$model" in
+      ''|*[!a-z0-9.-]*) exit 1 ;;
+      gpt-*|codex-*|o[1-9]|o[1-9]-*) exit 0 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+
+  transcript)
+    [ -n "$sid" ] && [ -n "$out" ] || usage
+    tid=""
+    [ -n "$key" ] && [ -f "$STATE/$key.thread" ] && tid="$(head -n 1 "$STATE/$key.thread" 2>/dev/null)"
+    [ -n "$tid" ] || tid="$sid"
+    # Only a UUID is matched against file names: anything shorter could suffix-match
+    # another session's file.
+    if [[ "$tid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
+      tpath="$(find "${CODEX_HOME:-${HOME:-/home/claude}/.codex}/sessions" -type f -name "*${tid}.jsonl" -print -quit 2>/dev/null)"
+      [ -n "$tpath" ] && cp -f "$tpath" "$out" 2>/dev/null
+    fi
+    [ -n "$key" ] && rm -f "$STATE/$key.thread" 2>/dev/null
+    exit 0
+    ;;
+
+  *) usage ;;
+esac
