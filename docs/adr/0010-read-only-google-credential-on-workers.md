@@ -1,7 +1,8 @@
 # ADR-0010: A read-only Google credential on the workers
 
 **Status:** Accepted (2026-10-28). Updated 2026-11-02 (#177): jobs no longer have
-`sudo`; the credential is still readable by every job.
+general `sudo` (the `claude` user's one sudoers rule is the `gh-token` broker); the
+credential is still readable by every job.
 
 ## Context
 
