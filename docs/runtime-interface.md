@@ -183,6 +183,15 @@ No runtime runs a sandbox of its own: the worker, an unprivileged LXC, is the
 sandbox. Codex's own sandbox starts in the LXC, but it makes `.git` read-only and
 blocks the `gh-token` broker's sudo, so it was ruled out on evidence (#171).
 
+**A runtime's shell tool may rewrite the environment of the commands it runs.**
+Gemini CLI 0.66 appends seven git config overrides through `GIT_CONFIG_COUNT`
+to every shell command. The first is an empty `credential.helper`, which clears
+the worker's `gh-credential-helper`, so on the first live run `git push` found no
+credential (#170). `rt-gemini` copies the URL-scoped helper from `~/.gitconfig`
+into `GIT_CONFIG_PARAMETERS`, which git applies after those overrides. When you
+add a runtime, check `env` and `git config -l` from inside one of its shell
+commands, not only from the adapter.
+
 ## Adding a runtime
 
 The acceptance test (fleet principle, 2026-07-04): **adding a runtime does not touch
