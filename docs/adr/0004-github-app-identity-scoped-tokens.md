@@ -4,6 +4,9 @@
 App was made public so a personal account could install it on one repository, and
 `gh-token` now resolves the installation per repository (see
 [ADR-0009](0009-policy-gated-auto-merge-for-routine-prs.md), *Consequences*).
+Updated 2026-11-02 (#176): each project-job token is narrowed to the job's
+repository and the access its step needs; `workflows: write` is included only when
+the job spec sets `"workflows": true` (`cr-submit --workflows`).
 
 > Dated to issue #49 (2026-07-05), which framed the problem and drove the move off
 > the shared personal PAT. The issue proposed a machine-account *PAT*; the landed
@@ -35,9 +38,10 @@ Workers open branches and PRs and never merge (see ADR-0002).
 
 **The App's granted scopes are documented as the permission ceiling.** The org
 installation grants `contents: write`, `issues: write`, `pull_requests: write`,
-`workflows: write`, `metadata: read`. Installation tokens inherit exactly these,
-so the documented list *is* the ceiling on a dispatched job's blast radius —
-recorded inline in the README (PR #70) rather than left to an API query.
+`workflows: write`, `metadata: read`. This grant is the ceiling on a dispatched
+job's blast radius; each token is narrowed to the job's repository and the access
+its step needs. The ceiling is recorded inline in the README (PR #70) rather than
+left to an API query.
 
 **`workflows: write` was a deliberate two-step posture change.** It was withheld
 at first: without it the remote rejects any create/update under
