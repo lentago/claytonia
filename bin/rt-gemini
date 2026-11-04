@@ -56,6 +56,10 @@
 #   the helper from ~/.gitconfig into GIT_CONFIG_PARAMETERS under the same
 #   https://github.com scope, and no other host is ever offered the App token.
 #   The other six overrides (hooks, fsmonitor, sshCommand, pager, editors) stay.
+#   Both facts are 0.66's: read from its bundled shell executor and checked by hand
+#   on a worker (git 2.39.5). The bats test replays the overrides, not the real
+#   shell tool, so the live gate jobs are the end-to-end check, and a Gemini CLI
+#   update must re-check them (#172).
 #   Limits: --max-turns N becomes model.maxSessionTurns N, which allows N model
 #   requests. --max-budget-usd cannot be enforced (the CLI has no spend cap) and
 #   --allowed-tools is Claude tool syntax with no Gemini counterpart that matters
