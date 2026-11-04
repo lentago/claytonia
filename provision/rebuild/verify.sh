@@ -68,6 +68,13 @@ t=$(runuser -u claude -- bash -lc 'gh-token --access read lentago/claytonia' 2>/
 runuser -u claude -- test -r /etc/claude-runner/gh-app.pem && bad "claude can read the App key" || ok "claude cannot read the App key"
 runuser -u claude -- sudo -n true 2>/dev/null && bad "claude has other root" || ok "claude has no other root"
 [ -s /run/cr-harden.notes ] && bad "cr-harden notes: $(head -c 200 /run/cr-harden.notes)" || ok "cr-harden: no notes"
+# Gemini system settings, installed by cr-harden (#205): usage statistics off, root's.
+# The CLI ignores the file unless its directory is root's and not writable by others.
+[ "$(stat -c '%U:%G %a' /etc/gemini-cli 2>/dev/null)" = "root:root 755" ] \
+  && ok "gemini system settings dir root:root 755" || bad "gemini system settings dir: $(stat -c '%U:%G %a' /etc/gemini-cli 2>&1)"
+[ "$(stat -c '%U:%G %a' /etc/gemini-cli/settings.json 2>/dev/null)" = "root:root 644" ] \
+  && grep -q '"usageStatisticsEnabled":false' /etc/gemini-cli/settings.json \
+  && ok "gemini system settings (usage statistics off)" || bad "gemini system settings: $(stat -c '%U:%G %a' /etc/gemini-cli/settings.json 2>&1)"
 grep -q 'flock -w' /usr/local/sbin/claytonia-gitops 2>/dev/null && ok "gitops loop waits for its lock (#190)" || bad "gitops loop predates #190"
 [ "$(node --version 2>/dev/null | cut -d. -f1)" = v22 ] && ok "node $(node --version)" || bad "node $(node --version 2>&1)"
 runuser -u claude -- bash -lc 'claude --version' >/dev/null 2>&1 && ok "claude CLI" || bad "claude CLI"

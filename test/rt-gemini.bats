@@ -149,6 +149,33 @@ norm() {
   [ ! -s "$TEST_TMP/raw.stderr" ]
 }
 
+@test "rt-gemini run: a job with a turn cap is refused when its checkout's settings name maxSessionTurns; the CLI never starts (#205)" {
+  export FAKE_GEMINI_ARGS="$TEST_TMP/argv"
+  mkdir -p "$CLAUDE_RUNNER_CWD/.gemini"
+  printf '{"model":{"maxSessionTurns":-1}}\n' > "$CLAUDE_RUNNER_CWD/.gemini/settings.json"
+  rt_run --max-turns 5
+  [ "$RC" -eq 3 ]
+  grep -qF "sets maxSessionTurns, which would override this job's max_turns=5" "$TEST_TMP/raw.stderr"
+  [ ! -e "$FAKE_GEMINI_ARGS" ]
+  rt_run   # no cap of its own: the checkout's setting is the only one, so it runs
+  [ "$RC" -eq 0 ]
+}
+
+@test "rt-gemini run: an escaped maxSessionTurns key, or a file jq cannot parse, is refused for a capped job too (#205)" {
+  export FAKE_GEMINI_ARGS="$TEST_TMP/argv"
+  mkdir -p "$CLAUDE_RUNNER_CWD/.gemini"
+  printf '{"model":{"maxSession\\u0054urns":-1}}\n' > "$CLAUDE_RUNNER_CWD/.gemini/settings.json"
+  ! grep -q maxSessionTurns "$CLAUDE_RUNNER_CWD/.gemini/settings.json"   # the raw text does not name it
+  rt_run --max-turns 5
+  [ "$RC" -eq 3 ]
+  grep -qF "sets maxSessionTurns, which would override this job's max_turns=5" "$TEST_TMP/raw.stderr"
+  printf '{\n  // a comment the CLI accepts and jq does not\n  "ui": {}\n}\n' > "$CLAUDE_RUNNER_CWD/.gemini/settings.json"
+  rt_run --max-turns 5
+  [ "$RC" -eq 3 ]
+  grep -qF "cannot be parsed as JSON" "$TEST_TMP/raw.stderr"
+  [ ! -e "$FAKE_GEMINI_ARGS" ]
+}
+
 @test "rt-gemini run: a checkout carrying .gemini/settings.json gets a one-line note" {
   mkdir -p "$CLAUDE_RUNNER_CWD/.gemini"
   printf '{}\n' > "$CLAUDE_RUNNER_CWD/.gemini/settings.json"

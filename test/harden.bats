@@ -25,6 +25,7 @@ setup() {
   install -m 755 /dev/null "$CR_HARDEN_RUNNER_DIR/bin/cr-harden"
   export CR_HARDEN_OWNER="$(id -un):$(id -gn)"
   export CR_HARDEN_STATE="$TEST_TMP/notes"
+  export CR_HARDEN_GEMINI_DIR="$TEST_TMP/gemini-cli"
   export CR_HARDEN_SUDO_LIST="$TEST_TMP/sudo-l"; sudo_list "(root) NOPASSWD: /opt/claude-runner/bin/gh-token" > "$CR_HARDEN_SUDO_LIST"
   mkdir -p "$TEST_TMP/bin"
   printf '#!/usr/bin/env bash\nexit "${FAKE_VISUDO_RC:-0}"\n' > "$TEST_TMP/bin/visudo"; chmod +x "$TEST_TMP/bin/visudo"
@@ -143,4 +144,28 @@ no_temp_left() { [ "$(ls -A "$CR_HARDEN_SUDOERS_D")" = claude ]; }
   grep -qE '^\*[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*[[:space:]]+root[[:space:]]+/opt/claude-runner/bin/cr-harden$' "$REPO_ROOT/cron/claude-runner"
   grep -qF "echo \"$RULE_LINE\" > /etc/sudoers.d/claude" "$REPO_ROOT/provision/01-create-container.sh"
   ! grep -q 'NOPASSWD: *ALL' "$REPO_ROOT/provision/01-create-container.sh"
+}
+
+@test "cr-harden installs the Gemini system settings, usage statistics off, root's and not writable by others (#205)" {
+  harden
+  f="$CR_HARDEN_GEMINI_DIR/settings.json"
+  jq -e '.privacy.usageStatisticsEnabled == false' "$f"
+  [ "$(mode "$f")" = 644 ]
+  [ "$(mode "$CR_HARDEN_GEMINI_DIR")" = 755 ]
+  grep -q "installed $f" "$FAKE_SYSTEMD_CAT_LOG"
+}
+
+@test "cr-harden leaves steady Gemini system settings alone, and restores drifted ones (#205)" {
+  harden
+  f="$CR_HARDEN_GEMINI_DIR/settings.json"
+  : > "$FAKE_SYSTEMD_CAT_LOG"
+  harden
+  ! grep -q gemini-cli "$FAKE_SYSTEMD_CAT_LOG"
+  printf '{"privacy":{"usageStatisticsEnabled":true}}\n' > "$f"; chmod 666 "$f"
+  harden
+  jq -e '.privacy.usageStatisticsEnabled == false' "$f"
+  [ "$(mode "$f")" = 644 ]
+  chmod 777 "$CR_HARDEN_GEMINI_DIR"
+  harden
+  [ "$(mode "$CR_HARDEN_GEMINI_DIR")" = 755 ]
 }

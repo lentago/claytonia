@@ -37,9 +37,12 @@
 #   writable by group or others, which a file this adapter writes as `claude` can
 #   never be. Precedence in 0.66, lowest first: these user settings, then the
 #   checkout's .gemini/settings.json (loaded, because the run trusts the workspace),
-#   then /etc/gemini-cli/settings.json (absent on the workers). `run` notes on
-#   stderr when the checkout carries a .gemini/settings.json, since it can lift the
-#   turn cap or turn usage statistics back on.
+#   then /etc/gemini-cli/settings.json, which bin/cr-harden installs root-owned on
+#   every worker with usage statistics off, so a checkout cannot turn them back on
+#   (#205). A turn cap is per job and cannot live in that shared file, so a job
+#   with max_turns is refused, before the CLI starts, when its checkout's
+#   .gemini/settings.json names maxSessionTurns (parsed, at any depth) or cannot
+#   be parsed. Any other checkout settings file gets a one-line stderr note.
 #   GEMINI_CLI_TRUST_WORKSPACE=true: headless 0.66 exits 55 in an untrusted cwd.
 #   NO_COLOR=1 keeps ANSI codes out of the stderr line a failure comment quotes.
 #   Limits: --max-turns N becomes model.maxSessionTurns N, which allows N model
@@ -48,8 +51,8 @@
 #   under yolo approval; each is ignored with one stderr line. Recording an
 #   unenforced limit in the .meta is #173.
 #   Exit codes: 2 for a usage error or a session id the CLI would refuse; 3 when
-#   the credentials file or the run's Gemini home is unusable, before the CLI
-#   starts; otherwise the CLI's own (0 ok, 1 error, 41 auth, 42 input, 44 sandbox,
+#   the credentials file or the run's Gemini home is unusable, or the checkout
+#   would override the job's turn cap, before the CLI starts; otherwise the CLI's own (0 ok, 1 error, 41 auth, 42 input, 44 sandbox,
 #   52 config, 53 turn cap, 54 tool, 55 untrusted workspace, 130 cancelled).
 #
 # normalize
@@ -125,6 +128,24 @@ case "$cmd" in
     if [ -n "$max_turns" ] && ! [[ $max_turns =~ ^[1-9][0-9]*$ ]]; then
       echo "rt-gemini: --max-turns must be a positive integer" >&2; exit 2
     fi
+    # The checkout's settings outrank this run's, so a cap named there would replace
+    # the job's own (#205). Fail closed. The keys are read parsed, at any depth, so
+    # a JSON-escaped spelling (maxSession\u0054urns) or the legacy top-level key
+    # still counts, and the raw text is checked too. A file jq cannot parse (the CLI
+    # accepts comments) cannot be checked, so it is refused as well.
+    wsset="${cwd:-.}/.gemini/settings.json"
+    if [ -n "$max_turns" ] && [ -f "$wsset" ]; then
+      why=""
+      if ! wskeys="$(jq -r '[paths | .[-1] | strings] | unique[]' "$wsset" 2>/dev/null)"; then
+        why="cannot be parsed as JSON, so it cannot be checked for maxSessionTurns"
+      elif printf '%s\n' "$wskeys" | grep -qx 'maxSessionTurns' || grep -q 'maxSessionTurns' "$wsset" 2>/dev/null; then
+        why="sets maxSessionTurns, which would override this job's max_turns=$max_turns"
+      fi
+      if [ -n "$why" ]; then
+        echo "rt-gemini: the checkout's .gemini/settings.json $why; not running (#205)" >&2
+        exit 3
+      fi
+    fi
 
     if [ ! -f "$GEMINI_ENV" ] || [ ! -r "$GEMINI_ENV" ]; then
       echo "rt-gemini: cannot read the Gemini credentials file $GEMINI_ENV (installed by hand on the worker; see the rt-gemini header); not running" >&2
@@ -166,8 +187,8 @@ case "$cmd" in
     if [ -n "$allowed" ]; then
       echo "rt-gemini: allowed_tools is not passed to Gemini: it is Claude tool syntax, and yolo approval already runs every tool" >&2
     fi
-    if [ -f "${cwd:-.}/.gemini/settings.json" ]; then
-      echo "rt-gemini: the checkout's .gemini/settings.json overrides this run's Gemini settings (turn cap, usage statistics, context files)" >&2
+    if [ -f "$wsset" ]; then
+      echo "rt-gemini: the checkout's .gemini/settings.json overrides this run's Gemini settings (context files); usage statistics stay off through the system settings" >&2
     fi
 
     export GEMINI_CLI_HOME="$ghome" GEMINI_CLI_TRUST_WORKSPACE=true NO_COLOR=1
