@@ -1,6 +1,7 @@
 # ADR-0010: A read-only Google credential on the workers
 
-**Status:** Accepted (2026-10-28).
+**Status:** Accepted (2026-10-28). Updated 2026-11-02 (#177): jobs no longer have
+`sudo`; the credential is still readable by every job.
 
 ## Context
 
@@ -48,8 +49,8 @@ Google through `bin/google-read`.**
 ## Consequences
 
 - **Any job on any worker can read the maintainer's mail, calendar and Drive file
-  list.** Jobs run with permissions skipped and `sudo`, and many read untrusted
-  content (web pages, issues), so a prompt injection could exfiltrate mail. The
+  list.** Jobs run with permissions skipped and, until #177, `sudo`, and many read
+  untrusted content (web pages, issues), so a prompt injection could exfiltrate mail. The
   scopes bound the damage to disclosure: the token cannot send, delete, label or
   change anything, which is narrower than the hosted connector it replaces.
 - Revoking it is one click at myaccount.google.com/permissions (or deleting the
