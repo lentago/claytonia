@@ -41,8 +41,8 @@
 #   every worker with usage statistics off, so a checkout cannot turn them back on
 #   (#205). A turn cap is per job and cannot live in that shared file, so a job
 #   with max_turns is refused, before the CLI starts, when its checkout's
-#   .gemini/settings.json names maxSessionTurns. Any other checkout settings file
-#   gets a one-line stderr note.
+#   .gemini/settings.json names maxSessionTurns (parsed, at any depth) or cannot
+#   be parsed. Any other checkout settings file gets a one-line stderr note.
 #   GEMINI_CLI_TRUST_WORKSPACE=true: headless 0.66 exits 55 in an untrusted cwd.
 #   NO_COLOR=1 keeps ANSI codes out of the stderr line a failure comment quotes.
 #   Limits: --max-turns N becomes model.maxSessionTurns N, which allows N model
@@ -129,12 +129,22 @@ case "$cmd" in
       echo "rt-gemini: --max-turns must be a positive integer" >&2; exit 2
     fi
     # The checkout's settings outrank this run's, so a cap named there would replace
-    # the job's own. Matched as text, so a commented or legacy-format file still
-    # counts: fail closed (#205).
+    # the job's own (#205). Fail closed. The keys are read parsed, at any depth, so
+    # a JSON-escaped spelling (maxSession\u0054urns) or the legacy top-level key
+    # still counts, and the raw text is checked too. A file jq cannot parse (the CLI
+    # accepts comments) cannot be checked, so it is refused as well.
     wsset="${cwd:-.}/.gemini/settings.json"
-    if [ -n "$max_turns" ] && [ -f "$wsset" ] && grep -q 'maxSessionTurns' "$wsset" 2>/dev/null; then
-      echo "rt-gemini: the checkout's .gemini/settings.json sets maxSessionTurns, which would override this job's max_turns=$max_turns; not running (#205)" >&2
-      exit 3
+    if [ -n "$max_turns" ] && [ -f "$wsset" ]; then
+      why=""
+      if ! wskeys="$(jq -r '[paths | .[-1] | strings] | unique[]' "$wsset" 2>/dev/null)"; then
+        why="cannot be parsed as JSON, so it cannot be checked for maxSessionTurns"
+      elif printf '%s\n' "$wskeys" | grep -qx 'maxSessionTurns' || grep -q 'maxSessionTurns' "$wsset" 2>/dev/null; then
+        why="sets maxSessionTurns, which would override this job's max_turns=$max_turns"
+      fi
+      if [ -n "$why" ]; then
+        echo "rt-gemini: the checkout's .gemini/settings.json $why; not running (#205)" >&2
+        exit 3
+      fi
     fi
 
     if [ ! -f "$GEMINI_ENV" ] || [ ! -r "$GEMINI_ENV" ]; then
