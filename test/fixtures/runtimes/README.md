@@ -16,7 +16,7 @@ edited.
 
 What the captures settle or show, for the adapters:
 
-- **Gemini.** `-p ""` with the prompt on stdin works, and `--session-id` takes a caller UUID. `stats.models.<m>.tokens` carries `input`, `prompt`, `cached`, `candidates`, `thoughts`, `tool` and `total`, and the same counts repeat under `stats.models.<m>.roles.main.tokens`, so summing must take `.tokens` only or it double-counts. Whether `input` excludes `cached` is not settled: this run had no cache hits.
-- **Codex.** `exec` reads the prompt from stdin when no `PROMPT` argument is given, and `-o` writes the last message. `turn.completed.usage` has a fifth field the spec did not list, `cache_write_input_tokens`. A failed call still prints events (`error`, `turn.failed`) and exits 1. `exec` also loads the MCP servers in the user's `~/.codex/config.toml`, so a worker's config should carry none.
+- **Gemini.** `-p ""` with the prompt on stdin works, and `--session-id` takes a caller UUID. `stats.models.<m>.tokens` carries `input`, `prompt`, `cached`, `candidates`, `thoughts`, `tool` and `total`, and the same counts repeat under `stats.models.<m>.roles.main.tokens`, so summing must take `.tokens` only or it double-counts. This run had no cache hits; Gemini CLI 0.66 computes `input` as `prompt − cached`, so `input` excludes cache reads (see [bin/rt-gemini header, normalize, “Disjoint (#173)”](../../../bin/rt-gemini)).
+- **Codex.** `exec` reads the prompt from stdin when no `PROMPT` argument is given, and `-o` writes the last message. `turn.completed.usage` has a fifth field the spec did not list, `cache_write_input_tokens`. A failed call still prints events (`error`, `turn.failed`) and exits 1. `rt-codex` now runs `codex exec` with `--ignore-user-config`, so no worker-local config is read (see [bin/rt-codex header, Context](../../../bin/rt-codex)).
 
 Recapture when a CLI's output shape changes, and update the stub header to match.
