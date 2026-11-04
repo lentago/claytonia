@@ -179,7 +179,10 @@ A job is **plain text** (the whole file is the prompt) or a **JSON spec**:
 **Runtime resolution** (#166, #168), the same way: the job spec's `runtime` (or
 `cr-submit -r`) → the project registry's `runtime` → `CLAUDE_RUNNER_RUNTIME` in
 `runner.env` → `claude`. The runtime names its adapter, `bin/rt-<runtime>`, the one
-place a worker reaches an agent CLI. A runtime with no adapter, or a name that is not
+place a worker reaches an agent CLI. Three ship: `claude`, `gemini` and `codex`. What
+an adapter is given and owes back is in
+[docs/runtime-interface.md](docs/runtime-interface.md), the page a new runtime is
+built against. A runtime with no adapter, or a name that is not
 lowercase letters, digits and `-`, is refused at claim time: the job goes to `failed/`
 with exit 8 and a one-line reason in `logs/<runid>.stderr`, before any checkout. Like the
 other failures before the run (unknown project, failed checkout), a refusal posts nothing
