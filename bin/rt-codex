@@ -29,12 +29,19 @@
 #   key, is one stderr line and exit 78 (EX_CONFIG) before the CLI starts. The file's
 #   own output is discarded, so a malformed line never echoes the key.
 #   CLAUDE_CODE_OAUTH_TOKEN, CODEX_API_KEY and CODEX_ACCESS_TOKEN are unset, so the
-#   key is the only credential the CLI holds. 0.166 reads OPENAI_API_KEY
+#   key is the only credential in the CLI's environment. 0.166 reads OPENAI_API_KEY
 #   and CODEX_API_KEY as API-key auth (its doctor warns when several auth variables
 #   are set, hence exactly one). forced_login_method="api" makes Codex refuse ChatGPT
 #   auth ("API key login is required, but ChatGPT is currently being used. Logging
 #   out."), so a cached login is never what authenticates. Both are from the binary;
 #   the first live job confirms them.
+#   The key is not a secret from the agent. The agent runs as `claude`, which must
+#   read codex.env for the CLI to start, so a job can read the file (as it can
+#   token.env for Claude), sandbox or not. The shell policy above keeps the key out
+#   of the agent's commands' environment, not out of its reach. This is #166's
+#   accepted consequence (Secrets; ADR-0010's trade-off): any job on any worker can
+#   spend against the key, and the key's own project scope and usage limits are
+#   what bound the damage.
 #
 # Context: --ignore-user-config skips $CODEX_HOME/config.toml, so nothing on a worker
 #   (an MCP server, a model, a profile) changes a fleet run and nothing needs baking:
@@ -110,7 +117,9 @@
 # Limits: Codex has no native turn or budget cap and no tool allowlist. When
 #   --max-turns, --max-budget-usd or --allowed-tools is set, `run` writes one stderr
 #   line naming what is not enforced. The wall clock (run-job's timeout(1)) applies as
-#   for every runtime; recording the gap in .meta is #173.
+#   for every runtime; recording the gap in .meta is #173. Until then, a Codex job's
+#   spend is bounded only by the wall clock and by the usage limit on the key's
+#   OpenAI project.
 set -uo pipefail
 CODEX_BIN="${CODEX_BIN:-/usr/local/bin/codex}"
 STATE="${XDG_CACHE_HOME:-${HOME:-/home/claude}/.cache}/rt-codex"
