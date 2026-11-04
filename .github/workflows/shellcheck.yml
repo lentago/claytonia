@@ -34,6 +34,7 @@ jobs:
         bin/transcript-shipper-sync
         bin/rt-claude
         bin/rt-gemini
+        bin/rt-codex
         gitops/claytonia-gitops.sh
         gitops/install.sh
         provision/01-create-container.sh
