@@ -10,7 +10,7 @@
 # a worker's DHCP-reservation/Firewalla identity survives any rebuild.
 locals {
   workers = {
-    "claude-runner"   = { vm_id = 110, ip = "192.168.139.10", mac = "BC:24:11:7A:1A:E1" }
+    "claude-runner"   = { vm_id = 110, ip = "192.168.139.10", mac = "BC:24:11:7A:1A:E1", rebuild = "claytonia#65: rebuilt" }
     "claude-runner-2" = { vm_id = 111, ip = "192.168.139.11", mac = "BC:24:11:A8:C7:AF", rebuild = "claytonia#65: rebuilt" }
     "claude-runner-3" = { vm_id = 112, ip = "192.168.139.12", mac = "BC:24:11:05:FD:71", rebuild = "claytonia#65: rebuilt" }
     "claude-runner-4" = { vm_id = 116, ip = "192.168.139.17", mac = "BC:24:11:FA:D4:3E", rebuild = "claytonia#65: rebuilt" }
