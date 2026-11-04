@@ -487,7 +487,7 @@ sources only its own file (#166). The rebuild runbook carries them across a rebu
 ## Metrics
 
 Every job emits a `job_complete` event (cost, turns, duration, status, repo, pr_url,
-worker, submitter) to the on-prem Alloy Loki receiver → Grafana Cloud. Dashboard **"Claude Runner
+worker, submitter) to the on-prem Alloy Loki receiver → Grafana Cloud. Dashboard **"Claytonia — Runner
 Fleet"** (uid `claude-runner-fleet`): spend, success rate, throughput, duration, and
 **open agent PRs awaiting review** — the review front door.
 

@@ -95,7 +95,9 @@ EOF
     OPENAI_FEDERATION_RULE_ID=r OPENAI_IDENTITY_TOKEN_FILE=/f OPENAI_WORKLOAD_IDENTITY_CONTEXT=c
   run_codex
   [ "$RC" -eq 0 ]
-  printf '%s\n' "CODEX_HOME=$HOME/.codex" "OPENAI_API_KEY=$KEY" > "$TEST_TMP/want"
+  # The file's OPENAI_API_KEY reaches the CLI as CODEX_API_KEY, the one name 0.166
+  # exec reads (#171 live gate), and OPENAI_API_KEY does not reach it at all.
+  printf '%s\n' "CODEX_API_KEY=$KEY" "CODEX_HOME=$HOME/.codex" > "$TEST_TMP/want"
   diff "$TEST_TMP/want" "$TEST_TMP/env.seen"
   refute grep -qF "$KEY" "$TEST_TMP/raw" "$TEST_TMP/err" "$FAKE_CODEX_ARGS"
 
