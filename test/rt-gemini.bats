@@ -108,6 +108,17 @@ norm() {
   [ "$(grep -rc -e claude-token -e fake-project-4471 "$JOBS_ROOT/logs" | awk -F: '{n += $NF} END {print n + 0}')" -eq 0 ]
 }
 
+@test "rt-gemini run: an ambient Gemini or Google API key never reaches the CLI over the Vertex account (#204 review)" {
+  export FAKE_GEMINI_ENV="$TEST_TMP/env"
+  export GEMINI_API_KEY=ambient-gemini-key GOOGLE_API_KEY=ambient-google-key GOOGLE_GENAI_API_KEY=ambient-genai-key
+  drop_spec "apikey.json" '{"prompt":"go","runtime":"gemini"}'
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+  [ "$(count_in done)" -eq 1 ]
+  grep -qx 'GOOGLE_GENAI_USE_VERTEXAI=true' "$FAKE_GEMINI_ENV"
+  [ "$(grep -cE '^(GEMINI_API_KEY|GOOGLE_API_KEY|GOOGLE_GENAI_API_KEY)=' "$FAKE_GEMINI_ENV")" -eq 0 ]
+}
+
 @test "rt-gemini run: each run gets its own Gemini home outside the checkout, with the fleet's settings" {
   export FAKE_GEMINI_ENV="$TEST_TMP/env"
   rt_run --max-turns 7

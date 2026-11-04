@@ -455,9 +455,21 @@ owned by kalmia's Terraform, not this repo's — products own their own capacity
   `PATH`); `google-read check` shows the account and scopes. Any job can use it;
   the trade-off is in [ADR-0010](docs/adr/0010-read-only-google-credential-on-workers.md).
 
-Secrets (`token.env`, `gh-app.pem`, `google.env`) live on the workers, never in this repo.
-`gh-app.pem` and `gh-app.env` are `root:root 0600`; `token.env` and `google.env` are
-`root:claude 0640`, because the agent's CLI and `google-read` read them as `claude`.
+- **Gemini (peer runtime, #166/#170)**: `/etc/claude-runner/gemini.env` sets Vertex AI
+  (`GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION=global`)
+  and `GOOGLE_APPLICATION_CREDENTIALS=/etc/claude-runner/gemini-sa.json`, the key of a
+  service account that holds *Vertex AI User* only. Both are installed by hand on every
+  worker. Only `bin/rt-gemini` reads them, for a job whose runtime is `gemini`. Each such
+  run gets its own Gemini home under `~/.local/state/claytonia/gemini/<session-id>`,
+  outside every checkout, which is swept after 7 days. The transcript's durable copy is
+  the one on the NAS.
+
+Secrets (`token.env`, `gh-app.pem`, `google.env`, and the peer-runtime files
+`gemini.env` and `gemini-sa.json`) live on the workers, never in this repo.
+`gh-app.pem` and `gh-app.env` are `root:root 0600`. The rest are `root:claude 0640`,
+because the agent's CLI and `google-read` read them as `claude`. Each runtime adapter
+sources only its own file (#166). The rebuild runbook carries them across a rebuild
+(`provision/README.md` § Rebuilding a worker).
 
 ## Metrics
 

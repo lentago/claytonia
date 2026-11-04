@@ -130,6 +130,10 @@ case "$cmd" in
       echo "rt-gemini: cannot read the Gemini credentials file $GEMINI_ENV (installed by hand on the worker; see the rt-gemini header); not running" >&2
       exit 3
     fi
+    # Clear any ambient Gemini or Google API key first, so the CLI cannot pick one
+    # over the Vertex service account the file selects (review of #204). A key set
+    # by the file itself is honored.
+    unset GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GENAI_API_KEY
     # Export everything the file sets. Its stderr is dropped, because a malformed
     # line could echo part of a value; set -u is lifted, because an unset name in
     # the file would otherwise end this script without a word.
