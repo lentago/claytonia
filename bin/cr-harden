@@ -23,12 +23,18 @@
 #   3. checks that sudo grants the agent user exactly the broker, and logs one error
 #      if anything else grants it more (another sudoers file, the sudo group). It
 #      checks after a change and then hourly, not every minute: an agent without root
-#      cannot add a grant, and each check is a line in the auth log.
+#      cannot add a grant, and each check is a line in the auth log;
+#   4. installs the Gemini CLI's system settings, /etc/gemini-cli/settings.json, as
+#      root's 0644 in a root 0755 directory, with vendor usage statistics off (#205).
+#      Gemini 0.66 ranks that file above a checkout's own .gemini/settings.json, but
+#      loads it only while it and every directory above it are root's and not
+#      writable by group or others. So a repo cannot turn the statistics back on
+#      for a Gemini job. The per-job turn cap stays in bin/rt-gemini.
 # kalmia's runner image writes the same RULE (forge/runner/substrate.sh); keep them
 # equal. Problems are journald notes, each logged once until it changes.
 # Seams for the tests: CR_HARDEN_RUNNER_DIR, CR_HARDEN_SUDOERS_D, CR_HARDEN_APP_DIR, CR_HARDEN_OWNER,
 # CR_HARDEN_VISUDO, CR_HARDEN_SUDO_LIST (a file standing in for `sudo -l -U claude`),
-# CR_HARDEN_STATE (the note memory).
+# CR_HARDEN_STATE (the note memory), CR_HARDEN_GEMINI_DIR (the Gemini system settings dir).
 set -uo pipefail
 [ "$EUID" -eq 0 ] && { PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; }
 
@@ -44,6 +50,8 @@ APP_DIR="${CR_HARDEN_APP_DIR:-/etc/claude-runner}"
 OWNER="${CR_HARDEN_OWNER:-root:root}"
 VISUDO="${CR_HARDEN_VISUDO:-visudo}"
 STATE="${CR_HARDEN_STATE:-/run/cr-harden.notes}"
+GEMINI_DIR="${CR_HARDEN_GEMINI_DIR:-/etc/gemini-cli}"
+GEMINI_SETTINGS='{"privacy":{"usageStatisticsEnabled":false}}'
 
 note_once() { # <priority> <message>
   local m="${2//$'\n'/ }"
@@ -118,6 +126,22 @@ if [ "$changed" = 1 ] || [ "$(date +%M)" = 00 ] || [ -n "${CR_HARDEN_SUDO_LIST:-
     forget 'sudo grants'
   else
     note_once err "sudo grants claude more or less than the token broker; expected only \"$GRANT\", got: $(printf '%s' "${grants:-$list}" | head -c 300 | tr '\n' ';')"
+  fi
+fi
+
+# 4. The Gemini CLI's system settings: usage statistics off, whatever a checkout says.
+gset="$GEMINI_DIR/settings.json"
+if [ "$(cat "$gset" 2>/dev/null)" != "$GEMINI_SETTINGS" ] || [ "$(stat -c '%U:%G %a' "$gset" 2>/dev/null)" != "$OWNER 644" ] \
+   || [ "$(stat -c '%U:%G %a' "$GEMINI_DIR" 2>/dev/null)" != "$OWNER 755" ]; then
+  gtmp="$GEMINI_DIR/.settings.json.cr-harden.$$"
+  if err="$( { mkdir -p "$GEMINI_DIR" && chown "$OWNER" "$GEMINI_DIR" && chmod 0755 "$GEMINI_DIR" \
+               && printf '%s\n' "$GEMINI_SETTINGS" > "$gtmp" && chown "$OWNER" "$gtmp" && chmod 0644 "$gtmp" \
+               && mv -f "$gtmp" "$gset"; } 2>&1 )"; then
+    forget 'could not install the Gemini'
+    say "installed $gset: Gemini usage statistics off on every run (#205)"
+  else
+    rm -f "$gtmp" 2>/dev/null
+    note_once err "could not install the Gemini system settings $gset: $(printf '%s' "$err" | head -c 200 | tr '\n' ' ')"
   fi
 fi
 exit 0
