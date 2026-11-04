@@ -467,9 +467,12 @@ owned by kalmia's Terraform, not this repo's — products own their own capacity
 - **Codex (peer runtime, #166/#171)**: `/etc/claude-runner/codex.env` holds
   `OPENAI_API_KEY`, an OpenAI API key; workers carry no ChatGPT login. It is installed
   `root:claude 0640` by hand on every worker. Only `bin/rt-codex` reads it, for a job
-  whose runtime is `codex`, and it starts the CLI with `forced_login_method="api"`, so
-  no cached login is ever what authenticates. Codex has no budget cap of its own: until
-  #173, the usage limit on the key's OpenAI project bounds what a job can spend.
+  whose runtime is `codex`. Codex runs with `--ignore-user-config` and
+  `forced_login_method="api"`, so no worker-local config and no stored ChatGPT login is
+  ever used. It runs without its own sandbox, as Claude does, because that sandbox makes
+  `.git` read-only and blocks the `gh-token` broker's sudo (#171). Codex has no budget
+  cap of its own: until #173, the usage limit on the key's OpenAI project bounds what a
+  job can spend.
 
 Secrets (`token.env`, `gh-app.pem`, `google.env`, and the peer-runtime files
 `gemini.env`, `gemini-sa.json` and `codex.env`) live on the workers, never in this repo.
