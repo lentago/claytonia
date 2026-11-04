@@ -4,7 +4,7 @@
 # root's alone.
 #
 # cron runs this as root every minute on every worker. The gitops loop deploys it
-# like any bin/ script, so the live workers and every claytonia#65 rebuild arrive at
+# like any bin/ script, so the live workers and every rebuilt worker arrive at
 # the same state with no change to the loop and no hand patch. A rebuilt worker's
 # image may still carry the old blanket rule; the first run replaces it.
 #

@@ -8,13 +8,6 @@ set -euo pipefail
 REPO_URL="${CLAYTONIA_REPO_URL:-https://github.com/lentago/claytonia.git}"
 REPO_DIR="${CLAYTONIA_REPO_DIR:-/opt/claytonia}"
 
-# A worker still on the pre-rename loop gets rebuilt, not a second loop beside
-# it: the two take different locks and would deploy concurrently (#65).
-if [ -e /etc/systemd/system/bullpen-gitops.timer ]; then
-  echo "this worker still runs bullpen-gitops — rebuild it (claytonia#65) instead" >&2
-  exit 1
-fi
-
 if [ ! -d "$REPO_DIR/.git" ]; then
   git clone "$REPO_URL" "$REPO_DIR"
 fi

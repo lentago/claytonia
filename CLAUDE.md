@@ -5,14 +5,14 @@ Lentago Labs agent-fleet system: self-hosted headless coding agents that run
 Lentago Labs jobs. Lead with that name and one-line role.
 
 Renamed from `bullpen` on 2026-07-04; *the bullpen* stays as the fleet's nickname.
-**The on-host layer is mid-rename (#65):** this repo carries the new names —
-`/opt/claytonia`, `claytonia-gitops.{sh,service,timer}`,
-`/usr/local/sbin/claytonia-gitops`, `CLAYTONIA_*` env vars — while a worker not yet
-rebuilt still runs the old `bullpen-gitops` loop from `/opt/bullpen`. Workers move
-over only by a rebuild, one at a time: `terraform/` recreates the LXC from the v2
-kalmia runner image, which carries the new loop. Never install the new loop beside
-the old one (`gitops/install.sh` refuses). Claude Code is today's
-worker runtime; platform-agnostic worker support is the intended scope expansion.
+The on-host rename finished on 2026-11-04 (#65): every worker was rebuilt from the
+v3 kalmia runner image and runs `/opt/claytonia`, `claytonia-gitops.{sh,service,timer}`,
+`/usr/local/sbin/claytonia-gitops` and `CLAYTONIA_*` env vars. A worker changes only
+by a rebuild through its Terraform trigger (`terraform/README.md` § Rebuilding a
+worker, with the runbook in `provision/rebuild/`), never by repair on the box.
+Claude Code is today's main worker runtime. Gemini CLI and Codex CLI are being
+added behind the same adapter seam (#166); platform-agnostic workers are the
+intended scope expansion (#47).
 
 This repo IS the fleet's source of truth. Changes here deploy to live workers via the
 gitops loop (`claytonia-gitops.timer`, every 5 min, redeploys on drift). So a merged PR

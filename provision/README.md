@@ -32,8 +32,13 @@ shipper (below).
    loop; sizing defaults live in the module. See
    [`terraform/README.md`](../terraform/README.md) § Scale-out.
 2. **Bind-mount the NAS job dir** (root@pam-only, so not baked): `pct set <id>
-   -mp0 <hostpath>/claude-jobs,mp=/srv/jobs`, plus a `RequiresMountsFor=` drop-in
-   on `pve-container@<id>.service` so the CT starts after the mount.
+   -mp0 /mnt/neptune-lentago/claude-jobs,mp=/srv/jobs`, plus a drop-in on
+   `pve-container@<id>.service` so the CT starts after the mount:
+   `/etc/systemd/system/pve-container@<id>.service.d/wait-for-nas.conf` holding
+   `[Unit]` and `RequiresMountsFor=/mnt/neptune-lentago`. The path must be the
+   bind source's mount on pve4. An older drop-in that named
+   `/mnt/neptune-pitzilabs` ordered against nothing; #65's rebuilds replaced all
+   of them.
 3. **Inject the secrets** — the image ships empty placeholders; real values are
    never baked:
    - OAuth: `claude setup-token` → `claude-set-token` (as root:
@@ -42,9 +47,8 @@ shipper (below).
      and the App private key to `/etc/claude-runner/gh-app.pem`, both `600 root:root`
      (#177; `cr-harden` sets them so within a minute if they land otherwise);
      install the App on the repos this worker should touch.
-4. **First boot** — the image's baked, enabled gitops timer pulls `main`
-   (`claytonia-gitops.timer` from runner image v2; v1 carries the pre-rename
-   `bullpen-gitops.timer`, #65), the
+4. **First boot** — the image's baked, enabled gitops timer
+   (`claytonia-gitops.timer`, runner image v3) pulls `main`, the
    pollers start, and the worker begins claiming jobs. There are no scripts to
    run: it is live once it has its NAS mount and token. Within a minute of that
    first pull, `cr-harden` (cron, as root) replaces whatever sudoers rule the image
@@ -100,6 +104,35 @@ The **transcript shipper** comes along for free on a clone: its Alloy service, t
 `/etc/default/alloy-transcript` push token are all copied. Because the shipper
 labels its stream with `constants.hostname` (not a baked value), the clone
 self-labels with its own new hostname — no per-clone reconfiguration needed.
+
+## Rebuilding a worker
+
+A rebuild recreates one worker from the current runner image through its
+Terraform trigger ([`terraform/README.md`](../terraform/README.md) § Rebuilding
+a worker). The scripts are in [`rebuild/`](rebuild/). They run from the
+workstation, one VMID at a time, through pve4:
+
+```bash
+ssh root@pve.local "ssh pve4 bash -s -- <vmid>" < provision/rebuild/<script>
+```
+
+They read no secret values and print none. Each refuses a VMID that is not a
+`claude-runner*` worker in the `claytonia` pool. One worker at a time, in this order:
+
+| Step | Script | What it does |
+|---|---|---|
+| R-1 | `r1-unpushed.sh` | Read-only, as `claude`: list clones under `~/work` and `~/private` with dirty files, unpushed commits or stashes. Gitignored files are counted as `INFO`, not flagged. Archive anything worth keeping as `git format-patch` files plus a `NOTE.md` under `/srv/jobs/archive/rebuild-<host>/` before going on. |
+| R-2 | `r2-stage-secrets.sh` | Copy `token.env`, `gh-app.env`, `gh-app.pem`, `google.env` and `/etc/default/alloy-transcript` into `/root/rebuild-<vmid>` on pve4 (root-only). Also copy the peer-runtime files `gemini.env`, `gemini-sa.json` and `codex.env` when the worker has them (#166). Stops on an empty file. |
+| R-3 | `r3-drain.sh` | Stop `claude-inbox.timer`, then wait until the worker holds no job (heartbeat kept on). If the service state can't be read, the worker does not count as drained. |
+| — | the rebuild PR | Arm it only after R-3 prints `DRAINED`. Merging it is the rebuild. |
+| R-4–R-6 | `r4-r6-restore.sh` | Restore the secrets: `token.env`, `google.env` and the runtime files `640 root:claude`; `gh-app.*` `600 root:root`. Wait until `cr-harden` has narrowed sudoers to the broker. Only then attach the NAS (mp0 and the drop-in above), reboot, reinstall the transcript shipper, and shred the staging copy. If it stops part-way, it says so and keeps the staging copy: fix the cause and rerun it. A rerun repeats every step, including the reboot. |
+| R-7 | on the workstation | Remove the worker's old host key: `ssh-keygen -R <ip>`. Compare the new key's fingerprint inside the CT with `ssh-keyscan <ip>` before accepting it. The `ssh claude-runner` alias needs nothing else, because the image ships the operator key. |
+| verify | `verify.sh` | After the first gitops pass logs `deploy complete`: shape, pool, mount, drop-in, units, loop, secret modes, broker-only sudo, CLIs. It must end `ALL OK`. Runtime secrets not yet installed are reported as `INFO … absent`. |
+| gate | `gate.sh` | Queue one read-only Haiku job and start this worker's poller at once. It prints `GATE OK` only when the job is `DONE` and this worker's journal shows the run. Another worker can win the claim race, so on `GATE FAIL` rerun it. The next worker starts only after `GATE OK`. |
+
+The runtime secrets are installed by hand on every worker, `root:claude 0640`,
+and R-2/R-4 carry them across a rebuild. A worker rebuilt before they exist
+simply has none to carry.
 
 ## Masked first-boot units
 

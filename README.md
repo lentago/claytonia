@@ -35,11 +35,10 @@ operator, not a software engineer — please don't read this repo as a portfolio
 of coding ability.
 
 The fleet keeps its nickname, **the bullpen**: a pool of ready workers called up
-when needed. Agents idle until a job arrives, then one gets the call. The
-on-host layer is taking the new name under #65 (`/opt/claytonia`,
-`claytonia-gitops.*`, `CLAYTONIA_*` env vars). Until a worker is rebuilt from the
-v2 runner image it still runs `bullpen-gitops` from `/opt/bullpen` with
-`BULLPEN_*` defaults.
+when needed. Agents idle until a job arrives, then one gets the call. On the
+workers everything carries the claytonia name (`/opt/claytonia`,
+`claytonia-gitops.*`, `CLAYTONIA_*` env vars) since all five were rebuilt from the
+v3 runner image on 2026-11-04 (#65).
 
 ## Architecture at a glance
 
