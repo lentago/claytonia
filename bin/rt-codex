@@ -34,7 +34,9 @@
 #   OPENAI_WORKLOAD_IDENTITY_CONTEXT) and of the other auth variables are cleared
 #   first, so nothing in run-job's environment can redirect auth or the endpoint.
 #   CODEX_HOME is pinned to ~/.codex, so an ambient one cannot bring another login or
-#   config. CODEX_API_KEY, CODEX_ACCESS_TOKEN and the Claude and Gemini credentials
+#   config. `run` creates it (0700) when it is missing, as on a freshly built worker,
+#   because 0.166 will not start without it; a home it cannot create or write is one
+#   stderr line and exit 78 before the CLI starts. CODEX_API_KEY, CODEX_ACCESS_TOKEN and the Claude and Gemini credentials
 #   are unset, so the key is the only credential in the CLI's environment.
 #   0.166 reads OPENAI_API_KEY and CODEX_API_KEY as API-key auth (its doctor warns
 #   when several auth variables are set, hence exactly one). forced_login_method="api"
@@ -186,6 +188,13 @@ case "$cmd" in
           OPENAI_WORKLOAD_IDENTITY_CONTEXT CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY \
           ANTHROPIC_AUTH_TOKEN GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GENAI_API_KEY
     export CODEX_HOME="$CODEX_DIR"
+    # 0.166 refuses to start when CODEX_HOME names a directory that does not exist
+    # ("Error finding codex home"), and a freshly built worker has none until the
+    # first Codex run (first live job, #171), so it is created here, private.
+    if ! ( umask 077; mkdir -p "$CODEX_DIR" ) 2>/dev/null || [ ! -w "$CODEX_DIR" ]; then
+      echo "rt-codex: cannot create or write Codex's home $CODEX_DIR; not running" >&2
+      exit "$EX_CONFIG"
+    fi
     # Codex keeps one session file per run under ~/.codex/sessions and never prunes
     # them. run-job copies each to the NAS at the end of its run, so files older than
     # 7 days are swept here, as rt-gemini sweeps its per-run homes (#203 review).
