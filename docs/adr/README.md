@@ -1,11 +1,12 @@
 # Architecture decision records
 
-These entries were **reconstructed on 2026-08-13** from this repo's commit
-history, issues and pull requests, `CLAUDE.md`, `docs/roadmap.md`, and Lentago
-Labs fleet records — the fleet-wide ADR reconstruction pass. They were not
-written at the time each decision was made; they recover decisions the fleet had
-already been living by. The **Status date on each entry is the original decision
-date** (the earliest firm evidence in the repo), and each is tagged
+Entries ADR-0001 to ADR-0008 were **reconstructed on 2026-08-13** from this
+repo's commit history, issues and pull requests, `CLAUDE.md`, `docs/roadmap.md`,
+and Lentago Labs fleet records — the fleet-wide ADR reconstruction pass. They
+were not written at the time each decision was made; they recover decisions the
+fleet had already been living by. Later ADRs (0009 onward) are written when the
+decision is made. The **Status date on each reconstructed entry is the original
+decision date** (the earliest firm evidence in the repo), and each is tagged
 `reconstructed 2026-08-13`. Where a decision is a standing invariant with no
 single dated commit, the date is the earliest recorded evidence and is marked as
 such in the entry. Every issue/PR number, file, and date cited below was checked
