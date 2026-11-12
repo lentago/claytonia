@@ -28,15 +28,30 @@
 #       Exit 0 when M is a model this runtime takes, 1 when it is not. run-job asks
 #       only about a model the job spec names, and refuses the job at claim time
 #       on a 1 (#168). Each adapter owns its own rule; none knows another's.
+#   rt-<runtime> enforces --limit turns|budget
+#       Exit 0 when this runtime enforces that cap itself (max_turns, max_budget_usd),
+#       1 when it does not; 2 for any other limit name. run-job asks only about a
+#       limit the job sets, and records the answer in the .meta as
+#       turns_enforced= / budget_enforced= yes|no (#173). The wall clock is not
+#       asked about: timeout(1) enforces it outside every adapter.
 #
 # Normalized result:
 #   {runtime, model, session_id, status, is_error, turns,
-#    tokens: {in, cached, out, thinking}, cost_usd, final_text}
+#    tokens: {in, cached, cache_write, out, thinking},
+#    tokens_by_model: {"<model id>": {in, cached, cache_write, out, thinking}},
+#    cost_usd, final_text}
 #   status    ok | max_turns | max_budget | error. run-job maps max_turns and
 #             max_budget to limit=turns|budget and fails any status but ok.
 #   is_error  the runtime itself reported the run as failed; run-job sets exit 1.
-#   tokens    disjoint (#173): `in` excludes cached reads; `out` excludes thinking
-#             when the runtime reports thinking separately, else `thinking` is null.
+#   tokens    five disjoint counts (#173); each input token is in exactly one of
+#             in (the uncached rate), cached (cache reads) and cache_write (cache
+#             writes); out excludes thinking when the runtime reports thinking
+#             separately, else thinking is null. A count the runtime does not
+#             report is null; all five are null when it reported no usage.
+#   tokens_by_model
+#             the same five counts per model the run used, which sum to `tokens`
+#             field by field. Keyed "unknown" when the runtime reports usage but
+#             not which model it was; null exactly when all of `tokens` is null.
 #   cost_usd  as the runtime reports it; null when it reports none (never 0).
 #
 # For Claude: `run` is the exact command run-job ran before the seam existed, and
@@ -47,11 +62,11 @@ CLAUDE_BIN="${CLAUDE_BIN:-/home/claude/.local/bin/claude}"
 # the CLI; run-job holds no vendor secret (#170).
 TOKEN_ENV="${CLAUDE_RUNNER_TOKEN_ENV:-/etc/claude-runner/token.env}"
 
-usage() { echo "usage: rt-claude run|normalize|transcript|accepts-model [options]  (see the header)" >&2; exit 2; }
+usage() { echo "usage: rt-claude run|normalize|transcript|accepts-model|enforces [options]  (see the header)" >&2; exit 2; }
 
 cmd="${1:-}"; [ -n "$cmd" ] || usage; shift
 cwd=""; runid=""; sid=""; model=""; max_turns=""; max_budget=""; allowed=""
-raw=""; result=""; txt=""; out=""
+raw=""; result=""; txt=""; out=""; limit=""
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || { echo "rt-claude: $1 needs a value" >&2; exit 2; }
   case "$1" in
@@ -66,6 +81,7 @@ while [ $# -gt 0 ]; do
     --result)         result="$2" ;;
     --txt)            txt="$2" ;;
     --out)            out="$2" ;;
+    --limit)          limit="$2" ;;
     *) echo "rt-claude: unknown option $1" >&2; exit 2 ;;
   esac
   shift 2
@@ -103,14 +119,37 @@ case "$cmd" in
     # .meta as-is). The braces keep a failed redirect's shell message off stderr.
     if { jq -c --arg model "$model" --arg sid "$sid" '
       def str: if . == null then "" else tostring end;
+      def num: if type == "number" then . else error("not a number") end;
+      def none5: {in: null, cached: null, cache_write: null, out: null, thinking: null};
+      def sum5: {in: (map(.in) | add), cached: (map(.cached) | add),
+                 cache_write: (map(.cache_write) | add), out: (map(.out) | add), thinking: null};
+      # Claude reports cache writes and cache reads apart from input, and folds
+      # thinking into output, so thinking is null. modelUsage is the whole session,
+      # every model and subagent (its costUSD sums to total_cost_usd); .usage covers
+      # only part of it, so it is read only when modelUsage is missing, and its
+      # model is unknown. A malformed block yields null counts; it must never cost
+      # the job its result.
+      def per_model: {in: (.inputTokens | num), cached: (.cacheReadInputTokens // 0 | num),
+                      cache_write: (.cacheCreationInputTokens // 0 | num),
+                      out: (.outputTokens | num), thinking: null};
+      def from_usage: .usage | if type == "object" then . else error("no usage") end
+        | {in: (.input_tokens | num), cached: (.cache_read_input_tokens // 0 | num),
+           cache_write: (.cache_creation_input_tokens // 0 | num),
+           out: (.output_tokens | num), thinking: null};
+      def by_model:
+        (try (.modelUsage | if type == "object" and length > 0
+                            then with_entries(.value = (.value | per_model))
+                            else error("no modelUsage") end) catch null) as $mu
+        | if $mu != null then $mu else (try {unknown: from_usage} catch null) end;
       if type != "object" then
         {runtime: "claude", model: (if $model == "" then null else $model end),
          session_id: $sid, status: "ok", is_error: false, turns: null,
-         tokens: {in: null, cached: null, out: null, thinking: null},
+         tokens: none5, tokens_by_model: null,
          cost_usd: null, final_text: null}
       else
         (.subtype | str) as $sub
         | (((.is_error // false) | str) == "true") as $err
+        | by_model as $tbm
         | {runtime: "claude",
            model: (if $model == "" then null else $model end),
            session_id: (if $sid == "" then .session_id else $sid end),
@@ -120,17 +159,8 @@ case "$cmd" in
                     else "ok" end),
            is_error: $err,
            turns: .num_turns,
-           # Claude reports cache writes and cache reads apart from input_tokens,
-           # and folds thinking into output_tokens. A malformed usage block yields
-           # null counts; it must never cost the job its result.
-           tokens: (try (.usage as $u
-             | if ($u | type) != "object" then error("no usage") else . end
-             | {in: (if $u.input_tokens == null then null
-                     else $u.input_tokens + ($u.cache_creation_input_tokens // 0) end),
-                cached: $u.cache_read_input_tokens,
-                out: $u.output_tokens,
-                thinking: null})
-             catch {in: null, cached: null, out: null, thinking: null}),
+           tokens: (if $tbm == null then none5 else ([$tbm[]] | sum5) end),
+           tokens_by_model: $tbm,
            cost_usd: .total_cost_usd,
            final_text: (.result // .text // "")}
       end' "$raw" > "$result.tmp"; } 2>/dev/null
@@ -155,6 +185,14 @@ case "$cmd" in
     case "$base" in
       haiku|sonnet|opus|fable|opusplan|default|claude-*) exit 0 ;;
       *) exit 1 ;;
+    esac
+    ;;
+
+  enforces)
+    # Both caps are native: run passes --max-turns and --max-budget-usd to the CLI.
+    case "$limit" in
+      turns|budget) exit 0 ;;
+      *) usage ;;
     esac
     ;;
 

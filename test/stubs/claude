@@ -3,7 +3,10 @@
 # (as the real headless `claude -p` does) and prints a result JSON in the same
 # shape run-job parses (.result / .is_error / .total_cost_usd / .num_turns).
 # Behaviour is picked by FAKE_CLAUDE_MODE so tests can drive done vs failed:
-#   ok      -> valid success JSON, exit 0                (routes to done/)
+#   ok      -> valid success JSON, exit 0                (routes to done/), with
+#              usage and modelUsage shaped like the real CLI's (#173): modelUsage
+#              is the whole session, two models, and adds up to more than usage,
+#              which covers only part of it, as on real runs with subagents
 #   error   -> valid JSON with is_error=true, exit 0     (run-job sets rc=1 -> failed/)
 #   nonzero -> non-JSON on stdout, exit 9                (rc=9 -> failed/)
 #   turns   -> subtype error_max_turns, is_error=false   (limit=turns -> failed/)
@@ -38,7 +41,7 @@ case "${FAKE_CLAUDE_MODE:-ok}" in
     exit 0
     ;;
   *)
-    printf '{"result":"stub ok","is_error":false,"total_cost_usd":0.0001,"num_turns":1}\n'
+    printf '%s\n' '{"result":"stub ok","is_error":false,"total_cost_usd":0.0001,"num_turns":1,"usage":{"input_tokens":12,"cache_creation_input_tokens":300,"cache_read_input_tokens":4000,"output_tokens":55},"modelUsage":{"claude-opus-5-5":{"inputTokens":20,"outputTokens":120,"cacheReadInputTokens":9000,"cacheCreationInputTokens":500,"thinkingTokens":30,"costUSD":0.00008},"claude-haiku-5-5":{"inputTokens":800,"outputTokens":40,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"thinkingTokens":10,"costUSD":0.00002}}}'
     exit 0
     ;;
 esac

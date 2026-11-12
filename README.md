@@ -487,7 +487,7 @@ sources only its own file (#166). The rebuild runbook carries them across a rebu
 ## Metrics
 
 Every job emits a `job_complete` event (cost, turns, duration, status, repo, pr_url,
-worker, submitter) to the on-prem Alloy Loki receiver → Grafana Cloud. Dashboard **"Claytonia — Runner
+worker, submitter, runtime, tokens) to the on-prem Alloy Loki receiver → Grafana Cloud. Dashboard **"Claytonia — Runner
 Fleet"** (uid `claude-runner-fleet`): spend, success rate, throughput, duration, and
 **open agent PRs awaiting review** — the review front door.
 
@@ -496,6 +496,17 @@ Fleet"** (uid `claude-runner-fleet`): spend, success rate, throughput, duration,
 field, never a stream label**: it is per-session, so as a label it would mint a stream
 per submitter. Query it with `| json | submitter="alice@laptop"` on the existing
 `{job="claude_runner"}` stream.
+
+**Runtime and tokens** (#173). `runtime` (`claude`, `gemini`, `codex`) is a **stream
+label** on `job_started`, `job_running` and `job_complete`, three values; an event
+without one is `claude`. `job_complete` also carries, as **line fields**, the five
+disjoint token counts `tokens_in`, `tokens_cached`, `tokens_cache_write`, `tokens_out`
+and `tokens_thinking`, and `tokens_by_model` (the same five per model, which is what
+the dashboard prices non-Claude jobs from; definitions in
+[docs/runtime-interface.md](docs/runtime-interface.md)). **`cost_usd` is `null` when the
+runtime reported no cost**: every Gemini and Codex job, and a Claude run that printed
+no JSON. It is never `0`. The `.meta` records the same, plus `turns_enforced` and
+`budget_enforced` (`yes`/`no`, blank when the job set no such limit).
 
 **Worker liveness.** Besides touching `workers/<host>.alive`, `claude-heartbeat.service`
 runs `cr-emit alive` every 30s beat (one `worker_alive` event per worker per 30s), pushing

@@ -54,7 +54,7 @@ the code disagree, the code wins, and this page should be fixed.
 
 One executable, `bin/rt-<runtime>`, shipped in `bin/` and deployed by the gitops
 loop with the rest of `bin/`. It must pass `bash -n`, or it blocks the whole deploy.
-Four subcommands; any other subcommand or option exits 2.
+Five subcommands; any other subcommand or option exits 2.
 
 ```
 rt-<runtime> run --cwd DIR --runid ID --session-id UUID [--model M]
@@ -62,6 +62,7 @@ rt-<runtime> run --cwd DIR --runid ID --session-id UUID [--model M]
 rt-<runtime> normalize --raw F --result F --txt F --session-id UUID [--model M]
 rt-<runtime> transcript --session-id UUID --out F
 rt-<runtime> accepts-model --model M
+rt-<runtime> enforces --limit turns|budget
 ```
 
 ### `run`
@@ -107,7 +108,8 @@ Called after the run with the raw output. It writes the **normalized result** to
 | `status` | `ok` \| `max_turns` \| `max_budget` \| `error` |
 | `is_error` | the runtime itself reported the run as failed |
 | `turns` | a count of the run's steps; what it counts is runtime-specific (below) |
-| `tokens` | `{in, cached, out, thinking}`, **disjoint** (#173): `in` excludes cache reads; `out` excludes thinking when the runtime reports thinking separately, else `thinking` is `null` |
+| `tokens` | `{in, cached, cache_write, out, thinking}`, five **disjoint** counts (#173). Each input token is in exactly one of `in` (billed at the uncached rate), `cached` (cache reads) and `cache_write` (cache writes); `out` excludes thinking when the runtime reports thinking separately, else `thinking` is `null`. A count the runtime does not report is `null`; all five are `null` when it reported no usage |
+| `tokens_by_model` | `{"<model id>": {in, cached, cache_write, out, thinking}}`: the same five counts for each model the run used, summing to `tokens` field by field. Keyed `unknown` when the runtime reports usage but not its model; `null` exactly when all of `tokens` is `null`. It is what the dashboard prices from (lentago/drosera#304): a spec's `model` is often `default`, and one Gemini job spans several models |
 | `cost_usd` | as the runtime reports it; **`null` when it reports none, never `0`** |
 | `final_text` | the agent's last message: where the PR URL is found, and what the claim comment quotes |
 
@@ -128,6 +130,11 @@ Rules:
   `.meta`).
 - Any `status` but `ok` fails the job.
 - `cost_usd` and `turns` land in `.meta` as-is.
+- The five token counts land in `.meta` as `tokens_in`, `tokens_cached`,
+  `tokens_cache_write`, `tokens_out` and `tokens_thinking`, and `tokens_by_model` as
+  one line of compact JSON; a `null` is written blank. `cr-emit` carries them on the
+  `job_complete` line, never as labels, and turns a blank `cost_usd` into `null`,
+  never `0`.
 - A wall-clock kill is `limit=timeout`, exit 7, whatever the result says.
 
 ### `transcript`
@@ -142,6 +149,16 @@ Exit 0 when the model is one this runtime takes, 1 when it is not. `run-job` ask
 only about a model the job spec names, and refuses the job at claim time on a 1, so
 a Claude model can never reach Gemini or Codex. Each adapter owns its own rule, and
 none knows another's.
+
+### `enforces`
+
+Exit 0 when the runtime enforces that cap itself (`turns` for `max_turns`, `budget`
+for `max_budget_usd`), 1 when it does not; any other limit name exits 2. `run-job`
+asks only about a limit the job sets, after the run, and records the answer in
+`.meta` as `turns_enforced=` and `budget_enforced=` (`yes` or `no`; blank when the
+job set no such limit), so a limit that was set but not enforced is recorded, never
+dropped silently (#166, #173). The wall clock is never asked about: `timeout(1)`
+enforces it outside every adapter.
 
 ## Secrets
 
@@ -170,10 +187,12 @@ An adapter whose file is missing refuses before the CLI starts, with one stderr 
 | session id | run-job's UUID | run-job's UUID | Codex mints its own thread id; `normalize` reports it |
 | repo `CLAUDE.md` | native | loaded via `context.fileName` | loaded via `project_doc_fallback_filenames` |
 | settings | the CLI's own | a fresh Gemini home per run, outside the checkout; a root-owned `/etc/gemini-cli/settings.json` from `cr-harden` keeps usage statistics off (#205) | per-run `-c` overrides only; no worker config is read |
-| `max_turns` | native | `model.maxSessionTurns`; a capped job is refused if the checkout's own `.gemini/settings.json` names one (#205) | not enforced (one stderr line) |
-| `max_budget_usd` | native | not enforced (one stderr line) | not enforced (one stderr line) |
+| `max_turns` | native (`turns_enforced=yes`) | `model.maxSessionTurns` (`turns_enforced=yes`); a capped job is refused if the checkout's own `.gemini/settings.json` names one (#205) | not enforced: one stderr line, `turns_enforced=no` |
+| `max_budget_usd` | native (`budget_enforced=yes`) | not enforced: one stderr line, `budget_enforced=no` | not enforced: one stderr line, `budget_enforced=no` |
 | `allowed_tools` | native | not passed (one stderr line) | not passed (one stderr line) |
 | `turns` counts | model turns | tool calls | completed action items (commands, file changes, tool calls) |
+| `tokens` | summed over `modelUsage`, the whole session (`inputTokens` → `in`, `cacheReadInputTokens` → `cached`, `cacheCreationInputTokens` → `cache_write`, `outputTokens` → `out`, thinking folded in so `null`); `.usage`, which covers only part of the session, only when `modelUsage` is missing | per model in `.stats.models`: `input` + `tool` → `in` (0.66's `input` is already `prompt` − `cached`), `cached`, `candidates` → `out`, `thoughts` → `thinking`; `cache_write` `null` | `turn.completed` usage, summed: `input` − `cached_input` − `cache_write_input` → `in`, `cached_input`, `cache_write_input`, `output` − `reasoning_output` → `out`, `reasoning_output` → `thinking` |
+| `tokens_by_model` keys | `modelUsage`'s model ids (`unknown` on the `.usage` fallback) | `.stats.models`' model ids: the router, the main model and the loop detector, a zero-token one included | the model the session transcript's `turn_context` names; `unknown` when it names none or several, or there is no transcript |
 | `cost_usd` | reported | `null` | `null` |
 | transcript | `~/.claude/projects/…/<uuid>.jsonl` | the run home's `chats/session-*.jsonl` | `~/.codex/sessions/**/*<thread>.jsonl` |
 | local state | Claude Code's own session files, kept by its own retention | the per-run Gemini home, swept after 7 days | `~/.codex/sessions` files, swept after 7 days; the adapter's per-run hand-off files (last message, thread id) under `~/.cache/rt-codex`, swept after 2 days |
@@ -198,7 +217,7 @@ The acceptance test (fleet principle, 2026-07-04): **adding a runtime does not t
 an existing runtime's code path**, and needs no change to the dispatch spec beyond
 the optional `runtime` key.
 
-1. `bin/rt-<name>`, implementing the four subcommands above. Start from the header
+1. `bin/rt-<name>`, implementing the five subcommands above. Start from the header
    of `bin/rt-claude`.
 2. A stub CLI under `test/stubs/<cli>` that replays real captured output from
    `test/fixtures/runtimes/` (#169), and `test/rt-<name>.bats`.
@@ -216,10 +235,8 @@ the optional `runtime` key.
 
 ## Not yet in the interface
 
-- **`.meta` runtime and token fields**, and an enforced/not-enforced record per
-  limit (#173). Today the unenforced limits appear only as a stderr line. A Codex
-  job's `.meta` `session_id` holds run-job's UUID; Codex's thread id is in its
-  `result.json`.
+- **Codex's thread id in `.meta`.** A Codex job's `.meta` `session_id` holds
+  run-job's UUID; Codex's own thread id is only in its `result.json`.
 - **A per-runtime CLI update path** (#172). `cr-update` updates Claude Code only.
 - **Runtime disclosure** on agent PRs and in the preamble's commit trailer (#174),
   with the wording set by lentago/.github#317.

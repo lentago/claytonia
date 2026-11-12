@@ -360,13 +360,13 @@ fi
 
 # notice, not info: claude-inbox.service sets LogLevelMax=notice (#118).
 echo "run-job START runid=$runid project=${project:-none} runtime=$runtime model=${model:-default} cwd=$cwd" | systemd-cat -t claude-runner -p notice
-cr-emit started "$runid" "${project:-}" "${model:-}" "${submitter:-}" 2>/dev/null || true
+cr-emit started "$runid" "${project:-}" "${model:-}" "${submitter:-}" "$runtime" 2>/dev/null || true
 start=$(date -u +%s)
 # Heartbeat: mark this worker as underway in Loki (event=job_running) every 10s while
 # the job is in flight, so the "Runners underway" dashboard panel has an in-flight
 # signal (the job_complete event only lands at the end). One beat fires immediately so
 # even sub-10s jobs register. Best-effort; killed as soon as the job returns.
-( while :; do cr-emit running "$runid" "${project:-}" "${model:-}" "${submitter:-}" 2>/dev/null; sleep 10; done ) &
+( while :; do cr-emit running "$runid" "${project:-}" "${model:-}" "${submitter:-}" "$runtime" 2>/dev/null; sleep 10; done ) &
 hb_pid=$!
 # Wall-clock bound: TERM at timeout_sec, KILL $KILL_AFTER s later. Without it a
 # wedged CLI holds this worker forever — its heartbeat stays fresh, so the reaper
@@ -388,11 +388,19 @@ normargs=( --raw "$outjson" --result "$outresult" --txt "$outtxt" --session-id "
 [ -f "$outtxt" ] || cp "$outjson" "$outtxt" 2>/dev/null || true
 
 cost=""; turns=""; status=""; limit=""
+tok_in=""; tok_cached=""; tok_write=""; tok_out=""; tok_thinking=""; tok_models=""
+# _tok <field> — one of the result's five disjoint token counts (#173), or blank
+# when the runtime reported none (null) or the field is not a number.
+_tok() { jq -r --arg k "$1" '.tokens[$k] | if type == "number" then tostring else empty end' "$outresult" 2>/dev/null; }
 if jq -e . "$outresult" >/dev/null 2>&1; then
   [ "$(jq -r '.is_error // false' "$outresult" 2>/dev/null)" = "true" ] && rc=1
   cost="$(jq -r '.cost_usd // empty' "$outresult" 2>/dev/null)"
   turns="$(jq -r '.turns // empty' "$outresult" 2>/dev/null)"
   status="$(jq -r '.status // empty' "$outresult" 2>/dev/null)"
+  tok_in="$(_tok in)"; tok_cached="$(_tok cached)"; tok_write="$(_tok cache_write)"
+  tok_out="$(_tok out)"; tok_thinking="$(_tok thinking)"
+  # The per-model counts, as one line of compact JSON (blank when null).
+  tok_models="$(jq -c '.tokens_by_model | if type == "object" then . else empty end' "$outresult" 2>/dev/null)"
 fi
 # Fail closed: the adapter read the output but could not file its result, so the
 # runtime's own verdict (an is_error, a limit hit) is unknown. Never file that as
@@ -476,6 +484,15 @@ if [ -n "${project:-}" ] && [ "$workflows" != 1 ]; then
   unset _tr
 fi
 
+# _enforced <turns|budget> <the job's limit> — yes when the adapter enforces that
+# cap itself (rt-<runtime> enforces), no when it does not or cannot say; blank when
+# the job set no such limit. A limit set but not enforced is recorded, never dropped
+# silently (#166, #173).
+_enforced() {
+  [ -n "$2" ] || return 0
+  if "$rt" enforces --limit "$1" >/dev/null 2>&1; then echo yes; else echo no; fi
+}
+
 {
   echo "runid=$runid"; echo "exit=$rc"; echo "duration_sec=$dur"
   echo "project=${project:-}"; echo "repo=${repo:-}"
@@ -486,6 +503,16 @@ fi
   echo "claim_comment_id=${claim_id}"; echo "issue=${issue}"
   echo "submitter=${submitter}"
   echo "finished=$(date -u +%FT%TZ)"
+  # #173, appended so every line above keeps its place: the runtime, its five
+  # disjoint token counts (blank when it reported none) and the same per model
+  # (one line of JSON), and whether it enforced each turn or spend cap the job set
+  # (blank when the job set none).
+  echo "runtime=${runtime}"
+  echo "tokens_in=${tok_in}"; echo "tokens_cached=${tok_cached}"; echo "tokens_cache_write=${tok_write}"
+  echo "tokens_out=${tok_out}"; echo "tokens_thinking=${tok_thinking}"
+  echo "tokens_by_model=${tok_models}"
+  echo "turns_enforced=$(_enforced turns "$max_turns")"
+  echo "budget_enforced=$(_enforced budget "$max_budget")"
 } > "$meta"
 
 if [ "$rc" -eq 0 ]; then

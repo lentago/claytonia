@@ -25,6 +25,7 @@ bats --print-output-on-failure test/
 | **Write-then-rename discipline** — `*.partial` / `*.tmp` / dotfiles / `.owner` / `.swp` are never claimed | discipline |
 | **Submitter** (#21) — a spec's `submitter` lands in the `.meta` and reaches `cr-emit` started/running; text jobs have none | submitter (×2) |
 | **Per-job bounds** (#114) — a job that outruns `timeout_sec` is killed, lands in `failed/` (exit 7, `limit=timeout`) with its `.owner` gone, and the worker claims the next job in the same pass; turn and budget hits are filed `failed/` with `limit=turns`/`budget`; spec limits reach the CLI | limits (×4) |
+| **Runtime and token fields** (#173) — a Claude, a Gemini and a Codex job each append `runtime`, the five token counts, `tokens_by_model` and `turns_enforced`/`budget_enforced` after every existing `.meta` line, which keep their keys and order; the runtime reaches `cr-emit` started/running; a run with no parseable output writes them blank | #173 (×2) |
 
 ## Also covered
 
@@ -39,7 +40,10 @@ bats --print-output-on-failure test/
   project prints nothing, ad-hoc and `-f` jobs make no `gh` call, and a failing or hung
   `gh` is a note, never a failed or delayed submit.
 - `test/cr-emit.bats` — `submitter` is a log-line field on job_started / job_running /
-  job_complete and never a Loki label.
+  job_complete and never a Loki label. `runtime` (#173) is a label and a line field on
+  all three, `claude` when absent; job_complete carries the five token counts and
+  `tokens_by_model` from the `.meta` as line fields only; a blank cost is `null`, never
+  `0`, and a numeric one (Claude's) is unchanged.
 - `test/cr-emit-alive.bats`, `test/issue-signal.bats` — liveness event; issue claim
   comments; only the project's own PR gets a merge decision, recorded in the `.meta`.
 - `test/schedule.bats` — `cr-schedule` (scheduled jobs as data): one queue per slot
@@ -57,14 +61,18 @@ bats --print-output-on-failure test/
 - `test/rt-claude.bats` — the runtime seam (#167): run-job reaches the CLI only through
   `bin/rt-claude`, and the move changes nothing a Claude job files. The raw output lands
   byte-for-byte as `logs/<runid>.json`; the CLI argv, the `.runid` sidecar and the `.meta`
-  keys and order are pinned; each stub mode yields its normalized `logs/<runid>.result.json`
-  (none when the output is not JSON, so the exit code decides); token counts are disjoint;
+  keys and order are pinned (#173's keys appended after the rest); each stub mode yields
+  its normalized `logs/<runid>.result.json` (none when the output is not JSON, so the exit
+  code decides); token counts are disjoint, from `modelUsage` per model, `.usage` only as
+  a fallback; `enforces` says yes to both caps;
   `normalize` is silent on stderr; the transcript copy is best-effort.
 - `test/adapter-contract.bats` — the worker-runtime contract (#166, #169), run against
   every `bin/rt-*` adapter: the prompt on stdin and never in argv, raw output on stdout,
   the CLI's exit code passed through, the full result schema from an ok run, a failed run
   never filed `ok`, no result (and silence) for empty or unparseable output,
-  `accepts-model`, a best-effort `transcript`, and exit 2 for anything else. A new adapter
+  `tokens_by_model` summing to the five token totals (#173), `accepts-model`, `enforces`
+  answering 0 or 1 for `turns` and `budget`, a best-effort `transcript`, and exit 2 for
+  anything else. A new adapter
   adds one `contract_entry` (its stub and two models); without it the suite fails.
 - `test/runtime.bats` — the runtime key (#168): precedence, refusal at claim time, the
   runtime-scoped model defaults, `cr-submit -r`, `cr-newproject -r`, `cr-schedule`.

@@ -63,8 +63,9 @@
 #   Limits: --max-turns N becomes model.maxSessionTurns N, which allows N model
 #   requests. --max-budget-usd cannot be enforced (the CLI has no spend cap) and
 #   --allowed-tools is Claude tool syntax with no Gemini counterpart that matters
-#   under yolo approval; each is ignored with one stderr line. Recording an
-#   unenforced limit in the .meta is #173.
+#   under yolo approval; each is ignored with one stderr line. `enforces` says
+#   so to run-job, which records turns_enforced=yes and budget_enforced=no in
+#   the .meta of a job that sets those limits (#173).
 #   Exit codes: 2 for a usage error or a session id the CLI would refuse; 3 when
 #   the credentials file or the run's Gemini home is unusable, or the checkout
 #   would override the job's turn cap, before the CLI starts; otherwise the CLI's own (0 ok, 1 error, 41 auth, 42 input, 44 sandbox,
@@ -77,11 +78,17 @@
 #                 else error when .error is set or .response is missing, else ok
 #     is_error    .error is set
 #     turns       .stats.tools.totalCalls: tool calls, not model requests
-#     tokens      summed over .stats.models.*.tokens (never .roles, which repeat
-#                 them): in = input + tool, cached = cached, out = candidates,
-#                 thinking = thoughts. Disjoint (#173): 0.66 computes input as
-#                 prompt - cached, so input excludes cache reads; candidates exclude
-#                 thoughts; tool (tool-use prompt tokens) is input outside prompt.
+#     tokens_by_model
+#                 one entry per .stats.models.<m>.tokens (never .roles, which repeat
+#                 them): in = input + tool, cached = cached, cache_write = null (no
+#                 write charge on this path), out = candidates, thinking = thoughts.
+#                 Disjoint (#173): 0.66 computes input as prompt - cached, so input
+#                 excludes cache reads (gate job 211: 175607 - 131671 = 43936);
+#                 candidates exclude thoughts; tool (tool-use prompt tokens) is input
+#                 outside prompt. A job spans several models (the router, the main
+#                 model, the loop detector), and a model called with zero tokens
+#                 still has its entry.
+#     tokens      tokens_by_model summed field by field.
 #     cost_usd    null: the CLI reports no cost (drosera prices the tokens)
 #     model       the --model asked for, else null (the CLI's own default)
 #   A turn cap reaches the output one of two ways in 0.66. The run loop's own
@@ -102,6 +109,9 @@
 # accepts-model
 #   gemini-* model ids, and 0.66's aliases: auto, pro, flash, flash-lite and
 #   auto-gemini-*. Everything else, every Claude and OpenAI model included, is no.
+#
+# enforces
+#   turns yes (model.maxSessionTurns, above); budget no (the CLI has no spend cap).
 set -uo pipefail
 GEMINI_BIN="${GEMINI_BIN:-/usr/bin/gemini}"
 GEMINI_ENV="${CLAUDE_RUNNER_GEMINI_ENV:-/etc/claude-runner/gemini.env}"
@@ -109,7 +119,7 @@ KEEP_DAYS=7
 CONTEXT_FILES='["GEMINI.md","AGENTS.md","CLAUDE.md"]'
 TURN_CAP_WARNING='Maximum session turns exceeded'
 
-usage() { echo "usage: rt-gemini run|normalize|transcript|accepts-model [options]  (see the header)" >&2; exit 2; }
+usage() { echo "usage: rt-gemini run|normalize|transcript|accepts-model|enforces [options]  (see the header)" >&2; exit 2; }
 # The per-run Gemini homes, outside any checkout.
 state_root() { printf '%s/claytonia/gemini' "${XDG_STATE_HOME:-$HOME/.local/state}"; }
 # The CLI's own rule for --session-id; it also keeps the id safe in a path.
@@ -117,7 +127,7 @@ valid_sid() { [[ $1 =~ ^[A-Za-z0-9_-]+$ ]]; }
 
 cmd="${1:-}"; [ -n "$cmd" ] || usage; shift
 cwd=""; sid=""; model=""; max_turns=""; max_budget=""; allowed=""
-raw=""; result=""; txt=""; out=""
+raw=""; result=""; txt=""; out=""; limit=""
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || { echo "rt-gemini: $1 needs a value" >&2; exit 2; }
   case "$1" in
@@ -132,6 +142,7 @@ while [ $# -gt 0 ]; do
     --result)         result="$2" ;;
     --txt)            txt="$2" ;;
     --out)            out="$2" ;;
+    --limit)          limit="$2" ;;
     *) echo "rt-gemini: unknown option $1" >&2; exit 2 ;;
   esac
   shift 2
@@ -248,8 +259,8 @@ case "$cmd" in
                 {runtime: "gemini", model: (if $model == "" then null else $model end),
                  session_id: (if $sid == "" then null else $sid end),
                  status: "max_turns", is_error: false, turns: null,
-                 tokens: {in: null, cached: null, out: null, thinking: null},
-                 cost_usd: null, final_text: ""}' > "$result.tmp"; } 2>/dev/null \
+                 tokens: {in: null, cached: null, cache_write: null, out: null, thinking: null},
+                 tokens_by_model: null, cost_usd: null, final_text: ""}' > "$result.tmp"; } 2>/dev/null \
               || { rm -f "$result.tmp" 2>/dev/null; exit 1; }
             file_result
           fi ;;
@@ -264,17 +275,25 @@ case "$cmd" in
     # braces keep a failed redirect's shell message off stderr.
     if { jq -c -s --arg model "$model" --arg sid "$sid" --arg cap "$TURN_CAP_WARNING" '
       def num: if type == "number" then . else error("not a number") end;
-      def total(f): map(f | num) | add;
+      def none5: {in: null, cached: null, cache_write: null, out: null, thinking: null};
+      def per_model: {in: ((.input | num) + (.tool // 0 | num)), cached: (.cached | num),
+                      cache_write: null, out: (.candidates | num), thinking: (.thoughts | num)};
+      def by_model: try (.stats.models | if type == "object" and length > 0
+                           then with_entries(.value = (.value.tokens | per_model))
+                           else error("no models") end) catch null;
+      def sum5: {in: (map(.in) | add), cached: (map(.cached) | add), cache_write: null,
+                 out: (map(.out) | add), thinking: (map(.thinking) | add)};
       (if $model == "" then null else $model end) as $m
       | (if length == 0 then empty else last end)
       | if type != "object" then
           {runtime: "gemini", model: $m, session_id: (if $sid == "" then null else $sid end),
            status: "error", is_error: false, turns: null,
-           tokens: {in: null, cached: null, out: null, thinking: null},
+           tokens: none5, tokens_by_model: null,
            cost_usd: null, final_text: ""}
         else
           ([.warnings[]? | select(. == $cap)] | length > 0) as $capped
           | (.error != null) as $err
+          | by_model as $tbm
           | {runtime: "gemini",
              model: $m,
              session_id: (if $sid == "" then .session_id else $sid end),
@@ -283,13 +302,8 @@ case "$cmd" in
                       else "ok" end),
              is_error: $err,
              turns: (try (.stats.tools.totalCalls | num) catch null),
-             tokens: (try ([.stats.models[] | .tokens]
-                 | if length == 0 then error("no models") else . end
-                 | {in: (total(.input) + total(.tool // 0)),
-                    cached: total(.cached),
-                    out: total(.candidates),
-                    thinking: total(.thoughts)})
-               catch {in: null, cached: null, out: null, thinking: null}),
+             tokens: (if $tbm == null then none5 else ([$tbm[]] | sum5) end),
+             tokens_by_model: $tbm,
              cost_usd: null,
              final_text: (if (.response | type) == "string" then .response else "" end)}
         end' "$raw" > "$result.tmp"; } 2>/dev/null
@@ -305,6 +319,14 @@ case "$cmd" in
     case "$model" in
       gemini-?*|auto|auto-gemini-?*|pro|flash|flash-lite) exit 0 ;;
       *) exit 1 ;;
+    esac
+    ;;
+
+  enforces)
+    case "$limit" in
+      turns)  exit 0 ;;
+      budget) exit 1 ;;
+      *) usage ;;
     esac
     ;;
 

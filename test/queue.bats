@@ -439,8 +439,8 @@ drop_spec() { # <name> <json>
 
   runid="$(basename "$(find "$JOBS_ROOT/done" -maxdepth 1 -type f)")"
   grep -qx 'submitter=alice@laptop' "$JOBS_ROOT/logs/$runid.meta"
-  grep -qxF "started	$runid			alice@laptop" "$FAKE_CREMIT_LOG"
-  grep -qxF "running	$runid			alice@laptop" "$FAKE_CREMIT_LOG"
+  grep -qxF "started	$runid			alice@laptop	claude" "$FAKE_CREMIT_LOG"
+  grep -qxF "running	$runid			alice@laptop	claude" "$FAKE_CREMIT_LOG"
   grep -qxF "$runid" "$FAKE_CREMIT_LOG"   # job_complete: cr-emit reads it from the .meta
 }
 
@@ -454,4 +454,103 @@ drop_spec() { # <name> <json>
   [ "$(count_in done)" -eq 2 ]
   grep -qx 'submitter=' "$JOBS_ROOT"/logs/*plain*.meta
   grep -qx 'submitter=a b c' "$JOBS_ROOT"/logs/*multi*.meta
+}
+
+# --- runtime and token fields (#173) -----------------------------------------------
+#
+# The .meta records which runtime ran, its five disjoint token counts and the same
+# per model, and whether it enforced each turn or spend cap the job set. Every one
+# of these lines is appended after the existing ones, which keep their keys, order
+# and meaning. run-job hands the runtime to cr-emit for job_started / job_running.
+
+OLD_META_KEYS="runid exit duration_sec project repo model cwd cost_usd num_turns session_id limit max_turns max_budget_usd timeout_sec claim_comment_id issue submitter finished"
+NEW_META_KEYS="runtime tokens_in tokens_cached tokens_cache_write tokens_out tokens_thinking tokens_by_model turns_enforced budget_enforced"
+
+# meta_of <runid> <key> — one value from that run's .meta.
+meta_of() { sed -n "s/^$2=//p" "$JOBS_ROOT/logs/$1.meta"; }
+runid_of() { basename "$(find "$JOBS_ROOT/logs" -name "*-$1.meta" | head -1)" .meta; }
+
+@test "#173: each runtime's .meta gains runtime, tokens and enforced lines after every existing one" {
+  # The peer runtimes' stubs and throwaway credentials, as their own suites set them.
+  unset XDG_STATE_HOME XDG_CACHE_HOME CODEX_HOME CODEX_API_KEY CODEX_ACCESS_TOKEN
+  export GEMINI_BIN="$STUBS_DIR/gemini" CLAUDE_RUNNER_GEMINI_ENV="$TEST_TMP/gemini.env"
+  export CODEX_BIN="$STUBS_DIR/codex" CLAUDE_RUNNER_CODEX_ENV="$TEST_TMP/codex.env"
+  printf 'GOOGLE_GENAI_USE_VERTEXAI=true\n' > "$CLAUDE_RUNNER_GEMINI_ENV"
+  printf 'OPENAI_API_KEY=sk-queue-test\n' > "$CLAUDE_RUNNER_CODEX_ENV"
+  export FAKE_CREMIT_LOG="$TEST_TMP/cremit.log"
+  # Codex names its model only in its session transcript (the stub's thread id).
+  mkdir -p "$HOME/.codex/sessions/2026/11/12"
+  printf '%s\n' '{"type":"turn_context","payload":{"model":"gpt-6.1-sol"}}' \
+    > "$HOME/.codex/sessions/2026/11/12/rollout-x-0f0f0f0f-0000-7000-8000-00000000c0de.jsonl"
+  drop_spec "rtc.json" '{"prompt":"go","max_turns":5,"max_budget_usd":1.5}'
+  drop_spec "rtg.json" '{"prompt":"go","runtime":"gemini","max_turns":5,"max_budget_usd":1.5}'
+  drop_spec "rtx.json" '{"prompt":"go","runtime":"codex","max_turns":5}'
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+  [ "$(count_in done)" -eq 3 ]
+
+  for name in rtc rtg rtx; do
+    r="$(runid_of "$name")"
+    cut -d= -f1 "$JOBS_ROOT/logs/$r.meta" | tr '\n' ' ' > "$TEST_TMP/keys"
+    [ "$(cat "$TEST_TMP/keys")" = "$OLD_META_KEYS $NEW_META_KEYS " ]
+    [ "$(meta_of "$r" exit)" = 0 ]
+    [ "$(meta_of "$r" max_turns)" = 5 ]
+  done
+
+  r="$(runid_of rtc)"   # Claude: tokens from modelUsage, both caps native
+  [ "$(meta_of "$r" runtime)" = claude ]
+  [ "$(meta_of "$r" cost_usd)" = 0.0001 ]
+  [ "$(meta_of "$r" tokens_in)" = 820 ]
+  [ "$(meta_of "$r" tokens_cached)" = 9000 ]
+  [ "$(meta_of "$r" tokens_cache_write)" = 500 ]
+  [ "$(meta_of "$r" tokens_out)" = 160 ]
+  [ "$(meta_of "$r" tokens_thinking)" = "" ]          # folded into out: null, written blank
+  meta_of "$r" tokens_by_model | jq -e 'keys == ["claude-haiku-5-5","claude-opus-5-5"]'
+  [ "$(meta_of "$r" turns_enforced)" = yes ]
+  [ "$(meta_of "$r" budget_enforced)" = yes ]
+
+  r="$(runid_of rtg)"   # Gemini: the captured stats, no write charge, no spend cap
+  [ "$(meta_of "$r" runtime)" = gemini ]
+  [ "$(meta_of "$r" cost_usd)" = "" ]                  # unknown, never 0
+  [ "$(meta_of "$r" tokens_in)" = 9994 ]
+  [ "$(meta_of "$r" tokens_cached)" = 0 ]
+  [ "$(meta_of "$r" tokens_cache_write)" = "" ]
+  [ "$(meta_of "$r" tokens_out)" = 1 ]
+  [ "$(meta_of "$r" tokens_thinking)" = 168 ]
+  meta_of "$r" tokens_by_model | jq -e '. == {"gemini-3.5-flash-lite": {in: 9994, cached: 0, cache_write: null, out: 1, thinking: 168}}'
+  [ "$(meta_of "$r" turns_enforced)" = yes ]
+  [ "$(meta_of "$r" budget_enforced)" = no ]
+
+  r="$(runid_of rtx)"   # Codex: neither cap; no budget set, so nothing to record for it
+  [ "$(meta_of "$r" runtime)" = codex ]
+  [ "$(meta_of "$r" cost_usd)" = "" ]
+  [ "$(meta_of "$r" tokens_in)" = 24117 ]
+  [ "$(meta_of "$r" tokens_cache_write)" = 0 ]
+  [ "$(meta_of "$r" tokens_thinking)" = 0 ]
+  meta_of "$r" tokens_by_model | jq -e 'keys == ["gpt-6.1-sol"]'
+  [ "$(meta_of "$r" turns_enforced)" = no ]
+  [ "$(meta_of "$r" budget_enforced)" = "" ]
+
+  for name in rtc rtg rtx; do
+    r="$(runid_of "$name")"; rt="$(meta_of "$r" runtime)"
+    grep -qxF "started	$r				$rt" "$FAKE_CREMIT_LOG"
+    grep -qxF "running	$r				$rt" "$FAKE_CREMIT_LOG"
+  done
+}
+
+@test "#173: a run with no parseable output writes the new lines blank, and the old ones as before" {
+  export FAKE_CLAUDE_MODE=nonzero
+  drop_job "rtn.txt" "go"
+
+  run "$REPO_ROOT/bin/process-inbox"
+  [ "$status" -eq 0 ]
+  [ "$(count_in failed)" -eq 1 ]
+  r="$(runid_of rtn)"
+  [ "$(meta_of "$r" exit)" = 9 ]
+  [ "$(meta_of "$r" cost_usd)" = "" ]
+  [ "$(meta_of "$r" runtime)" = claude ]
+  for k in tokens_in tokens_cached tokens_cache_write tokens_out tokens_thinking tokens_by_model turns_enforced budget_enforced; do
+    grep -qx "$k=" "$JOBS_ROOT/logs/$r.meta"
+  done
 }

@@ -109,10 +109,17 @@
 #               file_change, mcp_tool_call, web_search, …). An exec run is usually
 #               one model turn, so this counts what the run did instead.
 #   tokens      turn.completed usage, summed, per #173. OpenAI counts cached reads
-#               inside input_tokens and reasoning inside output_tokens, so
-#               in = input - cached_input, cached = cached_input,
-#               out = output - reasoning_output, thinking = reasoning_output.
-#               cache_write_input_tokens is part of input and stays in `in`.
+#               and cache writes inside input_tokens, and reasoning inside
+#               output_tokens, so in = input - cached_input - cache_write_input,
+#               cached = cached_input, cache_write = cache_write_input,
+#               out = output - reasoning_output, thinking = reasoning_output. Each
+#               input token bills at exactly one of the three input rates.
+#   tokens_by_model
+#               every token under one model: the `model` of the session
+#               transcript's turn_context lines (exec --json names none, and its
+#               usage records carry none). "unknown" when the transcript is missing,
+#               names no model, or names several (the tokens cannot be split
+#               between them, and are never priced at a guess).
 #   cost_usd    null: Codex reports none; drosera prices tokens.
 #
 # Where the -o file lives: normalize gets no runid, but run and normalize both get
@@ -124,8 +131,8 @@
 #   own UUID. Each run prunes files there older than two days.
 #
 # transcript: copies ~/.codex/sessions/**/*<thread id>.jsonl (the pinned CODEX_HOME)
-#   as-is. Best-effort; a --session-id with no thread recorded is tried as a thread
-#   id itself.
+#   as-is (normalize reads its turn_context for the model, above). Best-effort;
+#   a --session-id with no thread recorded is tried as a thread id itself.
 #
 # accepts-model: OpenAI model ids Codex takes: gpt-*, codex-* and the o-series (o3,
 #   o4-mini, …), in lowercase letters, digits, '.' and '-'. Claude and Gemini names,
@@ -133,9 +140,10 @@
 #
 # Limits: Codex has no native turn or budget cap and no tool allowlist. When
 #   --max-turns, --max-budget-usd or --allowed-tools is set, `run` writes one stderr
-#   line naming what is not enforced. The wall clock (run-job's timeout(1)) applies as
-#   for every runtime; recording the gap in .meta is #173. Until then, a Codex job's
-#   spend is bounded only by the wall clock and by the usage limit on the key's
+#   line naming what is not enforced, and `enforces` answers no for both, so run-job
+#   records turns_enforced=no and budget_enforced=no in the .meta of a job that sets
+#   them (#173). The wall clock (run-job's timeout(1)) applies as for every runtime;
+#   a Codex job's spend is bounded only by it and by the usage limit on the key's
 #   OpenAI project.
 set -uo pipefail
 CODEX_BIN="${CODEX_BIN:-/usr/local/bin/codex}"
@@ -144,11 +152,11 @@ STATE="${XDG_CACHE_HOME:-${HOME:-/home/claude}/.cache}/rt-codex"
 CODEX_DIR="${HOME:-/home/claude}/.codex"
 EX_CONFIG=78
 
-usage() { echo "usage: rt-codex run|normalize|transcript|accepts-model [options]  (see the header)" >&2; exit 2; }
+usage() { echo "usage: rt-codex run|normalize|transcript|accepts-model|enforces [options]  (see the header)" >&2; exit 2; }
 
 cmd="${1:-}"; [ -n "$cmd" ] || usage; shift
 cwd=""; sid=""; model=""; max_turns=""; max_budget=""; allowed=""
-raw=""; result=""; txt=""; out=""
+raw=""; result=""; txt=""; out=""; limit=""
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || { echo "rt-codex: $1 needs a value" >&2; exit 2; }
   case "$1" in
@@ -163,6 +171,7 @@ while [ $# -gt 0 ]; do
     --result)         result="$2" ;;
     --txt)            txt="$2" ;;
     --out)            out="$2" ;;
+    --limit)          limit="$2" ;;
     *) echo "rt-codex: unknown option $1" >&2; exit 2 ;;
   esac
   shift 2
@@ -170,6 +179,14 @@ done
 
 # The per-run file stem in $STATE: the session id, reduced to a safe file name.
 key="$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_-')"
+
+# session_file <thread id> — the session transcript Codex keeps for that thread
+# under the pinned home, or nothing. Only a UUID is matched against file names:
+# anything shorter could suffix-match another session's file.
+session_file() {
+  [[ "$1" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || return 0
+  find "$CODEX_DIR/sessions" -type f -name "*${1}.jsonl" -print -quit 2>/dev/null
+}
 
 case "$cmd" in
   run)
@@ -247,6 +264,18 @@ case "$cmd" in
     if [ -n "$key" ] && [ -f "$STATE/$key.last-message" ]; then
       lastf="$STATE/$key.last-message"; haslast=1
     fi
+    # The model the tokens belong to (tokens_by_model): the one the session
+    # transcript's turn_context lines name, else unknown. Silent, and never fatal.
+    tmodel=unknown
+    _tid="$(jq -n -R -r '[inputs | fromjson? | objects | select(.type == "thread.started")
+                         | .thread_id | strings] | first // empty' "$raw" 2>/dev/null)"
+    _tpath="$(session_file "$_tid")"
+    if [ -n "$_tpath" ]; then
+      _models="$(jq -R -r 'fromjson? | objects | select(.type == "turn_context")
+                           | .payload.model? | strings | select(length > 0)' "$_tpath" 2>/dev/null | sort -u)"
+      [ -n "$_models" ] && [ "$(printf '%s\n' "$_models" | wc -l)" -eq 1 ] && tmodel="$_models"
+    fi
+    unset _tid _tpath _models
     # One program for the text and the result, so the two never disagree.
     # shellcheck disable=SC2016  # jq variables, not shell ones
     prog='
@@ -258,15 +287,19 @@ case "$cmd" in
                       else agent_text($ev) end;
       def total($us; $k): [$us[] | (.[$k] // 0)]
                           | if all(type == "number") then add else error("usage") end;
+      def none5: {in: null, cached: null, cache_write: null, out: null, thinking: null};
       def tokens($ev):
         [$ev[] | select(.type == "turn.completed") | .usage | objects] as $us
-        | if ($us | length) == 0 then {in: null, cached: null, out: null, thinking: null}
-          else {in: (total($us; "input_tokens") - total($us; "cached_input_tokens")),
+        | if ($us | length) == 0 then null
+          else {in: (total($us; "input_tokens") - total($us; "cached_input_tokens")
+                     - total($us; "cache_write_input_tokens")),
                 cached: total($us; "cached_input_tokens"),
+                cache_write: total($us; "cache_write_input_tokens"),
                 out: (total($us; "output_tokens") - total($us; "reasoning_output_tokens")),
                 thinking: total($us; "reasoning_output_tokens")} end;
       def result($ev):
         final($ev) as $ft
+        | (try tokens($ev) catch null) as $tok
         | ([$ev[] | select(.type == "turn.completed")] | length) as $done
         | ($ev | any(.type == "turn.failed")) as $failed
         | {runtime: "codex",
@@ -278,11 +311,12 @@ case "$cmd" in
            turns: ([$ev[] | select(.type == "item.completed") | .item | objects | .type | strings
                     | select(. != "agent_message" and . != "reasoning" and . != "todo_list" and . != "error")]
                    | length),
-           tokens: (try tokens($ev) catch {in: null, cached: null, out: null, thinking: null}),
+           tokens: ($tok // none5),
+           tokens_by_model: (if $tok == null then null else {($tmodel): $tok} end),
            cost_usd: null,
            final_text: $ft};
       events as $ev | if $what == "text" then final($ev) else result($ev) end'
-    jqn() { jq -n -R --arg model "$model" --arg sid "$sid" --arg haslast "$haslast" \
+    jqn() { jq -n -R --arg model "$model" --arg sid "$sid" --arg haslast "$haslast" --arg tmodel "$tmodel" \
               --rawfile last "$lastf" --arg what "$1" "${@:2}" "$prog" "$raw"; }
     { jqn text -r > "$txt"; } 2>/dev/null || true
     if { jqn result -c > "$result.tmp"; } 2>/dev/null && [ -s "$result.tmp" ]; then
@@ -309,17 +343,21 @@ case "$cmd" in
     esac
     ;;
 
+  enforces)
+    # Neither cap exists in Codex (Limits, above).
+    case "$limit" in
+      turns|budget) exit 1 ;;
+      *) usage ;;
+    esac
+    ;;
+
   transcript)
     [ -n "$sid" ] && [ -n "$out" ] || usage
     tid=""
     [ -n "$key" ] && [ -f "$STATE/$key.thread" ] && tid="$(head -n 1 "$STATE/$key.thread" 2>/dev/null)"
     [ -n "$tid" ] || tid="$sid"
-    # Only a UUID is matched against file names: anything shorter could suffix-match
-    # another session's file.
-    if [[ "$tid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
-      tpath="$(find "$CODEX_DIR/sessions" -type f -name "*${tid}.jsonl" -print -quit 2>/dev/null)"
-      [ -n "$tpath" ] && cp -f "$tpath" "$out" 2>/dev/null
-    fi
+    tpath="$(session_file "$tid")"
+    [ -n "$tpath" ] && cp -f "$tpath" "$out" 2>/dev/null
     [ -n "$key" ] && rm -f "$STATE/$key.thread" 2>/dev/null
     exit 0
     ;;
