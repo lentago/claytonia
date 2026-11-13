@@ -32,6 +32,10 @@ WORKROOT="${CLAUDE_RUNNER_WORKROOT:-/home/claude/work}"
 # under ~/.claude/projects/-home-claude-work*/, so a session whose cwd is here is
 # never streamed to Grafana Cloud; its full transcript still lands in the NAS logs.
 PRIVATE_WORKROOT="${CLAUDE_RUNNER_PRIVATE_WORKROOT:-/home/claude/private}"
+# Live-transcript links (#239, drosera ADR-0012): the shipper reads Gemini and Codex
+# sessions only through <root>/<runtime>/<project>/<runid>/<session_id>.jsonl links,
+# which run-job writes for public-workroot checkouts alone. process-inbox sweeps them.
+LIVE_ROOT="${CLAUDE_RUNNER_LIVE_ROOT:-/home/claude/.claytonia/live}"
 # Runtime adapters ship beside this script (gitops deploys all of bin/ together);
 # readlink keeps that true when run-job is reached through /usr/local/bin.
 RT_DIR="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")"
@@ -102,7 +106,7 @@ started=%s
 origname=%s
 ' "$(hostname)" "$(date -u +%s)" "$base" > "$proc.owner" 2>/dev/null || true
 
-runtime=""; model_from_spec=0
+runtime=""; model_from_spec=0; offbox_false=0
 prompt=""; cwd="$DEF_CWD"; model=""; max_turns=""; max_budget=""; timeout_sec=""; allowed=""; project=""; spec_issue=""; spec_issue_set=0; submitter=""; automerge_rule=""; workflows=0
 case "$base" in
   *.json)
@@ -203,6 +207,7 @@ if [ -n "$project" ]; then
 
   ckout="$WORKROOT/$project"
   if [ "$(printf '%s' "$pj" | jq -r '.offbox_transcript')" = false ]; then
+    offbox_false=1
     mkdir -p "$PRIVATE_WORKROOT"
     ckout="$PRIVATE_WORKROOT/$project"
   fi
@@ -358,6 +363,33 @@ if [ -n "$issue" ]; then
   unset _live
 fi
 
+# Live-transcript link (#239). Decided before the run, from where the job runs:
+# only a cwd that resolves inside the public workroot (an ad-hoc job's default cwd
+# is the workroot itself) is ever linked, and never an offbox_transcript: false
+# project. Both paths are resolved, so a `..` or a symlink cannot leave the
+# workroot. A link a private project wrote would ship its narration (ADR-0012).
+live_dir=""
+_wr="$(readlink -f "$WORKROOT" 2>/dev/null)"; _cw="$(readlink -f "$cwd" 2>/dev/null)"
+_proj="${project:-adhoc}"
+if [ "$offbox_false" = 0 ] && [ -n "$_wr" ] && [ -n "$_cw" ] && [ "$_wr" != / ] \
+   && { [ "$_cw" = "$_wr" ] || [ "${_cw#"$_wr"/}" != "$_cw" ]; } \
+   && [[ $_proj =~ ^[A-Za-z0-9._-]+$ ]] && [ "$_proj" != . ] && [ "$_proj" != .. ]; then
+  live_dir="$LIVE_ROOT/$runtime/$_proj/$runid"
+fi
+unset _wr _cw _proj
+# live_link — link the run's live session file, once the adapter finds it, into
+# live_dir. 0 once linked, 1 while there is nothing to link yet, 3 when this
+# runtime's transcript ships another way. The link is claude's, as run-job is.
+live_link() {
+  local out rc lsid lpath
+  out="$("$rt" live-session --session-id "$sid" --cwd "$cwd" --raw "$outjson" 2>/dev/null)"; rc=$?
+  [ "$rc" -eq 3 ] && return 3
+  IFS=$'\t' read -r lsid lpath <<<"$out"
+  [[ $lsid =~ ^[A-Za-z0-9_-]+$ ]] && [ -f "$lpath" ] || return 1
+  mkdir -p "$live_dir" 2>/dev/null && ln -sfn "$lpath" "$live_dir/$lsid.jsonl" 2>/dev/null \
+    && touch "$live_dir" 2>/dev/null
+}
+
 # notice, not info: claude-inbox.service sets LogLevelMax=notice (#118).
 echo "run-job START runid=$runid project=${project:-none} runtime=$runtime model=${model:-default} cwd=$cwd" | systemd-cat -t claude-runner -p notice
 cr-emit started "$runid" "${project:-}" "${model:-}" "${submitter:-}" "$runtime" 2>/dev/null || true
@@ -368,6 +400,14 @@ start=$(date -u +%s)
 # even sub-10s jobs register. Best-effort; killed as soon as the job returns.
 ( while :; do cr-emit running "$runid" "${project:-}" "${model:-}" "${submitter:-}" "$runtime" 2>/dev/null; sleep 10; done ) &
 hb_pid=$!
+# The live link: look every 2s until the runtime's session file exists, then keep the
+# run directory's mtime fresh, so process-inbox's sweep never takes a running job's link.
+lk_pid=""
+if [ -n "$live_dir" ]; then
+  ( while :; do live_link; r=$?; [ "$r" -eq 0 ] && break; [ "$r" -eq 3 ] && exit 0; sleep 2; done
+    while :; do sleep 10; touch "$live_dir" 2>/dev/null; done ) &
+  lk_pid=$!
+fi
 # Wall-clock bound: TERM at timeout_sec, KILL $KILL_AFTER s later. Without it a
 # wedged CLI holds this worker forever — its heartbeat stays fresh, so the reaper
 # never reclaims the job, and process-inbox is serial behind its flock.
@@ -376,6 +416,13 @@ tmo=()
 ( cd "$cwd" && printf '%s' "$prompt" | "${tmo[@]}" "$rt" run "${rtargs[@]}" ) >"$outjson" 2>>"$errlog"
 rc=$?
 kill "$hb_pid" 2>/dev/null; wait "$hb_pid" 2>/dev/null
+if [ -n "$lk_pid" ]; then
+  kill "$lk_pid" 2>/dev/null; wait "$lk_pid" 2>/dev/null
+  # One more look, so a run shorter than a poll still links; then stamp the finish.
+  # The link stays until the sweep, so the shipper reads the final lines first.
+  [ -d "$live_dir" ] || live_link >/dev/null 2>&1
+  [ -d "$live_dir" ] && touch "$live_dir" 2>/dev/null
+fi
 dur=$(( $(date -u +%s) - start ))
 
 # Normalize outside the timeout, so a killed run is still filed. No result means

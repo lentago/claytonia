@@ -54,7 +54,7 @@ the code disagree, the code wins, and this page should be fixed.
 
 One executable, `bin/rt-<runtime>`, shipped in `bin/` and deployed by the gitops
 loop with the rest of `bin/`. It must pass `bash -n`, or it blocks the whole deploy.
-Six subcommands; any other subcommand or option exits 2.
+Seven subcommands; any other subcommand or option exits 2.
 
 ```
 rt-<runtime> run --cwd DIR --runid ID --session-id UUID [--model M]
@@ -64,6 +64,7 @@ rt-<runtime> transcript --session-id UUID --out F
 rt-<runtime> accepts-model --model M
 rt-<runtime> enforces --limit turns|budget
 rt-<runtime> update
+rt-<runtime> live-session --session-id UUID --cwd DIR --raw F
 ```
 
 ### `run`
@@ -161,6 +162,35 @@ job set no such limit), so a limit that was set but not enforced is recorded, ne
 dropped silently (#166, #173). The wall clock is never asked about: `timeout(1)`
 enforces it outside every adapter.
 
+### `live-session`
+
+Where this run's live session file is, for the worker transcript shipper (#239;
+lentago/drosera ADR-0012, drosera#305). It prints `<session id><TAB><path>` once the
+runtime's own session file exists, and nothing (exit 0) while it does not. It exits 3
+when the runtime's transcript ships another way and is never linked: Claude's, which
+the shipper reads from `~/.claude/projects/-home-claude-work*/` beside the `.runid`
+sidecar. `--raw` is the run's raw output so far, for a runtime that announces its
+session id there (Codex's `thread.started`). It is read-only, quick and silent, since
+run-job calls it every 2 seconds.
+
+**run-job links what it finds** at
+`/home/claude/.claytonia/live/<runtime>/<project>/<runid>/<session_id>.jsonl` (`adhoc`
+for an ad-hoc job). The shipper reads Gemini and Codex sessions only through these
+links, and takes every label from the link's path. A link is written only when the
+job's cwd resolves inside the public workroot (`/home/claude/work`), and never for an
+`offbox_transcript: false` project. Both paths are resolved first, so a `..` or a
+symlink cannot leave the workroot. This rule is what keeps a private project's jobs off
+Grafana Cloud, and `test/live-links.bats` holds it. It is about where a job runs, not
+what it reads: a job in the public workroot streams its narration whatever files it
+reads, as a Claude job always has. run-job looks while the job runs
+and once more after it, so a short run still links. It keeps the run directory's mtime
+fresh until the job ends, then stamps the finish. `process-inbox`, holding the inbox
+lock so that no job is mid-run, removes run directories idle for more than 15 minutes
+(`CLAUDE_RUNNER_LIVE_GRACE_MIN`). This assumes the shipper reads a finished job's last
+lines within that time. If the shipper is down for longer, the live stream loses its
+tail, while the NAS copy (`logs/<runid>.transcript.jsonl`) keeps the whole session.
+Removing a link never touches the session file.
+
 ### `update`
 
 Brings the runtime's CLI to its target version (#172). `cr-update` calls it for
@@ -218,6 +248,7 @@ An adapter whose file is missing refuses before the CLI starts, with one stderr 
 | `cost_usd` | reported | `null` | `null` |
 | `update` (#172) | `claude update`, as `claude`: Claude Code's own release channel, no pin | npm `@google/gemini-cli` under `/usr`, to `CLAUDE_RUNNER_GEMINI_VERSION` (`etc/runner.env`) | the release package into `/opt/codex/<version>`, checked against the sha256 digest GitHub publishes for it (integrity; authenticity rests on GitHub's TLS, as for the image's install), to `CLAUDE_RUNNER_CODEX_VERSION`; a version already on disk needs no network |
 | transcript | `~/.claude/projects/…/<uuid>.jsonl` | the run home's `chats/session-*.jsonl` | `~/.codex/sessions/**/*<thread>.jsonl` |
+| live stream | its own path and the `.runid` sidecar (`live-session` exits 3) | linked under `live/gemini/…/<sessionId>.jsonl` | linked under `live/codex/…/<thread id>.jsonl`, the id read from `thread.started` |
 | local state | Claude Code's own session files, kept by its own retention | the per-run Gemini home, swept after 7 days | `~/.codex/sessions` files, swept after 7 days; the adapter's per-run hand-off files (last message, thread id) under `~/.cache/rt-codex`, swept after 2 days |
 | models | `haiku`, `sonnet`, `opus`, `fable`, `opusplan`, `default`, `claude-*` (optionally with `[1m]`) | `gemini-*`, `auto`, `auto-gemini-*`, `pro`, `flash`, `flash-lite` | `gpt-*`, `codex-*`, o-series (`o3`, `o4-mini`, …), lowercase |
 
@@ -240,7 +271,7 @@ The acceptance test (fleet principle, 2026-07-04): **adding a runtime does not t
 an existing runtime's code path**, and needs no change to the dispatch spec beyond
 the optional `runtime` key.
 
-1. `bin/rt-<name>`, implementing the six subcommands above. Start from the header
+1. `bin/rt-<name>`, implementing the seven subcommands above. Start from the header
    of `bin/rt-claude`.
 2. A stub CLI under `test/stubs/<cli>` that replays real captured output from
    `test/fixtures/runtimes/` (#169), and `test/rt-<name>.bats`.
@@ -262,6 +293,4 @@ the optional `runtime` key.
   run-job's UUID; Codex's own thread id is only in its `result.json`.
 - **Runtime disclosure** on agent PRs and in the preamble's commit trailer (#174),
   with the wording set by lentago/.github#317.
-- **A live transcript and the claim comment's live link** for Gemini and Codex
-  (lentago/drosera#305). Today these are Claude-only.
 - **Queue transport off the LAN**: #47's second item, outside this interface.

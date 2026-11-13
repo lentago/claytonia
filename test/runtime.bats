@@ -17,6 +17,7 @@ setup() {
   export CLAUDE_RUNNER_CWD="$TEST_TMP/work"; mkdir -p "$CLAUDE_RUNNER_CWD"
   export HOME="$TEST_TMP/home"; mkdir -p "$HOME"
   export CLAUDE_RUNNER_WORKROOT="$TEST_TMP/wr"; mkdir -p "$CLAUDE_RUNNER_WORKROOT"
+  export CLAUDE_RUNNER_LIVE_ROOT="$TEST_TMP/live"   # #239: links stay in the test's tree
   export CLAUDE_INBOX_LOCK="$TEST_TMP/inbox.lock"
   export CLAUDE_BIN="$STUBS_DIR/claude"
   export CLAUDE_RUNNER_PATH="$STUBS_DIR:$PATH"
