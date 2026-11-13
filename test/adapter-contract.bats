@@ -11,7 +11,8 @@
 # `normalize` writes the result schema, or no result when the output is empty or
 # unparseable, and is silent on stderr; its five token counts are disjoint and its
 # tokens_by_model sums to them (#173); `accepts-model` and `enforces` answer 0 or 1;
-# `transcript` is best-effort; anything else exits 2.
+# `update` names a CLI that is not installed with exit 3 (#172; cr-update.bats covers
+# the rest of it); `transcript` is best-effort; anything else exits 2.
 
 load test_helper
 
@@ -22,22 +23,23 @@ TOKEN_FIELDS='["cache_write","cached","in","out","thinking"]'
 adapters() { for f in "$REPO_ROOT"/bin/rt-*; do [ -x "$f" ] && basename "$f" | sed 's/^rt-//'; done; }
 
 # contract_entry <runtime> — point the adapter at its stub; set STUB_ARGS (argv file),
-# STUB_STDIN (prompt file), MODE_VAR (its mode variable), MODEL_OK, MODEL_BAD.
+# STUB_STDIN (prompt file), MODE_VAR (its mode variable), BIN_VAR (the variable that
+# names its CLI), MODEL_OK, MODEL_BAD.
 contract_entry() {
   case "$1" in
     claude)
       export CLAUDE_BIN="$STUBS_DIR/claude"
-      STUB_ARGS=FAKE_CLAUDE_ARGS; STUB_STDIN=FAKE_CLAUDE_STDIN; MODE_VAR=FAKE_CLAUDE_MODE
+      STUB_ARGS=FAKE_CLAUDE_ARGS; STUB_STDIN=FAKE_CLAUDE_STDIN; MODE_VAR=FAKE_CLAUDE_MODE; BIN_VAR=CLAUDE_BIN
       MODEL_OK=sonnet; MODEL_BAD=gemini-3.8-flash ;;
     gemini)
       export GEMINI_BIN="$STUBS_DIR/gemini" CLAUDE_RUNNER_GEMINI_ENV="$TEST_TMP/gemini.env"
       printf 'GOOGLE_GENAI_USE_VERTEXAI=true\n' > "$CLAUDE_RUNNER_GEMINI_ENV"   # never real credentials
-      STUB_ARGS=FAKE_GEMINI_ARGS; STUB_STDIN=FAKE_GEMINI_STDIN; MODE_VAR=FAKE_GEMINI_MODE
+      STUB_ARGS=FAKE_GEMINI_ARGS; STUB_STDIN=FAKE_GEMINI_STDIN; MODE_VAR=FAKE_GEMINI_MODE; BIN_VAR=GEMINI_BIN
       MODEL_OK=gemini-3.5-flash-lite; MODEL_BAD=sonnet ;;
     codex)
       export CODEX_BIN="$STUBS_DIR/codex" CLAUDE_RUNNER_CODEX_ENV="$TEST_TMP/codex.env"
       printf 'OPENAI_API_KEY=sk-contract-test\n' > "$CLAUDE_RUNNER_CODEX_ENV"   # never a real key
-      STUB_ARGS=FAKE_CODEX_ARGS; STUB_STDIN=FAKE_CODEX_STDIN; MODE_VAR=FAKE_CODEX_MODE
+      STUB_ARGS=FAKE_CODEX_ARGS; STUB_STDIN=FAKE_CODEX_STDIN; MODE_VAR=FAKE_CODEX_MODE; BIN_VAR=CODEX_BIN
       MODEL_OK=gpt-5-codex; MODEL_BAD=sonnet ;;
     *) return 1 ;;
   esac
@@ -138,6 +140,16 @@ run_adapter() {
     [ "$status" -eq 2 ]
     run rt "$a" enforces
     [ "$status" -eq 2 ]
+  done
+}
+
+@test "contract update: a CLI that is not installed is exit 3, named in one line (#172)" {
+  for a in $(adapters); do
+    contract_entry "$a"
+    export "$BIN_VAR=$TEST_TMP/no-such-dir/$a"
+    run rt "$a" update
+    [ "$status" -eq 3 ]
+    [ "$output" = "not installed ($TEST_TMP/no-such-dir/$a)" ]
   done
 }
 

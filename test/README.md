@@ -113,9 +113,19 @@ bats --print-output-on-failure test/
   a failure once with its cause, and does nothing when the source or queue is missing; the
   source carries its generated header, and cron runs it on every worker.
 - `test/cr-update.bats` — `cr-update` runs under cron's PATH (`/usr/local/bin:/usr/bin:/bin`)
-  and reaches claude only through `CLAUDE_BIN`: an update, an already-current run, a
-  failed update (exit 1, logged with the prior version), and a held inbox lock that
-  skips the run without calling claude.
+  and reaches each CLI only through its adapter's `update` (#172): one step and one log
+  line per adapter in one run; a held inbox lock skips the run without touching any CLI;
+  a missing lock file is created and an existing one only read. Claude: an update, an
+  already-current run, and a failed update (exit 1, logged with the prior version).
+  Gemini (an npm stub and a fake prefix): a new pin installed with the image's own npm
+  command, `latest` resolved first, a failed install that leaves the others running, a
+  due update that is not this user's to install, a missing CLI. Codex (a fake
+  `/opt/codex` and a `file://` release API serving a real tarball): a new pin downloaded,
+  sha256-checked and made current beside the old one, `latest`, a digest mismatch and
+  an incomplete package that are never installed, a rollback to a version on disk with
+  no download, a missing release, a due update that is not this user's, a missing CLI.
+  Also: an unset pin leaves a CLI as it is, a malformed pin fails before any lookup,
+  `cr-update` names no runtime, and the shipped pins are exact versions.
 
 ## How it stays hermetic
 

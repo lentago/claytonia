@@ -7,12 +7,13 @@
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 
-# Weekly: bring Claude Code up to the current release when the worker is idle
+# Weekly: bring each runtime CLI to its target version when the worker is idle
 # (cr-update takes the inbox lock, so it never runs under a job; it jitters up to
 # 30 min so the fleet does not update in lockstep). Added 2026-10-03 after the
-# fleet was found at 2.1.177–2.1.202 with 2.1.289 current — nothing else updates
-# a headless runner.
-17 4  *   *   0     claude  /opt/claude-runner/bin/cr-update
+# fleet was found at Claude Code 2.1.177–2.1.202 with 2.1.289 current — nothing
+# else updates a headless runner. Root since #172: Gemini and Codex are installed
+# root-owned, and rt-claude still runs Claude's own update as claude.
+17 4  *   *   0     root    /opt/claude-runner/bin/cr-update
 
 # Every minute: queue the scheduled jobs that are due (one worker wins each slot).
 *  *  *   *   *     claude  /opt/claude-runner/bin/cr-schedule 2>&1 | systemd-cat -t cr-schedule -p notice
