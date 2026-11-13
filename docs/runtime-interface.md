@@ -179,13 +179,17 @@ for an ad-hoc job). The shipper reads Gemini and Codex sessions only through the
 links, and takes every label from the link's path. A link is written only when the
 job's cwd resolves inside the public workroot (`/home/claude/work`), and never for an
 `offbox_transcript: false` project. Both paths are resolved first, so a `..` or a
-symlink cannot leave the workroot. This rule is what keeps a private project off
-Grafana Cloud, and `test/live-links.bats` holds it. run-job looks while the job runs
+symlink cannot leave the workroot. This rule is what keeps a private project's jobs off
+Grafana Cloud, and `test/live-links.bats` holds it. It is about where a job runs, not
+what it reads: a job in the public workroot streams its narration whatever files it
+reads, as a Claude job always has. run-job looks while the job runs
 and once more after it, so a short run still links. It keeps the run directory's mtime
 fresh until the job ends, then stamps the finish. `process-inbox`, holding the inbox
 lock so that no job is mid-run, removes run directories idle for more than 15 minutes
-(`CLAUDE_RUNNER_LIVE_GRACE_MIN`). The shipper reads the last lines first, and removing
-a link never touches the session file.
+(`CLAUDE_RUNNER_LIVE_GRACE_MIN`). This assumes the shipper reads a finished job's last
+lines within that time. If the shipper is down for longer, the live stream loses its
+tail, while the NAS copy (`logs/<runid>.transcript.jsonl`) keeps the whole session.
+Removing a link never touches the session file.
 
 ### `update`
 

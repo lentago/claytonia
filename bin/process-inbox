@@ -14,9 +14,11 @@ shopt -s nullglob
 # Live-transcript links (#239, drosera ADR-0012): run-job links each Gemini or Codex
 # session under LIVE_ROOT/<runtime>/<project>/<runid>/ and keeps that directory's mtime
 # fresh while the job runs, then stamps its finish. Holding the lock, no job is
-# mid-run here, so a run directory idle past the grace period is a finished job's,
-# and the shipper has had time to read its last lines. Removing the link never
-# touches the session file it points to.
+# mid-run here, so a run directory idle past the grace period is a finished job's.
+# The grace period assumes the shipper reads a job's last lines within it; if the
+# shipper is down for longer, the live stream loses its tail, and the NAS copy
+# (logs/<runid>.transcript.jsonl) still has the whole session. Removing the link
+# never touches the session file it points to.
 LIVE_ROOT="${CLAUDE_RUNNER_LIVE_ROOT:-/home/claude/.claytonia/live}"
 LIVE_GRACE_MIN="${CLAUDE_RUNNER_LIVE_GRACE_MIN:-15}"
 if [ -d "$LIVE_ROOT" ] && [[ $LIVE_GRACE_MIN =~ ^[0-9]+$ ]]; then
