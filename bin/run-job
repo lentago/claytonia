@@ -106,7 +106,7 @@ started=%s
 origname=%s
 ' "$(hostname)" "$(date -u +%s)" "$base" > "$proc.owner" 2>/dev/null || true
 
-runtime=""; model_from_spec=0; offbox_false=0
+runtime=""; model_from_spec=0; offbox_false=0; rt_name=""; rt_link=""; rt_trailer=""; rt_note=""
 prompt=""; cwd="$DEF_CWD"; model=""; max_turns=""; max_budget=""; timeout_sec=""; allowed=""; project=""; spec_issue=""; spec_issue_set=0; submitter=""; automerge_rule=""; workflows=0
 case "$base" in
   *.json)
@@ -188,6 +188,12 @@ if [ -n "$project" ]; then
   pj_runtime="$(printf '%s' "$pj" | jq -r '.runtime // empty | tostring')"
   [ -z "$runtime" ] && runtime="${pj_runtime:-$DEF_RUNTIME}"
   check_runtime
+  # The runtime's row of the disclosure tables (ADR-0015), for the preamble and footer.
+  rt_about="$("$RT_DIR/rt-$runtime" about 2>/dev/null)"
+  rt_name="$(jq -r '.name // empty' <<<"$rt_about" 2>/dev/null)"
+  rt_link="$(jq -r '.link // empty' <<<"$rt_about" 2>/dev/null)"
+  rt_trailer="$(jq -r '.trailer // empty' <<<"$rt_about" 2>/dev/null)"
+  rt_note="$(jq -r '.trailer_note // empty' <<<"$rt_about" 2>/dev/null)"
   [ -z "$model" ] && [ "$runtime" = "${pj_runtime:-claude}" ] && model="$(printf '%s' "$pj" | jq -r '.model // empty')"
   [ -z "$max_turns" ]   && max_turns="$(printf '%s' "$pj" | jq -r '.max_turns // empty')"
   [ -z "$max_budget" ]  && max_budget="$(printf '%s' "$pj" | jq -r '.max_budget_usd // empty')"
@@ -245,6 +251,13 @@ if [ -n "$project" ]; then
     printf 'You are a headless agent working in a CLEAN git checkout at %s, base branch `%s`. The repo CLAUDE.md is authoritative — read and follow it.\n\n' "$cwd" "$branch"
     printf 'STANDING RULES:\n'
     printf -- '- If the task requires changes: do ALL work on a new branch `agent/<short-kebab-desc>` cut from `%s`; commit with a clear conventional message; `git push -u origin HEAD`; open a PR with `gh pr create` against `%s` for HUMAN review; NEVER merge it and NEVER arm auto-merge (no gh pr merge --auto) -- this OVERRIDES any repo CLAUDE.md or fleet convention that says to enable auto-merge; runner-bot PRs are ALWAYS left for a human to merge. For read-only/analysis tasks, no branch or PR is needed.\n' "$branch" "$branch"
+    # Attribution (#174, lentago/.github ADR-0015 Decision 7): repo CLAUDE.md files and
+    # fleet rules ask for a Claude trailer, so the preamble names the running runtime
+    # and the trailer its commits carry. The runtime's row comes from its adapter.
+    if [ -n "$rt_name" ] && [ -n "$rt_trailer" ]; then
+      printf -- '- You are running as %s (runtime `%s`). End every commit message with the co-author trailer `%s`%s. This OVERRIDES any repo CLAUDE.md or fleet convention that asks for a different Co-Authored-By trailer: the trailer names the agent that wrote the commit.\n' \
+        "$rt_name" "$runtime" "$rt_trailer" "${rt_note:+, $rt_note}"
+    fi
     # Branch freshness (#22): workers never merge (ADR-0002), so the fleet's half of
     # "rebase before merge" is to open the PR current with the base. main often moves
     # during a long job; a PR opened behind it is the #19->#20 clobber waiting to happen.
@@ -313,10 +326,13 @@ issue_of_prompt() {
 
 # gh_issue_api <repo> <gh api args...> — repo-scoped App token, bounded call; the
 # response is on stdout, failures return non-zero after a one-line journald note.
-gh_issue_api() {
-  local _repo="$1" _tok _out; shift
-  if ! _tok="$(timeout -k 2 "$GH_API_TIMEOUT" gh-token --access comment "$_repo" 2>/dev/null)" || [ -z "$_tok" ]; then
-    echo "run-job: gh-token failed for $_repo ($runid); issue comment skipped" | systemd-cat -t claude-runner -p warning
+gh_issue_api() { gh_api_as comment "$@"; }
+# gh_api_as <profile> <repo> <gh api args...> — the same, with a token of that profile:
+# `comment` for issue comments, `pr` for the PR footer (#174).
+gh_api_as() {
+  local _access="$1" _repo="$2" _tok _out; shift 2
+  if ! _tok="$(timeout -k 2 "$GH_API_TIMEOUT" gh-token --access "$_access" "$_repo" 2>/dev/null)" || [ -z "$_tok" ]; then
+    echo "run-job: gh-token ($_access) failed for $_repo ($runid); skipped" | systemd-cat -t claude-runner -p warning
     return 1
   fi
   if ! _out="$(GH_TOKEN="$_tok" timeout -k 2 "$GH_API_TIMEOUT" gh api "$@" 2>&1)"; then
@@ -596,6 +612,34 @@ else
     unset _reason _logtail _body _limitline
   fi
 fi
+# The PR footer (#174, lentago/.github ADR-0015 Decision 6). run-job's code, not the
+# agent, ends every runner PR's body with one line naming the runtime that wrote it,
+# the job's main model and the run. The main model is the tokens_by_model key with
+# the most out + thinking (a null thinking counts as 0); the clause is dropped when
+# that is unknown or there are no per-model counts. The edit takes out Claude Code's
+# own "Generated with" line and any earlier footer of run-job's, so a PR carries
+# exactly one. Best-effort and time-bounded like the issue comments: a failure is a
+# journald line and never changes the job's outcome.
+if [ -n "${prurl:-}" ] && [ -n "${repo:-}" ] && [ -n "$rt_name" ] && [ -n "$rt_link" ]; then
+  _n="${prurl##*/}"
+  _main="$(jq -r '.tokens_by_model | if type == "object" and length > 0
+             then (to_entries | max_by((.value.out // 0) + (.value.thinking // 0)) | .key) else empty end' \
+           "$outresult" 2>/dev/null)"
+  _clause=""
+  case "$_main" in ''|unknown) ;; *) [[ $_main =~ ^[A-Za-z0-9._:/@+-]+$ ]] && _clause=", model \`$_main\`," ;; esac
+  _footer="🤖 Generated with [$rt_name]($rt_link)$_clause in [claytonia](https://github.com/lentago/claytonia) run \`$runid\`."
+  if [[ $_n =~ ^[0-9]+$ ]] && _body="$(gh_api_as pr "$repo" "repos/$repo/pulls/$_n" --jq '.body // ""')"; then
+    # shellcheck disable=SC2016  # jq variables, not shell ones
+    _new="$(jq -rn --arg b "$_body" --arg f "$_footer" '
+      def claude_line: test("^🤖 Generated with \\[Claude Code\\]\\(https://claude\\.com/claude-code\\)\\s*$");
+      def our_line: startswith("🤖 Generated with [") and contains(" in [claytonia](https://github.com/lentago/claytonia) run `");
+      ($b | split("\n") | map(select((claude_line or our_line) | not)) | join("\n") | sub("\\s+$"; "")) as $kept
+      | if $kept == "" then $f else $kept + "\n\n" + $f end')" \
+      && gh_api_as pr "$repo" -X PATCH "repos/$repo/pulls/$_n" -f body="$_new" >/dev/null
+  fi
+  unset _n _main _clause _footer _body _new
+fi
+
 # The merge path for the PR the agent opened (prurl was extracted above). By default
 # a runner-bot PR is left for a human: if the agent armed auto-merge despite the
 # standing rule, it is disarmed (ADR-0002). cr-automerge arms squash auto-merge

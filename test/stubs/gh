@@ -5,6 +5,9 @@
 # PATCH bodies are appended to FAKE_GH_BODIES, separated by a NUL-free marker line.
 # For cr-submit's overlap check (#22): when FAKE_GH_PRS names a file, `pr list` prints
 # it (FAIL/SLEEP apply), and `api .../pulls/<n>/files` prints FAKE_GH_FILES_DIR/<n>.json.
+# For run-job's PR footer (#174): `api .../pulls/<n>` prints FAKE_GH_PR_BODY's contents
+# (what --jq '.body' yields), and `api -X PATCH .../pulls/<n> -f body=...` writes that
+# body to FAKE_GH_PATCHED.
 set -u
 [ -n "${FAKE_GH_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_GH_LOG"
 if [ "${1:-} ${2:-}" = "pr list" ] && [ -n "${FAKE_GH_PRS:-}" ]; then
@@ -20,6 +23,15 @@ case "${2:-}" in
     _n="${2#*/pulls/}"; _n="${_n%%/*}"
     cat "${FAKE_GH_FILES_DIR:-/nonexistent}/$_n.json" 2>/dev/null || { echo "gh: HTTP 404" >&2; exit 1; }
     exit 0 ;;
+  */pulls/[0-9]*)
+    cat "${FAKE_GH_PR_BODY:-/dev/null}"; exit 0 ;;
 esac
+if [ "${2:-} ${3:-}" = "-X PATCH" ]; then
+  case "${4:-}" in
+    */pulls/[0-9]*)
+      for _a in "$@"; do case "$_a" in body=*) printf '%s' "${_a#body=}" > "${FAKE_GH_PATCHED:-/dev/null}" ;; esac; done
+      exit 0 ;;
+  esac
+fi
 case " $* " in *" PATCH "*) ;; *) echo 4242 ;; esac
 exit 0

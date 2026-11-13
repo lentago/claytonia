@@ -14,6 +14,9 @@
 # A prompt containing FAKE_HANG sleeps FAKE_GEMINI_SLEEP (default 60) seconds first.
 # FAKE_GEMINI_ARGS receives the argv (one per line); FAKE_GEMINI_STDIN the prompt read;
 # FAKE_GEMINI_ENV the environment the CLI was started with (`env`, #170).
+# FAKE_GEMINI_RESPONSE, if set, replaces the captured .response (the agent's final text,
+# where run-job finds the PR URL; #174). FAKE_GEMINI_MODELS, if set, is JSON that
+# replaces .stats.models (per-model token counts, for the footer's main model).
 # FAKE_GEMINI_SESSION=1 writes the session file as 0.66 keeps it in the run's home
 # (#239): $GEMINI_CLI_HOME/.gemini/tmp/<cwd basename>/chats/session-<time>-<first 8 of
 # the id>.jsonl, a header line naming the full sessionId, then one gemini line.
@@ -43,7 +46,9 @@ case "${FAKE_GEMINI_MODE:-ok}" in
                  code: 53}}')" >&2
     exit 53 ;;
   *)
-    if [ -n "$sid" ]; then jq -c --arg s "$sid" '.session_id = $s' "$FIX/gemini-ok.json"
-    else cat "$FIX/gemini-ok.json"; fi
+    jq -c --arg s "$sid" --arg r "${FAKE_GEMINI_RESPONSE:-}" --argjson m "${FAKE_GEMINI_MODELS:-null}" \
+      '(if $s == "" then . else .session_id = $s end) | (if $r == "" then . else .response = $r end)
+       | (if $m == null then . else .stats.models = $m end)' \
+      "$FIX/gemini-ok.json"
     exit 0 ;;
 esac

@@ -12,6 +12,8 @@
 # Codex mints its own thread id: FAKE_CODEX_THREAD_ID (default a fixed UUID).
 # A prompt containing FAKE_HANG sleeps FAKE_CODEX_SLEEP (default 60) seconds first.
 # FAKE_CODEX_ARGS receives the argv (one per line); FAKE_CODEX_STDIN the prompt read.
+# FAKE_CODEX_MESSAGE, if set, replaces the agent's final message, in the events and the
+# -o file (where run-job finds the PR URL; #174).
 set -u
 FIX="$(cd "$(dirname "$0")/../fixtures/runtimes" && pwd)"
 [ "${1:-}" = exec ] || { echo "codex stub: only 'exec' is stubbed" >&2; exit 2; }
@@ -29,8 +31,9 @@ case "${FAKE_CODEX_MODE:-ok}" in
   error)   events codex-error.jsonl; exit 1 ;;
   nonzero) printf 'stub crashed before emitting JSON\n'; exit 9 ;;
   *)
-    events codex-ok.jsonl
-    [ -n "$last" ] && jq -r 'select(.type == "item.completed" and .item.type == "agent_message") | .item.text' \
-      "$FIX/codex-ok.jsonl" > "$last"
+    events codex-ok.jsonl | jq -c --arg m "${FAKE_CODEX_MESSAGE:-}" \
+      'if $m != "" and .type == "item.completed" and .item.type == "agent_message" then .item.text = $m else . end'
+    [ -n "$last" ] && events codex-ok.jsonl | jq -r --arg m "${FAKE_CODEX_MESSAGE:-}" \
+      'select(.type == "item.completed" and .item.type == "agent_message") | if $m != "" then $m else .item.text end' > "$last"
     exit 0 ;;
 esac
