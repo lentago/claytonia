@@ -49,6 +49,13 @@
 #       (logs/<runid>.json), for a runtime that announces its session id there.
 #       Exits 3 when this runtime's transcript ships another way and is never
 #       linked. Read-only, quick and silent: it is called every few seconds.
+#   rt-<runtime> about
+#       This runtime's row of lentago/.github ADR-0015's disclosure tables, as one
+#       JSON object (#174): {name, link, trailer, trailer_note}. run-job names the
+#       runtime in its preamble with the trailer its commits carry (Decision 7),
+#       and writes the PR footer from name and link (Decision 6). trailer_note, if
+#       not empty, follows the trailer in the preamble. A runtime is added to the
+#       ADR's tables, with its trailer address checked, before its adapter ships.
 #
 # Normalized result:
 #   {runtime, model, session_id, status, is_error, turns,
@@ -81,7 +88,7 @@ CLAUDE_BIN="${CLAUDE_BIN:-/home/claude/.local/bin/claude}"
 TOKEN_ENV="${CLAUDE_RUNNER_TOKEN_ENV:-/etc/claude-runner/token.env}"
 CLAUDE_USER="${CLAUDE_RUNNER_USER:-claude}"   # owns the native install under ~/.local
 
-usage() { echo "usage: rt-claude run|normalize|transcript|accepts-model|enforces|update|live-session [options]  (see the header)" >&2; exit 2; }
+usage() { echo "usage: rt-claude run|normalize|transcript|accepts-model|enforces|update|live-session|about [options]  (see the header)" >&2; exit 2; }
 
 cmd="${1:-}"; [ -n "$cmd" ] || usage; shift
 cwd=""; runid=""; sid=""; model=""; max_turns=""; max_budget=""; allowed=""
@@ -213,6 +220,12 @@ case "$cmd" in
       turns|budget) exit 0 ;;
       *) usage ;;
     esac
+    ;;
+
+  about)
+    # ADR-0015: Claude Code's own trailer, unchanged; GitHub links it to Anthropic's account.
+    printf '%s\n' '{"name":"Claude Code","link":"https://claude.com/claude-code","trailer":"Co-Authored-By: Claude <model> <noreply@anthropic.com>","trailer_note":"with <model> your own model name, as Claude Code writes it"}'
+    exit 0
     ;;
 
   live-session)

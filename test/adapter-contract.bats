@@ -13,8 +13,9 @@
 # tokens_by_model sums to them (#173); `accepts-model` and `enforces` answer 0 or 1;
 # `update` names a CLI that is not installed with exit 3 (#172; cr-update.bats covers
 # the rest of it); `live-session` is silent with nothing to link yet, or exits 3 for a
-# runtime that never links (#239; live-links.bats covers the rest); `transcript` is
-# best-effort; anything else exits 2.
+# runtime that never links (#239; live-links.bats covers the rest); `about` prints the
+# runtime's row of lentago/.github ADR-0015's disclosure tables (#174; disclosure.bats
+# covers its use); `transcript` is best-effort; anything else exits 2.
 
 load test_helper
 
@@ -163,6 +164,18 @@ run_adapter() {
       --cwd "$CLAUDE_RUNNER_CWD" --raw "$TEST_TMP/$a.empty-raw"
     [ "$status" -eq 0 ] || [ "$status" -eq 3 ]
     [ -z "$output" ]
+  done
+}
+
+@test "contract about: the runtime's disclosure row, a name, an https link and a Co-Authored-By trailer (#174)" {
+  for a in $(adapters); do
+    run rt "$a" about
+    [ "$status" -eq 0 ]
+    jq -e '(keys == ["link","name","trailer","trailer_note"])
+      and (.name | type == "string" and length > 0 and (test("[\\[\\]()`]") | not))
+      and (.link | test("^https://[^ ()]+$"))
+      and (.trailer | test("^Co-Authored-By: [^<>]+ (<[^<>]+> )?<[^<>@ ]+@[^<> ]+>$"))
+      and (.trailer_note | type == "string")' <<<"$output"
   done
 }
 

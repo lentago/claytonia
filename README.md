@@ -360,6 +360,26 @@ Durable conventions live in the **repo's own `CLAUDE.md`** (reviewed, versioned,
 into every job automatically). Cross-run learnings live in the NAS **memory** store.
 Both reach any worker — nothing is trapped on one box.
 
+### Which runtime wrote a PR
+
+Every runner PR opens as the same App and lands in the same review queue, whatever
+runtime did the work. run-job's code, not the agent, records which runtime it was, with
+the strings `lentago/.github` ADR-0015 sets (#174):
+
+- **The footer.** One line ends the PR body, for example:
+
+  > 🤖 Generated with [Gemini CLI](https://github.com/google-gemini/gemini-cli), model
+  > `gemini-3.8-flash`, in [claytonia](https://github.com/lentago/claytonia) run `<runid>`.
+
+  The model is the job's main model, the one that wrote the most. On a Claude PR the
+  line replaces Claude Code's own. A failed edit never changes the job's outcome.
+- **The trailer.** The preamble names the running runtime and the `Co-Authored-By:`
+  trailer its commits carry, overriding a repo `CLAUDE.md` that asks for Claude's.
+  Gemini commits credit `gemini-cli[bot]`, Codex commits credit OpenAI's `codex`, and
+  Claude commits are unchanged. The footer is the record when the two disagree, since
+  a trailer depends on the agent following the preamble.
+- **No runtime label.** The footer and trailer are the disclosure (ADR-0015 Decision 8).
+
 ## The fleet
 
 Multiple workers poll the same inbox and claim jobs by atomic `rename`. When co-located

@@ -45,8 +45,8 @@ the code disagree, the code wins, and this page should be fixed.
    failure, the PR URL.
 8. **Transcript:** **adapter** `transcript`, best-effort.
 9. **File** the job to `done/` or `failed/`, write `.meta`, emit `job_complete`
-   (`cr-emit`), update the claim comment, and settle the PR's merge path with
-   `cr-automerge`. It disarms any auto-merge (ADR-0002), unless a scheduled
+   (`cr-emit`), update the claim comment, write the PR's footer (**adapter**
+   `about`; #174), and settle the PR's merge path with `cr-automerge`. It disarms any auto-merge (ADR-0002), unless a scheduled
    routine's policy allows that PR (ADR-0009). This step, not the agent, enforces
    never-merge, whichever runtime ran.
 
@@ -54,7 +54,7 @@ the code disagree, the code wins, and this page should be fixed.
 
 One executable, `bin/rt-<runtime>`, shipped in `bin/` and deployed by the gitops
 loop with the rest of `bin/`. It must pass `bash -n`, or it blocks the whole deploy.
-Seven subcommands; any other subcommand or option exits 2.
+Eight subcommands; any other subcommand or option exits 2.
 
 ```
 rt-<runtime> run --cwd DIR --runid ID --session-id UUID [--model M]
@@ -65,6 +65,7 @@ rt-<runtime> accepts-model --model M
 rt-<runtime> enforces --limit turns|budget
 rt-<runtime> update
 rt-<runtime> live-session --session-id UUID --cwd DIR --raw F
+rt-<runtime> about
 ```
 
 ### `run`
@@ -162,6 +163,33 @@ job set no such limit), so a limit that was set but not enforced is recorded, ne
 dropped silently (#166, #173). The wall clock is never asked about: `timeout(1)`
 enforces it outside every adapter.
 
+### `about`
+
+The runtime's row of lentago/.github ADR-0015's disclosure tables, as one JSON object
+(#174): `{name, link, trailer, trailer_note}`. The strings are the ADR's, verbatim.
+
+- **The preamble** (Decision 7) names the running runtime and the trailer its commits
+  carry: "You are running as &lt;name&gt; (runtime `<runtime>`). End every commit
+  message with the co-author trailer `<trailer>`, &lt;trailer_note&gt;." The preamble
+  says this overrides any repo `CLAUDE.md` or fleet text that asks for a different
+  trailer.
+- **The PR footer** (Decision 6): run-job's code ends every runner PR's body with one
+  line:
+
+  > 🤖 Generated with [&lt;name&gt;](&lt;link&gt;), model `<main model>`, in
+  > [claytonia](https://github.com/lentago/claytonia) run `<runid>`.
+
+  The main model is the `tokens_by_model` key with the most `out + thinking` (a null `thinking` counts as
+  0). The clause is dropped when that key is `unknown` or there are no per-model counts.
+  The edit removes Claude Code's own "Generated with" line and any earlier run-job
+  footer, so a PR carries exactly one. It goes through `gh-token`'s `pr` profile
+  (`pull_requests: write` only) and is best-effort and time-bounded. A failure is a
+  journald line and never changes the job's outcome.
+- **No runtime label** (Decision 8).
+
+A runtime takes its row in the ADR's tables, with its trailer address checked as the
+ADR records, before its adapter ships.
+
 ### `live-session`
 
 Where this run's live session file is, for the worker transcript shipper (#239;
@@ -248,6 +276,7 @@ An adapter whose file is missing refuses before the CLI starts, with one stderr 
 | `cost_usd` | reported | `null` | `null` |
 | `update` (#172) | `claude update`, as `claude`: Claude Code's own release channel, no pin | npm `@google/gemini-cli` under `/usr`, to `CLAUDE_RUNNER_GEMINI_VERSION` (`etc/runner.env`) | the release package into `/opt/codex/<version>`, checked against the sha256 digest GitHub publishes for it (integrity; authenticity rests on GitHub's TLS, as for the image's install), to `CLAUDE_RUNNER_CODEX_VERSION`; a version already on disk needs no network |
 | transcript | `~/.claude/projects/…/<uuid>.jsonl` | the run home's `chats/session-*.jsonl` | `~/.codex/sessions/**/*<thread>.jsonl` |
+| disclosure (`about`) | Claude Code; Claude Code's own trailer, unchanged | Gemini CLI; `Co-Authored-By: Gemini CLI <218312386+gemini-cli[bot]@users.noreply.github.com>` | Codex CLI; `Co-Authored-By: Codex <noreply@openai.com>` |
 | live stream | its own path and the `.runid` sidecar (`live-session` exits 3) | linked under `live/gemini/…/<sessionId>.jsonl` | linked under `live/codex/…/<thread id>.jsonl`, the id read from `thread.started` |
 | local state | Claude Code's own session files, kept by its own retention | the per-run Gemini home, swept after 7 days | `~/.codex/sessions` files, swept after 7 days; the adapter's per-run hand-off files (last message, thread id) under `~/.cache/rt-codex`, swept after 2 days |
 | models | `haiku`, `sonnet`, `opus`, `fable`, `opusplan`, `default`, `claude-*` (optionally with `[1m]`) | `gemini-*`, `auto`, `auto-gemini-*`, `pro`, `flash`, `flash-lite` | `gpt-*`, `codex-*`, o-series (`o3`, `o4-mini`, …), lowercase |
@@ -271,7 +300,7 @@ The acceptance test (fleet principle, 2026-07-04): **adding a runtime does not t
 an existing runtime's code path**, and needs no change to the dispatch spec beyond
 the optional `runtime` key.
 
-1. `bin/rt-<name>`, implementing the seven subcommands above. Start from the header
+1. `bin/rt-<name>`, implementing the eight subcommands above. Start from the header
    of `bin/rt-claude`.
 2. A stub CLI under `test/stubs/<cli>` that replays real captured output from
    `test/fixtures/runtimes/` (#169), and `test/rt-<name>.bats`.
@@ -291,6 +320,4 @@ the optional `runtime` key.
 
 - **Codex's thread id in `.meta`.** A Codex job's `.meta` `session_id` holds
   run-job's UUID; Codex's own thread id is only in its `result.json`.
-- **Runtime disclosure** on agent PRs and in the preamble's commit trailer (#174),
-  with the wording set by lentago/.github#317.
 - **Queue transport off the LAN**: #47's second item, outside this interface.

@@ -74,6 +74,13 @@ bats --print-output-on-failure test/
   answering 0 or 1 for `turns` and `budget`, a best-effort `transcript`, and exit 2 for
   anything else. A new adapter
   adds one `contract_entry` (its stub and two models); without it the suite fails.
+- `test/disclosure.bats` — runtime disclosure (#174, lentago/.github ADR-0015): through
+  the real run-job and the `gh` stub, every runner PR's body ends with exactly one footer
+  in the ADR's words for its runtime (Claude Code's own line and an earlier run's footer
+  replaced); the main model is the one with the most `out + thinking`, and an unknown one
+  drops the clause; a failed PR also gets it; a failed edit is a journald line with the
+  outcome unchanged; no PR means no footer; the preamble names each runtime and its
+  trailer; and no label is applied.
 - `test/live-links.bats` — live-transcript links (#239, drosera ADR-0012): a Gemini
   project job and a Codex ad-hoc job each link their own session file at
   `live/<runtime>/<project>/<runid>/<session_id>.jsonl`, while the job runs and after
