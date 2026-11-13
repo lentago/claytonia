@@ -102,7 +102,7 @@ norm() {
     fi
   }
   expect ok      done   0  ''    '.runtime == "gemini" and .status == "ok" and .is_error == false and .final_text == "ok"
-                                  and .cost_usd == null and .turns == 0 and .tokens == {"in":9994,"cached":0,"out":1,"thinking":168}'
+                                  and .cost_usd == null and .turns == 0 and .tokens == {"in":9994,"cached":0,"cache_write":null,"out":1,"thinking":168}'
   [ "$(meta cost_usd)" = "" ]   # null cost stays blank in the .meta, never 0
   [ "$(cat "$JOBS_ROOT/logs/$(only_runid).txt")" = ok ]
   expect error   failed 1  ''    none
@@ -308,14 +308,16 @@ norm() {
   [ -z "$output" ]
   jq -e --arg s "$SID" '. == {runtime: "gemini", model: "gemini-3.5-flash-lite", session_id: $s,
       status: "ok", is_error: false, turns: 0,
-      tokens: {in: 9994, cached: 0, out: 1, thinking: 168},
+      tokens: {in: 9994, cached: 0, cache_write: null, out: 1, thinking: 168},
+      tokens_by_model: {"gemini-3.5-flash-lite": {in: 9994, cached: 0, cache_write: null, out: 1, thinking: 168}},
       cost_usd: null, final_text: "ok"}' "$TEST_TMP/res"
   [ "$(cat "$TEST_TMP/txt")" = ok ]
 }
 
-@test "rt-gemini normalize: tokens are disjoint and summed over models, from .tokens only" {
+@test "rt-gemini normalize: tokens are disjoint, per model and summed, from .tokens only" {
   # cached is inside prompt (input = prompt - cached); tool-use prompt tokens are
   # input outside prompt; thoughts are outside candidates. roles repeat the counts.
+  # No cache write is charged on this path, so cache_write is null (#173).
   cat > "$TEST_TMP/raw.json" <<'EOF'
 {"session_id":"x","response":"done","stats":{"models":{
  "m1":{"tokens":{"input":100,"prompt":1100,"candidates":10,"total":1130,"cached":1000,"thoughts":20,"tool":0},
@@ -326,10 +328,31 @@ EOF
   norm "$TEST_TMP/raw.json" --session-id S
   [ "$status" -eq 0 ]
   [ -z "$output" ]
-  jq -e '.tokens == {"in":108,"cached":1000,"out":12,"thinking":20} and .turns == 7
+  jq -e '.tokens == {"in":108,"cached":1000,"cache_write":null,"out":12,"thinking":20} and .turns == 7
          and .model == null and .session_id == "S" and .status == "ok"' "$TEST_TMP/res"
-  # the four counts add up to the CLI's own totals
+  jq -e '.tokens_by_model == {"m1": {in: 100, cached: 1000, cache_write: null, out: 10, thinking: 20},
+                              "m2": {in: 8, cached: 0, cache_write: null, out: 2, thinking: 0}}' "$TEST_TMP/res"
+  # the counts add up to the CLI's own totals, overall and per model
   [ "$(jq '.tokens | .in + .cached + .out + .thinking' "$TEST_TMP/res")" -eq 1140 ]
+  [ "$(jq '.tokens_by_model.m1 | .in + .cached + .out + .thinking' "$TEST_TMP/res")" -eq 1130 ]
+  [ "$(jq '.tokens_by_model.m2 | .in + .cached + .out + .thinking' "$TEST_TMP/res")" -eq 10 ]
+}
+
+@test "rt-gemini normalize: a captured multi-model run keeps every model, a zero-token one included (#173)" {
+  # The stats block of gate job 211 (2026-11-04): the router, a main model that took
+  # zero tokens, and the model that did the work. input is prompt - cached on each.
+  cat > "$TEST_TMP/raw.json" <<'EOF'
+{"session_id":"x","response":"done","stats":{"models":{
+ "gemini-3.5-flash-lite":{"tokens":{"input":5690,"prompt":5690,"candidates":48,"total":6315,"cached":0,"thoughts":577,"tool":0}},
+ "gemini-3.8-flash":{"tokens":{"input":0,"prompt":0,"candidates":0,"total":0,"cached":0,"thoughts":0,"tool":0}},
+ "gemini-3.1-pro-preview":{"tokens":{"input":43936,"prompt":175607,"candidates":765,"total":177730,"cached":131671,"thoughts":1358,"tool":0}}},
+ "tools":{"totalCalls":9}}}
+EOF
+  norm "$TEST_TMP/raw.json" --session-id S
+  [ "$status" -eq 0 ]
+  jq -e '(.tokens_by_model | keys) == ["gemini-3.1-pro-preview","gemini-3.5-flash-lite","gemini-3.8-flash"]
+         and .tokens_by_model["gemini-3.8-flash"] == {in: 0, cached: 0, cache_write: null, out: 0, thinking: 0}
+         and .tokens == {in: 49626, cached: 131671, cache_write: null, out: 813, thinking: 1935}' "$TEST_TMP/res"
 }
 
 @test "rt-gemini normalize: the client's turn-cap warning is max_turns, not ok" {
@@ -377,7 +400,8 @@ EOF
   printf '%s\n' '{"response":"r","stats":{"models":{"m":{"tokens":{"input":"lots"}}},"tools":{"totalCalls":"x"}}}' > "$TEST_TMP/raw.json"
   norm "$TEST_TMP/raw.json" --session-id S
   [ "$status" -eq 0 ]
-  jq -e '.status == "ok" and .tokens == {"in":null,"cached":null,"out":null,"thinking":null} and .turns == null' "$TEST_TMP/res"
+  jq -e '.status == "ok" and .tokens == {"in":null,"cached":null,"cache_write":null,"out":null,"thinking":null}
+         and .tokens_by_model == null and .turns == null' "$TEST_TMP/res"
 }
 
 @test "rt-gemini normalize: output that is not JSON gets no result, and the raw text as .txt" {
@@ -403,6 +427,13 @@ EOF
   run "$RT" normalize --raw "$TEST_TMP/raw.json" --result "$TEST_TMP/no-such-dir/res" --txt "$TEST_TMP/txt" --session-id S
   [ "$status" -eq 1 ]
   [ -z "$output" ]
+}
+
+@test "rt-gemini enforces: the turn cap yes (maxSessionTurns), the spend cap no (#173)" {
+  run "$RT" enforces --limit turns
+  [ "$status" -eq 0 ]
+  run "$RT" enforces --limit budget
+  [ "$status" -eq 1 ]
 }
 
 @test "rt-gemini accepts-model: gemini-* ids and 0.66's aliases; Claude and OpenAI models are no" {

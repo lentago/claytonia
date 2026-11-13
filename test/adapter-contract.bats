@@ -9,13 +9,15 @@
 # The contract, from the rt-claude header: `run` reads the prompt on stdin (never
 # argv), puts the CLI's raw output on stdout and passes its exit code through;
 # `normalize` writes the result schema, or no result when the output is empty or
-# unparseable, and is silent on stderr; `accepts-model` answers 0 or 1;
+# unparseable, and is silent on stderr; its five token counts are disjoint and its
+# tokens_by_model sums to them (#173); `accepts-model` and `enforces` answer 0 or 1;
 # `transcript` is best-effort; anything else exits 2.
 
 load test_helper
 
 PROMPT='contract-check prompt: do not echo me in argv'
-FIELDS='["cost_usd","final_text","is_error","model","runtime","session_id","status","tokens","turns"]'
+FIELDS='["cost_usd","final_text","is_error","model","runtime","session_id","status","tokens","tokens_by_model","turns"]'
+TOKEN_FIELDS='["cache_write","cached","in","out","thinking"]'
 
 adapters() { for f in "$REPO_ROOT"/bin/rt-*; do [ -x "$f" ] && basename "$f" | sed 's/^rt-//'; done; }
 
@@ -87,11 +89,55 @@ run_adapter() {
       --session-id 11111111-2222-4333-8444-555555555555 --model "$MODEL_OK"
     [ "$status" -eq 0 ]
     [ -z "$output" ]
-    jq -e --argjson f "$FIELDS" --arg rt "$a" '
+    jq -e --argjson f "$FIELDS" --argjson tf "$TOKEN_FIELDS" --arg rt "$a" '
       (keys == $f) and .runtime == $rt and .status == "ok" and .is_error == false
-      and (.tokens | keys == ["cached","in","out","thinking"])
+      and (.tokens | keys == $tf)
       and ((.cost_usd == null) or ((.cost_usd | type) == "number"))' "$TEST_TMP/$a.res"
     [ -e "$TEST_TMP/$a.txt" ]
+  done
+}
+
+@test "contract normalize: tokens_by_model sums to the five totals, field by field (#173)" {
+  for a in $(adapters); do
+    contract_entry "$a"
+    run_adapter "$a" ok
+    run rt "$a" normalize --raw "$TEST_TMP/$a.raw" --result "$TEST_TMP/$a.res" --txt "$TEST_TMP/$a.txt" \
+      --session-id 11111111-2222-4333-8444-555555555555 --model "$MODEL_OK"
+    [ "$status" -eq 0 ]
+    # Every stub's ok output reports usage, so the totals are not all null, and each
+    # model's entry has the same five keys. A null total is null in every entry.
+    jq -e --argjson tf "$TOKEN_FIELDS" '. as $r
+      | ($r.tokens.in | type) == "number"
+      and ($r.tokens_by_model | type) == "object" and ($r.tokens_by_model | length) > 0
+      and ([$r.tokens_by_model[] | keys == $tf] | all)
+      and ([$tf[] as $k | ([$r.tokens_by_model[] | .[$k]] | add) == $r.tokens[$k]] | all)' "$TEST_TMP/$a.res"
+  done
+}
+
+@test "contract normalize: a run that reported no usage has five null totals and a null tokens_by_model" {
+  # The rule the sum check above cannot see: null totals never come with entries.
+  for a in $(adapters); do
+    contract_entry "$a"
+    run_adapter "$a" error
+    run rt "$a" normalize --raw "$TEST_TMP/$a.raw" --result "$TEST_TMP/$a.res" --txt "$TEST_TMP/$a.txt" --session-id S
+    [ "$status" -eq 0 ]
+    [ ! -e "$TEST_TMP/$a.res" ] || jq -e '
+      if ([.tokens[]] | all(. == null)) then .tokens_by_model == null
+      else (.tokens_by_model | type) == "object" end' "$TEST_TMP/$a.res"
+  done
+}
+
+@test "contract enforces: turns and budget answer 0 or 1; any other limit, or none, exits 2" {
+  for a in $(adapters); do
+    for l in turns budget; do
+      run rt "$a" enforces --limit "$l"
+      [ "$status" -eq 0 ] || [ "$status" -eq 1 ]
+      [ -z "$output" ]
+    done
+    run rt "$a" enforces --limit timeout   # the wall clock is run-job's, never an adapter's
+    [ "$status" -eq 2 ]
+    run rt "$a" enforces
+    [ "$status" -eq 2 ]
   done
 }
 

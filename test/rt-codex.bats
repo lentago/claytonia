@@ -166,7 +166,9 @@ EOF
   [ -z "$output" ]   # silent: run-job's stderr log must not gain lines
   jq -e --arg tid "$TID" '. == {runtime: "codex", model: "gpt-5-codex", session_id: $tid,
     status: "ok", is_error: false, turns: 0,
-    tokens: {in: 24117, cached: 0, out: 5, thinking: 0}, cost_usd: null, final_text: "ok"}' "$TEST_TMP/res"
+    tokens: {in: 24117, cached: 0, cache_write: 0, out: 5, thinking: 0},
+    tokens_by_model: {unknown: {in: 24117, cached: 0, cache_write: 0, out: 5, thinking: 0}},
+    cost_usd: null, final_text: "ok"}' "$TEST_TMP/res"
   [ "$(cat "$TEST_TMP/txt")" = ok ]
 }
 
@@ -187,11 +189,58 @@ EOF
 EOF
   normalize S
   [ "$status" -eq 0 ]
-  # in = 1500 input - 500 cached reads; out = 350 output - 120 reasoning
-  jq -e '.tokens == {in: 1000, cached: 500, out: 230, thinking: 120} and .turns == 3
+  # in = 1500 input - 500 cached reads - 50 cache writes; out = 350 output - 120 reasoning
+  jq -e '.tokens == {in: 950, cached: 500, cache_write: 50, out: 230, thinking: 120} and .turns == 3
     and .status == "ok" and .session_id == "aaaaaaaa-0000-7000-8000-000000000001"
     and .final_text == "done: https://github.com/acme/proj/pull/7"' "$TEST_TMP/res"
   grep -qx 'done: https://github.com/acme/proj/pull/7' "$TEST_TMP/txt"   # run-job finds the PR URL here
+  # the three input counts add back up to input_tokens, the two output ones to output_tokens
+  [ "$(jq '.tokens | .in + .cached + .cache_write' "$TEST_TMP/res")" -eq 1500 ]
+  [ "$(jq '.tokens | .out + .thinking' "$TEST_TMP/res")" -eq 350 ]
+}
+
+@test "rt-codex normalize: a captured gate run's cache writes come out of in (#173)" {
+  # turn.completed usage of gate job 216 (2026-11-04): nearly all of its uncached
+  # input was cache writes, which bill at their own rate.
+  printf '%s\n' '{"type":"thread.started","thread_id":"t"}' \
+    '{"type":"item.completed","item":{"type":"agent_message","text":"r"}}' \
+    '{"type":"turn.completed","usage":{"input_tokens":101692,"cached_input_tokens":78540,"cache_write_input_tokens":23137,"output_tokens":821,"reasoning_output_tokens":0}}' > "$TEST_TMP/raw"
+  normalize S
+  [ "$status" -eq 0 ]
+  jq -e '.tokens == {in: 15, cached: 78540, cache_write: 23137, out: 821, thinking: 0}' "$TEST_TMP/res"
+}
+
+@test "rt-codex normalize: tokens_by_model names the model from the session transcript's turn_context (#173)" {
+  run_codex
+  d="$HOME/.codex/sessions/2026/11/04"; mkdir -p "$d"
+  f="$d/rollout-2026-11-04T10-00-00-$TID.jsonl"
+  # As 0.166 writes it: other lines first, a line that is not JSON skipped.
+  printf '%s\n' '{"type":"session_meta","payload":{"model_provider":"openai"}}' 'not json' \
+    '{"type":"turn_context","payload":{"turn_id":"1","model":"gpt-6.1-sol"}}' \
+    '{"type":"token_usage_record","payload":{"usage":{}}}' \
+    '{"type":"turn_context","payload":{"turn_id":"2","model":"gpt-6.1-sol"}}' > "$f"
+  normalize
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  jq -e '.tokens_by_model == {"gpt-6.1-sol": .tokens} and .tokens.in == 24117' "$TEST_TMP/res"
+
+  # Two different models in one session: the tokens cannot be split, so unknown.
+  printf '%s\n' '{"type":"turn_context","payload":{"model":"gpt-a"}}' \
+    '{"type":"turn_context","payload":{"model":"gpt-b"}}' > "$f"
+  run_codex
+  normalize
+  jq -e '(.tokens_by_model | keys) == ["unknown"]' "$TEST_TMP/res"
+
+  # No model named, or no transcript at all: unknown.
+  printf '%s\n' '{"type":"turn_context","payload":{"cwd":"/x"}}' > "$f"
+  run_codex
+  normalize
+  jq -e '(.tokens_by_model | keys) == ["unknown"]' "$TEST_TMP/res"
+  rm -f "$f"
+  run_codex
+  normalize
+  [ -z "$output" ]
+  jq -e '(.tokens_by_model | keys) == ["unknown"]' "$TEST_TMP/res"
 }
 
 @test "rt-codex normalize: the -o file wins over the event stream and is consumed; the thread id is left for transcript" {
@@ -243,7 +292,22 @@ EOF
     '{"type":"turn.completed","usage":{"input_tokens":"lots"}}' > "$TEST_TMP/raw"
   normalize S
   [ "$status" -eq 0 ]
-  jq -e '.status == "ok" and .tokens == {in: null, cached: null, out: null, thinking: null} and .model == null' "$TEST_TMP/res"
+  jq -e '.status == "ok" and .tokens == {in: null, cached: null, cache_write: null, out: null, thinking: null}
+         and .tokens_by_model == null and .model == null' "$TEST_TMP/res"
+}
+
+@test "rt-codex normalize: usage whose parts exceed its whole is null, never a negative count (#235 review)" {
+  for usage in '{"input_tokens":100,"cached_input_tokens":90,"cache_write_input_tokens":20,"output_tokens":5,"reasoning_output_tokens":0}' \
+               '{"input_tokens":100,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":9}'; do
+    printf '%s\n' '{"type":"thread.started","thread_id":"t"}' \
+      '{"type":"item.completed","item":{"type":"agent_message","text":"r"}}' \
+      "{\"type\":\"turn.completed\",\"usage\":$usage}" > "$TEST_TMP/raw"
+    normalize S
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    jq -e '.status == "ok" and .tokens == {in: null, cached: null, cache_write: null, out: null, thinking: null}
+           and .tokens_by_model == null' "$TEST_TMP/res"
+  done
 }
 
 @test "rt-codex normalize: a result it cannot write is an exit 1, still silent" {
@@ -276,6 +340,13 @@ EOF
   run "$RT" transcript --session-id "$TID" --out "$TEST_TMP/tr3"
   [ "$status" -eq 0 ]
   [ ! -e "$TEST_TMP/tr3" ]
+}
+
+@test "rt-codex enforces: neither cap exists in Codex (#173)" {
+  run "$RT" enforces --limit turns
+  [ "$status" -eq 1 ]
+  run "$RT" enforces --limit budget
+  [ "$status" -eq 1 ]
 }
 
 @test "rt-codex accepts-model: OpenAI ids yes; Claude, Gemini and malformed names no" {

@@ -39,7 +39,8 @@ only_runid() { basename "$(find "$JOBS_ROOT/logs" -name '*.meta' | head -1)" .me
     if [ "$2" = none ]; then [ ! -e "$res" ]; return; fi
     jq -e "$2" "$res" >/dev/null
   }
-  expect ok      '.runtime == "claude" and .status == "ok" and .is_error == false and .turns == 1 and .cost_usd == 0.0001 and .final_text == "stub ok"'
+  expect ok      '.runtime == "claude" and .status == "ok" and .is_error == false and .turns == 1 and .cost_usd == 0.0001 and .final_text == "stub ok"
+                  and .tokens == {"in":820,"cached":9000,"cache_write":500,"out":160,"thinking":null}'
   expect error   '.status == "error" and .is_error == true and .final_text == "stub failure"'
   expect turns   '.status == "max_turns" and .is_error == false and .turns == 4'
   expect budget  '.status == "max_budget" and .cost_usd == 2.01'
@@ -90,33 +91,79 @@ only_runid() { basename "$(find "$JOBS_ROOT/logs" -name '*.meta' | head -1)" .me
   [ "$(cat "$side")" = "$runid" ]
 }
 
-@test "the .meta keeps its keys, in order (the seam adds none)" {
+@test "the .meta keeps its keys, in order; #173 appends its own after them" {
   drop_job "keys.txt" "go"
   run "$REPO_ROOT/bin/process-inbox"
   [ "$status" -eq 0 ]
   cut -d= -f1 "$JOBS_ROOT/logs/$(only_runid).meta" > "$TEST_TMP/keys"
   printf '%s\n' runid exit duration_sec project repo model cwd cost_usd num_turns session_id \
-    limit max_turns max_budget_usd timeout_sec claim_comment_id issue submitter finished > "$TEST_TMP/want"
+    limit max_turns max_budget_usd timeout_sec claim_comment_id issue submitter finished \
+    runtime tokens_in tokens_cached tokens_cache_write tokens_out tokens_thinking tokens_by_model \
+    turns_enforced budget_enforced > "$TEST_TMP/want"
   diff "$TEST_TMP/want" "$TEST_TMP/keys"
 }
 
-@test "rt-claude normalize: token counts are disjoint (in excludes cached reads; thinking is folded into out)" {
+@test "rt-claude normalize: token counts are disjoint (cache reads and writes apart from in; thinking folded into out)" {
+  # No modelUsage (an older CLI): .usage is all there is, and its model is unknown.
   printf '%s\n' '{"subtype":"success","is_error":false,"result":"r","total_cost_usd":1.50,"num_turns":7,
     "usage":{"input_tokens":12,"cache_creation_input_tokens":300,"cache_read_input_tokens":4000,"output_tokens":55}}' > "$TEST_TMP/raw"
   run "$RT" normalize --raw "$TEST_TMP/raw" --result "$TEST_TMP/res" --txt "$TEST_TMP/txt" --session-id S --model opus
   [ "$status" -eq 0 ]
   [ -z "$output" ]   # silent: run-job's stderr log must not gain lines
-  jq -e '.tokens == {"in":312,"cached":4000,"out":55,"thinking":null} and .model == "opus" and .session_id == "S"' "$TEST_TMP/res"
+  jq -e '.tokens == {"in":12,"cached":4000,"cache_write":300,"out":55,"thinking":null}
+         and .tokens_by_model == {"unknown": .tokens}
+         and .model == "opus" and .session_id == "S"' "$TEST_TMP/res"
   # copied, not recomputed: the cost reads back exactly as the CLI wrote it
   [ "$(jq -r '.cost_usd' "$TEST_TMP/res")" = "$(jq -r '.total_cost_usd' "$TEST_TMP/raw")" ]
   [ "$(cat "$TEST_TMP/txt")" = r ]
+}
+
+@test "rt-claude normalize: modelUsage is the whole session; tokens_by_model is per model and sums to the totals (#173)" {
+  # Shaped like a real run that used a subagent: .usage covers only part of the
+  # session, and modelUsage (whose costUSD sums to total_cost_usd) covers all of it.
+  printf '%s\n' '{"result":"r","is_error":false,"total_cost_usd":6.24,
+    "usage":{"input_tokens":38,"cache_creation_input_tokens":118125,"cache_read_input_tokens":1762312,"output_tokens":23323},
+    "modelUsage":{
+      "claude-opus-5-5":{"inputTokens":254,"outputTokens":82681,"cacheReadInputTokens":9594277,"cacheCreationInputTokens":460483,"thinkingTokens":10601,"costUSD":6.1},
+      "claude-haiku-5-5":{"inputTokens":81101,"outputTokens":7775,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"thinkingTokens":4671,"costUSD":0.14}}}' > "$TEST_TMP/raw"
+  run "$RT" normalize --raw "$TEST_TMP/raw" --result "$TEST_TMP/res" --txt "$TEST_TMP/txt" --session-id S
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  jq -e '.tokens_by_model == {
+           "claude-opus-5-5": {in: 254, cached: 9594277, cache_write: 460483, out: 82681, thinking: null},
+           "claude-haiku-5-5": {in: 81101, cached: 0, cache_write: 0, out: 7775, thinking: null}}
+         and .tokens == {in: 81355, cached: 9594277, cache_write: 460483, out: 90456, thinking: null}' "$TEST_TMP/res"
+
+  # A malformed modelUsage is unknown: never .usage's partial counts passed off as
+  # the session (#235 review).
+  printf '%s\n' '{"result":"r","modelUsage":{"m":{"inputTokens":"x"}},
+    "usage":{"input_tokens":1,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":4}}' > "$TEST_TMP/raw"
+  run "$RT" normalize --raw "$TEST_TMP/raw" --result "$TEST_TMP/res" --txt "$TEST_TMP/txt" --session-id S
+  [ "$status" -eq 0 ]
+  jq -e '.status == "ok" and .tokens == {in: null, cached: null, cache_write: null, out: null, thinking: null}
+         and .tokens_by_model == null' "$TEST_TMP/res"
+
+  # An empty modelUsage names no session at all: .usage, under an unknown model.
+  printf '%s\n' '{"result":"r","modelUsage":{},
+    "usage":{"input_tokens":1,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":4}}' > "$TEST_TMP/raw"
+  run "$RT" normalize --raw "$TEST_TMP/raw" --result "$TEST_TMP/res" --txt "$TEST_TMP/txt" --session-id S
+  [ "$status" -eq 0 ]
+  jq -e '.tokens == {in: 1, cached: 3, cache_write: 2, out: 4, thinking: null} and (.tokens_by_model | keys) == ["unknown"]' "$TEST_TMP/res"
 }
 
 @test "rt-claude normalize: a malformed usage block costs the counts, never the result" {
   printf '%s\n' '{"result":"r","is_error":false,"usage":{"input_tokens":"lots"}}' > "$TEST_TMP/raw"
   run "$RT" normalize --raw "$TEST_TMP/raw" --result "$TEST_TMP/res" --txt "$TEST_TMP/txt" --session-id S
   [ "$status" -eq 0 ]
-  jq -e '.status == "ok" and .tokens.in == null and .model == null' "$TEST_TMP/res"
+  jq -e '.status == "ok" and .tokens == {in: null, cached: null, cache_write: null, out: null, thinking: null}
+         and .tokens_by_model == null and .model == null' "$TEST_TMP/res"
+}
+
+@test "rt-claude enforces: both caps are native (#173)" {
+  run "$RT" enforces --limit turns
+  [ "$status" -eq 0 ]
+  run "$RT" enforces --limit budget
+  [ "$status" -eq 0 ]
 }
 
 @test "rt-claude normalize: output that is not JSON gets no result, and the raw text as .txt" {
