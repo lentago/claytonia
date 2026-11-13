@@ -288,12 +288,11 @@ refute() { if "$@"; then echo "unexpectedly true: $*"; return 1; fi; }
   [ ! -e "$CODEX_ROOT/0.167.0.partial" ]
 }
 
-@test "codex: a version already on disk is made current again without a download" {
+@test "codex: a version already on disk is made current again with no network at all" {
   mk_codex_pkg "$CODEX_ROOT/0.165.0" 0.165.0
   pin 0.66.0 0.165.0
-  mkdir -p "$TEST_TMP/api/tags"   # a release whose asset would no longer download
-  jq -n --arg n "$ASSET" '{tag_name: "rust-v0.165.0", assets: [{name: $n, browser_download_url: "file:///nope",
-    digest: ("sha256:" + ("a" * 64))}]}' > "$TEST_TMP/api/tags/rust-v0.165.0"
+  # No release API at all: a rollback must not need GitHub (#238 review).
+  CODEX_RELEASES_API="file://$TEST_TMP/no-such-api"
   run cr_update
   [ "$status" -eq 0 ]
   [[ "$output" == *"codex: updated: codex-cli 0.166.0 -> codex-cli 0.165.0"* ]]

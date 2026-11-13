@@ -39,9 +39,10 @@
 # created would lock process-inbox out. A missing lock file is therefore created
 # exclusively and handed to claude before it is opened.
 #
-# Every binary is called by absolute path: cron's PATH is /usr/local/bin:/usr/bin:/bin,
-# and the native installer puts claude in ~/.local/bin, so a bare `claude` is
-# "command not found" under cron (#162).
+# Each runtime CLI is called by absolute path, through its adapter: cron's PATH is
+# /usr/local/bin:/usr/bin:/bin, and the native installer puts claude in ~/.local/bin,
+# so a bare `claude` is "command not found" under cron (#162). System tools (flock,
+# jq, tar, timeout, …) are on that PATH and are called by name.
 set -uo pipefail
 LOCK="${CLAUDE_INBOX_LOCK:-/tmp/claude-inbox.lock}"
 WAIT="${CR_UPDATE_WAIT:-600}"          # seconds to wait for a running job to finish

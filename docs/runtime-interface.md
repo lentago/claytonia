@@ -179,7 +179,8 @@ one line, which `cr-update` logs to journald under the runtime's name, and exits
 Each adapter owns its install's privileges. `cr-update` runs as root because Gemini
 and Codex are installed system-wide and root-owned by kalmia's runner image.
 `rt-claude` runs Claude's update as `claude`, the owner of its native install.
-Every binary is called by absolute path, since cron's PATH is minimal (#162).
+Each CLI is called by absolute path, since cron's PATH (`/usr/local/bin:/usr/bin:/bin`)
+lacks `~/.local/bin` (#162); system tools are on that PATH and are called by name.
 
 ## Secrets
 
@@ -215,7 +216,7 @@ An adapter whose file is missing refuses before the CLI starts, with one stderr 
 | `tokens` | summed over `modelUsage`, the whole session (`inputTokens` → `in`, `cacheReadInputTokens` → `cached`, `cacheCreationInputTokens` → `cache_write`, `outputTokens` → `out`, thinking folded in so `null`); `.usage`, which covers only part of the session, only when `modelUsage` is missing | per model in `.stats.models`: `input` + `tool` → `in` (0.66's `input` is already `prompt` − `cached`), `cached`, `candidates` → `out`, `thoughts` → `thinking`; `cache_write` `null` | `turn.completed` usage, summed: `input` − `cached_input` − `cache_write_input` → `in`, `cached_input`, `cache_write_input`, `output` − `reasoning_output` → `out`, `reasoning_output` → `thinking` |
 | `tokens_by_model` keys | `modelUsage`'s model ids (`unknown` on the `.usage` fallback) | `.stats.models`' model ids: the router, the main model and the loop detector, a zero-token one included | the model the session transcript's `turn_context` names; `unknown` when it names none or several, or there is no transcript |
 | `cost_usd` | reported | `null` | `null` |
-| `update` (#172) | `claude update`, as `claude`: Claude Code's own release channel, no pin | npm `@google/gemini-cli` under `/usr`, to `CLAUDE_RUNNER_GEMINI_VERSION` (`etc/runner.env`) | the release package into `/opt/codex/<version>`, checked against GitHub's published sha256, to `CLAUDE_RUNNER_CODEX_VERSION` |
+| `update` (#172) | `claude update`, as `claude`: Claude Code's own release channel, no pin | npm `@google/gemini-cli` under `/usr`, to `CLAUDE_RUNNER_GEMINI_VERSION` (`etc/runner.env`) | the release package into `/opt/codex/<version>`, checked against the sha256 digest GitHub publishes for it (integrity; authenticity rests on GitHub's TLS, as for the image's install), to `CLAUDE_RUNNER_CODEX_VERSION`; a version already on disk needs no network |
 | transcript | `~/.claude/projects/…/<uuid>.jsonl` | the run home's `chats/session-*.jsonl` | `~/.codex/sessions/**/*<thread>.jsonl` |
 | local state | Claude Code's own session files, kept by its own retention | the per-run Gemini home, swept after 7 days | `~/.codex/sessions` files, swept after 7 days; the adapter's per-run hand-off files (last message, thread id) under `~/.cache/rt-codex`, swept after 2 days |
 | models | `haiku`, `sonnet`, `opus`, `fable`, `opusplan`, `default`, `claude-*` (optionally with `[1m]`) | `gemini-*`, `auto`, `auto-gemini-*`, `pro`, `flash`, `flash-lite` | `gpt-*`, `codex-*`, o-series (`o3`, `o4-mini`, …), lowercase |

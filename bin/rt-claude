@@ -40,7 +40,7 @@
 #       "updated: <before> -> <after>" or "already current (<version>)", 3 with
 #       "not installed (<path>)", 4 when the CLI is not this user's to update (the
 #       line says whose it is), and 1 with "update FAILED (was: <before>): <why>".
-#       Calls every binary by absolute path: cron's PATH is minimal (#162).
+#       Calls its CLI by absolute path: cron's PATH lacks ~/.local/bin (#162).
 #
 # Normalized result:
 #   {runtime, model, session_id, status, is_error, turns,
