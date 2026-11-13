@@ -41,6 +41,14 @@
 #       "not installed (<path>)", 4 when the CLI is not this user's to update (the
 #       line says whose it is), and 1 with "update FAILED (was: <before>): <why>".
 #       Calls its CLI by absolute path: cron's PATH lacks ~/.local/bin (#162).
+#   rt-<runtime> live-session --session-id UUID --cwd DIR --raw F
+#       Where this run's live session file is, for the transcript shipper (#239,
+#       drosera ADR-0012). Prints "<session id><TAB><path>" once the runtime's own
+#       session file exists, and nothing (exit 0) while it does not; run-job polls
+#       it while the job runs. --raw is the run's raw output as written so far
+#       (logs/<runid>.json), for a runtime that announces its session id there.
+#       Exits 3 when this runtime's transcript ships another way and is never
+#       linked. Read-only, quick and silent: it is called every few seconds.
 #
 # Normalized result:
 #   {runtime, model, session_id, status, is_error, turns,
@@ -73,7 +81,7 @@ CLAUDE_BIN="${CLAUDE_BIN:-/home/claude/.local/bin/claude}"
 TOKEN_ENV="${CLAUDE_RUNNER_TOKEN_ENV:-/etc/claude-runner/token.env}"
 CLAUDE_USER="${CLAUDE_RUNNER_USER:-claude}"   # owns the native install under ~/.local
 
-usage() { echo "usage: rt-claude run|normalize|transcript|accepts-model|enforces|update [options]  (see the header)" >&2; exit 2; }
+usage() { echo "usage: rt-claude run|normalize|transcript|accepts-model|enforces|update|live-session [options]  (see the header)" >&2; exit 2; }
 
 cmd="${1:-}"; [ -n "$cmd" ] || usage; shift
 cwd=""; runid=""; sid=""; model=""; max_turns=""; max_budget=""; allowed=""
@@ -205,6 +213,12 @@ case "$cmd" in
       turns|budget) exit 0 ;;
       *) usage ;;
     esac
+    ;;
+
+  live-session)
+    # Claude's transcript ships from its own path, ~/.claude/projects/-home-claude-work*/,
+    # with the .runid sidecar `run` writes (drosera's Claude pipeline). It is never linked.
+    exit 3
     ;;
 
   update)

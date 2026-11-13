@@ -106,6 +106,11 @@
 #   against the full session id on its first line. Subagent sessions (in a
 #   directory named after the session) are not copied.
 #
+# live-session (#239)
+#   The same file, found the same way while the run is live, printed with the
+#   session id: run-job's UUID, which Gemini takes as its own sessionId. run-job
+#   links it for the transcript shipper (drosera ADR-0012).
+#
 # accepts-model
 #   gemini-* model ids, and 0.66's aliases: auto, pro, flash, flash-lite and
 #   auto-gemini-*. Everything else, every Claude and OpenAI model included, is no.
@@ -134,11 +139,24 @@ KEEP_DAYS=7
 CONTEXT_FILES='["GEMINI.md","AGENTS.md","CLAUDE.md"]'
 TURN_CAP_WARNING='Maximum session turns exceeded'
 
-usage() { echo "usage: rt-gemini run|normalize|transcript|accepts-model|enforces|update [options]  (see the header)" >&2; exit 2; }
+usage() { echo "usage: rt-gemini run|normalize|transcript|accepts-model|enforces|update|live-session [options]  (see the header)" >&2; exit 2; }
 # The per-run Gemini homes, outside any checkout.
 state_root() { printf '%s/claytonia/gemini' "${XDG_STATE_HOME:-$HOME/.local/state}"; }
 # The CLI's own rule for --session-id; it also keeps the id safe in a path.
 valid_sid() { [[ $1 =~ ^[A-Za-z0-9_-]+$ ]]; }
+# session_file_of <sid> — the main session file of that run, from the run's own
+# home: chats/session-<time>-<first 8 of the id>.jsonl whose first line names the
+# full id. Prints nothing when there is none (yet).
+session_file_of() {
+  local f
+  valid_sid "$1" || return 0
+  while IFS= read -r f; do
+    if [ "$(head -n 1 "$f" 2>/dev/null | jq -r '.sessionId // empty' 2>/dev/null)" = "$1" ]; then
+      printf '%s\n' "$f"; return 0
+    fi
+  done < <(find "$(state_root)/$1/.gemini/tmp" -type f -path '*/chats/session-*' \
+             -name "session-*-${1:0:8}.jsonl" 2>/dev/null | sort)
+}
 
 cmd="${1:-}"; [ -n "$cmd" ] || usage; shift
 cwd=""; sid=""; model=""; max_turns=""; max_budget=""; allowed=""
@@ -381,15 +399,15 @@ case "$cmd" in
 
   transcript)
     [ -n "$sid" ] && [ -n "$out" ] || usage
-    valid_sid "$sid" || exit 0
-    short="${sid:0:8}"
-    while IFS= read -r f; do
-      if [ "$(head -n 1 "$f" 2>/dev/null | jq -r '.sessionId // empty' 2>/dev/null)" = "$sid" ]; then
-        cp -f "$f" "$out" 2>/dev/null
-        break
-      fi
-    done < <(find "$(state_root)/$sid/.gemini/tmp" -type f -path '*/chats/session-*' \
-               -name "session-*-${short}.jsonl" 2>/dev/null | sort)
+    f="$(session_file_of "$sid")"
+    [ -n "$f" ] && cp -f "$f" "$out" 2>/dev/null
+    exit 0
+    ;;
+
+  live-session)
+    [ -n "$sid" ] || usage
+    f="$(session_file_of "$sid")"
+    [ -n "$f" ] && printf '%s\t%s\n' "$sid" "$f"
     exit 0
     ;;
 

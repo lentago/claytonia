@@ -14,16 +14,24 @@
 # A prompt containing FAKE_HANG sleeps FAKE_GEMINI_SLEEP (default 60) seconds first.
 # FAKE_GEMINI_ARGS receives the argv (one per line); FAKE_GEMINI_STDIN the prompt read;
 # FAKE_GEMINI_ENV the environment the CLI was started with (`env`, #170).
+# FAKE_GEMINI_SESSION=1 writes the session file as 0.66 keeps it in the run's home
+# (#239): $GEMINI_CLI_HOME/.gemini/tmp/<cwd basename>/chats/session-<time>-<first 8 of
+# the id>.jsonl, a header line naming the full sessionId, then one gemini line.
 set -u
 FIX="$(cd "$(dirname "$0")/../fixtures/runtimes" && pwd)"
 prompt="$(cat 2>/dev/null)" || true
 [ -n "${FAKE_GEMINI_ARGS:-}" ] && printf '%s\n' "$@" > "$FAKE_GEMINI_ARGS"
 [ -n "${FAKE_GEMINI_STDIN:-}" ] && printf '%s' "$prompt" > "$FAKE_GEMINI_STDIN"
 [ -n "${FAKE_GEMINI_ENV:-}" ] && env > "$FAKE_GEMINI_ENV"
-case "$prompt" in *FAKE_HANG*) sleep "${FAKE_GEMINI_SLEEP:-60}" ;; esac
-
 sid=""; prev=""
 for a in "$@"; do [ "$prev" = --session-id ] && sid="$a"; prev="$a"; done
+if [ -n "${FAKE_GEMINI_SESSION:-}" ] && [ -n "${GEMINI_CLI_HOME:-}" ] && [ -n "$sid" ]; then
+  chats="$GEMINI_CLI_HOME/.gemini/tmp/$(basename "$PWD")/chats"
+  mkdir -p "$chats"
+  jq -nc --arg s "$sid" '{sessionId: $s, projectHash: "x", startTime: "2026-11-13T00:00:00Z", kind: "main"},
+                         {type: "gemini", content: "ok"}' > "$chats/session-2026-11-13T00-00-${sid:0:8}.jsonl"
+fi
+case "$prompt" in *FAKE_HANG*) sleep "${FAKE_GEMINI_SLEEP:-60}" ;; esac
 
 case "${FAKE_GEMINI_MODE:-ok}" in
   error)   cat "$FIX/gemini-error.stderr" >&2; exit 1 ;;

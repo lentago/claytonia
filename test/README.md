@@ -74,6 +74,13 @@ bats --print-output-on-failure test/
   answering 0 or 1 for `turns` and `budget`, a best-effort `transcript`, and exit 2 for
   anything else. A new adapter
   adds one `contract_entry` (its stub and two models); without it the suite fails.
+- `test/live-links.bats` — live-transcript links (#239, drosera ADR-0012): a Gemini
+  project job and a Codex ad-hoc job each link their own session file at
+  `live/<runtime>/<project>/<runid>/<session_id>.jsonl`, while the job runs and after
+  it; an `offbox_transcript: false` project, a cwd outside the public workroot (a `..`
+  and a symlink included) and a Claude job link nothing; the sweep removes run
+  directories idle past the grace period, keeps fresh ones, never touches a session
+  file, and waits while a job holds the inbox lock.
 - `test/runtime.bats` — the runtime key (#168): precedence, refusal at claim time, the
   runtime-scoped model defaults, `cr-submit -r`, `cr-newproject -r`, `cr-schedule`.
 - `test/runtime-stubs.bats` — the Gemini and Codex stubs replay the captured CLI output

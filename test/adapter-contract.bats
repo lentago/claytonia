@@ -12,7 +12,9 @@
 # unparseable, and is silent on stderr; its five token counts are disjoint and its
 # tokens_by_model sums to them (#173); `accepts-model` and `enforces` answer 0 or 1;
 # `update` names a CLI that is not installed with exit 3 (#172; cr-update.bats covers
-# the rest of it); `transcript` is best-effort; anything else exits 2.
+# the rest of it); `live-session` is silent with nothing to link yet, or exits 3 for a
+# runtime that never links (#239; live-links.bats covers the rest); `transcript` is
+# best-effort; anything else exits 2.
 
 load test_helper
 
@@ -150,6 +152,17 @@ run_adapter() {
     run rt "$a" update
     [ "$status" -eq 3 ]
     [ "$output" = "not installed ($TEST_TMP/no-such-dir/$a)" ]
+  done
+}
+
+@test "contract live-session: nothing to link yet is silent, exit 0; a runtime that never links exits 3 (#239)" {
+  for a in $(adapters); do
+    contract_entry "$a"
+    : > "$TEST_TMP/$a.empty-raw"   # a run that has printed nothing yet
+    run rt "$a" live-session --session-id 11111111-2222-4333-8444-555555555555 \
+      --cwd "$CLAUDE_RUNNER_CWD" --raw "$TEST_TMP/$a.empty-raw"
+    [ "$status" -eq 0 ] || [ "$status" -eq 3 ]
+    [ -z "$output" ]
   done
 }
 

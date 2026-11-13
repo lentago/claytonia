@@ -29,6 +29,9 @@ setup() {
   # A writable, existing cwd for the faked agent run (run-job cd's into it).
   export CLAUDE_RUNNER_CWD="$TEST_TMP/work"; mkdir -p "$CLAUDE_RUNNER_CWD"
   export HOME="$TEST_TMP/home"; mkdir -p "$HOME"
+  # Live-transcript links (#239) and their sweep stay in the test's own tree, even
+  # when the suite runs on a worker that has real ones.
+  export CLAUDE_RUNNER_LIVE_ROOT="$TEST_TMP/live"
 
   # Seams (default to production paths): point process-inbox at the in-repo
   # run-job, and give both scripts a PATH whose stubs shadow claude/cr-emit/

@@ -132,6 +132,12 @@
 #   holding the Codex thread id for `transcript`, which run-job also calls with its
 #   own UUID. Each run prunes files there older than two days.
 #
+# live-session (#239): the same session file while the run is live, printed with
+#   Codex's thread id, which the thread.started event announces as the first line of
+#   the run's raw output (--raw, logs/<runid>.json as written so far). Nothing until
+#   that event and the file both exist. run-job links it for the transcript shipper
+#   (drosera ADR-0012).
+#
 # transcript: copies ~/.codex/sessions/**/*<thread id>.jsonl (the pinned CODEX_HOME)
 #   as-is (normalize reads its turn_context for the model, above). Best-effort;
 #   a --session-id with no thread recorded is tried as a thread id itself.
@@ -177,7 +183,7 @@ CODEX_LINK="${CODEX_LINK:-$CODEX_BIN}"
 CODEX_RELEASES_API="${CODEX_RELEASES_API:-https://api.github.com/repos/openai/codex/releases}"
 CODEX_ASSET=codex-package-x86_64-unknown-linux-musl.tar.gz
 
-usage() { echo "usage: rt-codex run|normalize|transcript|accepts-model|enforces|update [options]  (see the header)" >&2; exit 2; }
+usage() { echo "usage: rt-codex run|normalize|transcript|accepts-model|enforces|update|live-session [options]  (see the header)" >&2; exit 2; }
 
 cmd="${1:-}"; [ -n "$cmd" ] || usage; shift
 cwd=""; sid=""; model=""; max_turns=""; max_budget=""; allowed=""
@@ -367,6 +373,16 @@ case "$cmd" in
       gpt-*|codex-*|o[1-9]|o[1-9]-*) exit 0 ;;
       *) exit 1 ;;
     esac
+    ;;
+
+  live-session)
+    [ -n "$raw" ] || usage
+    # Only the start of the stream is read: thread.started comes first.
+    tid="$(head -c 65536 "$raw" 2>/dev/null | jq -n -R -r '[inputs | fromjson? | objects
+             | select(.type == "thread.started") | .thread_id | strings] | first // empty' 2>/dev/null)"
+    tpath="$(session_file "$tid")"
+    [ -n "$tpath" ] && printf '%s\t%s\n' "$tid" "$tpath"
+    exit 0
     ;;
 
   enforces)
