@@ -113,7 +113,9 @@
 #               output_tokens, so in = input - cached_input - cache_write_input,
 #               cached = cached_input, cache_write = cache_write_input,
 #               out = output - reasoning_output, thinking = reasoning_output. Each
-#               input token bills at exactly one of the three input rates.
+#               input token bills at exactly one of the three input rates. Usage
+#               whose parts exceed its whole (a negative in or out) is inconsistent:
+#               all five are null, never a negative count priced as one.
 #   tokens_by_model
 #               every token under one model: the `model` of the session
 #               transcript's turn_context lines (exec --json names none, and its
@@ -296,7 +298,8 @@ case "$cmd" in
                 cached: total($us; "cached_input_tokens"),
                 cache_write: total($us; "cache_write_input_tokens"),
                 out: (total($us; "output_tokens") - total($us; "reasoning_output_tokens")),
-                thinking: total($us; "reasoning_output_tokens")} end;
+                thinking: total($us; "reasoning_output_tokens")}
+            | if [.[] | select(. < 0)] == [] then . else error("inconsistent usage") end end;
       def result($ev):
         final($ev) as $ft
         | (try tokens($ev) catch null) as $tok

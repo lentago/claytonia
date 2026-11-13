@@ -134,8 +134,17 @@ only_runid() { basename "$(find "$JOBS_ROOT/logs" -name '*.meta' | head -1)" .me
            "claude-haiku-5-5": {in: 81101, cached: 0, cache_write: 0, out: 7775, thinking: null}}
          and .tokens == {in: 81355, cached: 9594277, cache_write: 460483, out: 90456, thinking: null}' "$TEST_TMP/res"
 
-  # A malformed modelUsage falls back to .usage, under an unknown model.
+  # A malformed modelUsage is unknown: never .usage's partial counts passed off as
+  # the session (#235 review).
   printf '%s\n' '{"result":"r","modelUsage":{"m":{"inputTokens":"x"}},
+    "usage":{"input_tokens":1,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":4}}' > "$TEST_TMP/raw"
+  run "$RT" normalize --raw "$TEST_TMP/raw" --result "$TEST_TMP/res" --txt "$TEST_TMP/txt" --session-id S
+  [ "$status" -eq 0 ]
+  jq -e '.status == "ok" and .tokens == {in: null, cached: null, cache_write: null, out: null, thinking: null}
+         and .tokens_by_model == null' "$TEST_TMP/res"
+
+  # An empty modelUsage names no session at all: .usage, under an unknown model.
+  printf '%s\n' '{"result":"r","modelUsage":{},
     "usage":{"input_tokens":1,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":4}}' > "$TEST_TMP/raw"
   run "$RT" normalize --raw "$TEST_TMP/raw" --result "$TEST_TMP/res" --txt "$TEST_TMP/txt" --session-id S
   [ "$status" -eq 0 ]

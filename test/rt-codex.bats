@@ -296,6 +296,20 @@ EOF
          and .tokens_by_model == null and .model == null' "$TEST_TMP/res"
 }
 
+@test "rt-codex normalize: usage whose parts exceed its whole is null, never a negative count (#235 review)" {
+  for usage in '{"input_tokens":100,"cached_input_tokens":90,"cache_write_input_tokens":20,"output_tokens":5,"reasoning_output_tokens":0}' \
+               '{"input_tokens":100,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":9}'; do
+    printf '%s\n' '{"type":"thread.started","thread_id":"t"}' \
+      '{"type":"item.completed","item":{"type":"agent_message","text":"r"}}' \
+      "{\"type\":\"turn.completed\",\"usage\":$usage}" > "$TEST_TMP/raw"
+    normalize S
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    jq -e '.status == "ok" and .tokens == {in: null, cached: null, cache_write: null, out: null, thinking: null}
+           and .tokens_by_model == null' "$TEST_TMP/res"
+  done
+}
+
 @test "rt-codex normalize: a result it cannot write is an exit 1, still silent" {
   run_codex
   run "$RT" normalize --raw "$TEST_TMP/raw" --result "$TEST_TMP/no-such-dir/res" --txt "$TEST_TMP/txt" --session-id "$SID"
