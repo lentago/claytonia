@@ -34,6 +34,13 @@
 #       limit the job sets, and records the answer in the .meta as
 #       turns_enforced= / budget_enforced= yes|no (#173). The wall clock is not
 #       asked about: timeout(1) enforces it outside every adapter.
+#   rt-<runtime> update
+#       Bring this runtime's CLI to its target version (cr-update calls it under the
+#       inbox lock, as root, from cron; #172). Prints one line and exits 0 with
+#       "updated: <before> -> <after>" or "already current (<version>)", 3 with
+#       "not installed (<path>)", 4 when the CLI is not this user's to update (the
+#       line says whose it is), and 1 with "update FAILED (was: <before>): <why>".
+#       Calls its CLI by absolute path: cron's PATH lacks ~/.local/bin (#162).
 #
 # Normalized result:
 #   {runtime, model, session_id, status, is_error, turns,
@@ -55,14 +62,18 @@
 #   cost_usd  as the runtime reports it; null when it reports none (never 0).
 #
 # For Claude: `run` is the exact command run-job ran before the seam existed, and
-# it execs the CLI so the process tree under timeout(1) is unchanged.
+# it execs the CLI so the process tree under timeout(1) is unchanged. `update` is
+# the step cr-update always ran, `claude update` on Claude's own release channel,
+# as the user whose home the native installer put the CLI in: run as root, it
+# drops to that user.
 set -uo pipefail
 CLAUDE_BIN="${CLAUDE_BIN:-/home/claude/.local/bin/claude}"
 # The Claude token (root:claude 0640). Only `run` reads it, just before it execs
 # the CLI; run-job holds no vendor secret (#170).
 TOKEN_ENV="${CLAUDE_RUNNER_TOKEN_ENV:-/etc/claude-runner/token.env}"
+CLAUDE_USER="${CLAUDE_RUNNER_USER:-claude}"   # owns the native install under ~/.local
 
-usage() { echo "usage: rt-claude run|normalize|transcript|accepts-model|enforces [options]  (see the header)" >&2; exit 2; }
+usage() { echo "usage: rt-claude run|normalize|transcript|accepts-model|enforces|update [options]  (see the header)" >&2; exit 2; }
 
 cmd="${1:-}"; [ -n "$cmd" ] || usage; shift
 cwd=""; runid=""; sid=""; model=""; max_turns=""; max_budget=""; allowed=""
@@ -194,6 +205,21 @@ case "$cmd" in
       turns|budget) exit 0 ;;
       *) usage ;;
     esac
+    ;;
+
+  update)
+    # As root (cr-update from cron), every call goes through runuser to the install's
+    # owner, so the update writes claude's files as claude, never root's.
+    as_owner() { if [ "$(id -u)" -eq 0 ]; then /usr/sbin/runuser -u "$CLAUDE_USER" -- "$@"; else "$@"; fi; }
+    [ -x "$CLAUDE_BIN" ] || { echo "not installed ($CLAUDE_BIN)"; exit 3; }
+    before="$(as_owner "$CLAUDE_BIN" --version </dev/null 2>/dev/null | head -1)"; [ -n "$before" ] || before=unknown
+    if ! out="$(as_owner "$CLAUDE_BIN" update </dev/null 2>&1)"; then
+      echo "update FAILED (was: $before): $(printf '%s' "$out" | tail -1)"
+      exit 1
+    fi
+    after="$(as_owner "$CLAUDE_BIN" --version </dev/null 2>/dev/null | head -1)"; [ -n "$after" ] || after=unknown
+    if [ "$before" = "$after" ]; then echo "already current ($after)"; else echo "updated: $before -> $after"; fi
+    exit 0
     ;;
 
   transcript)

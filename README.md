@@ -530,9 +530,12 @@ systemd/     claude-inbox.{service,timer} (poll), claude-heartbeat.{service,time
              transcript-shipper-sync.{service,timer}, and zero-length mask files for
              proxmox-regenerate-snakeoil.service / first-boot-complete.target (#120)
 cron/        claude-runner — cr-schedule every minute (schedules are specs on the NAS)
-             + the weekly `cr-update` (Claude Code stays current; idle-guarded by the inbox lock)
+             + the weekly `cr-update`, as root: each runtime CLI to its target version through
+               its adapter's `update` (Claude Code current; Gemini and Codex to the pins in
+               runner.env); idle-guarded by the inbox lock
              + cr-publish-share every minute + cr-harden every minute, as root
-etc/         runner.env — non-secret config (model/cwd/turns defaults, LOKI_PUSH_URL)
+etc/         runner.env — non-secret config (model/cwd/turns defaults, LOKI_PUSH_URL, the
+             Gemini and Codex CLI version pins)
 gitops/      claytonia-gitops.{sh,service,timer} + install.sh — pull main, redeploy on drift
 terraform/   the five claytonia-pool worker LXCs (plan-on-PR / apply-on-merge)
 provision/   01..05 scripts — stand up a worker from scratch (LXC, runner, App, projects, reaper)

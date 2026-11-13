@@ -112,14 +112,29 @@
 #
 # enforces
 #   turns yes (model.maxSessionTurns, above); budget no (the CLI has no spend cap).
+#
+# update (#172)
+#   Brings the npm global @google/gemini-cli under GEMINI_PREFIX (/usr in kalmia's
+#   runner image: /usr/bin/gemini, modules under /usr/lib/node_modules, root-owned)
+#   to CLAUDE_RUNNER_GEMINI_VERSION from etc/runner.env. That is an exact version,
+#   or `latest`; unset leaves the CLI as it is. The install command is the image's
+#   own (kalmia forge/runner/substrate.sh), so a worker updated here matches one
+#   built at that version. Only an update that is due needs root: a prefix this
+#   user cannot write is exit 4. A pin bump is a reviewed PR because this adapter
+#   rests on 0.66 facts a new release can change: the shell tool's git overrides
+#   (#214), the turn-cap report, the stats shape. Recapture the fixtures and re-run
+#   the live gate jobs before bumping. Version checks run with a throwaway HOME,
+#   since `gemini --version` writes ~/.gemini, and with stdin from /dev/null.
 set -uo pipefail
 GEMINI_BIN="${GEMINI_BIN:-/usr/bin/gemini}"
+GEMINI_PREFIX="${GEMINI_PREFIX:-/usr}"   # npm --prefix the CLI is installed under (update)
+NPM_BIN="${NPM_BIN:-/usr/bin/npm}"
 GEMINI_ENV="${CLAUDE_RUNNER_GEMINI_ENV:-/etc/claude-runner/gemini.env}"
 KEEP_DAYS=7
 CONTEXT_FILES='["GEMINI.md","AGENTS.md","CLAUDE.md"]'
 TURN_CAP_WARNING='Maximum session turns exceeded'
 
-usage() { echo "usage: rt-gemini run|normalize|transcript|accepts-model|enforces [options]  (see the header)" >&2; exit 2; }
+usage() { echo "usage: rt-gemini run|normalize|transcript|accepts-model|enforces|update [options]  (see the header)" >&2; exit 2; }
 # The per-run Gemini homes, outside any checkout.
 state_root() { printf '%s/claytonia/gemini' "${XDG_STATE_HOME:-$HOME/.local/state}"; }
 # The CLI's own rule for --session-id; it also keeps the id safe in a path.
@@ -328,6 +343,40 @@ case "$cmd" in
       budget) exit 1 ;;
       *) usage ;;
     esac
+    ;;
+
+  update)
+    gemini_version() {
+      local h v; h="$(mktemp -d)" || return 1
+      v="$(HOME="$h" "$GEMINI_BIN" --version </dev/null 2>/dev/null | head -1)"
+      rm -rf "$h"; printf '%s' "$v"
+    }
+    [ -x "$GEMINI_BIN" ] || { echo "not installed ($GEMINI_BIN)"; exit 3; }
+    before="$(gemini_version)"; [ -n "$before" ] || before=unknown
+    want="${CLAUDE_RUNNER_GEMINI_VERSION:-}"
+    [ -n "$want" ] || { echo "not pinned, left at $before (CLAUDE_RUNNER_GEMINI_VERSION is unset)"; exit 0; }
+    [[ $want =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]] \
+      || { echo "update FAILED (was: $before): CLAUDE_RUNNER_GEMINI_VERSION '$want' is not a version"; exit 1; }
+    # `latest` (or any npm tag) resolves to a concrete version first.
+    target="$want"
+    if ! [[ $want =~ ^[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.+-]*)?$ ]]; then
+      target="$("$NPM_BIN" view --no-update-notifier "@google/gemini-cli@${want}" version </dev/null 2>/dev/null | tail -n1)"
+      [ -n "$target" ] || { echo "update FAILED (was: $before): npm has no @google/gemini-cli@${want}"; exit 1; }
+    fi
+    [ "$before" = "$target" ] && { echo "already current ($before)"; exit 0; }
+    if [ ! -w "$GEMINI_PREFIX/lib/node_modules" ] || [ ! -w "$GEMINI_PREFIX/bin" ]; then
+      echo "needs root: $before -> $target is due, and $GEMINI_PREFIX is not writable by $(id -un)"
+      exit 4
+    fi
+    if ! out="$("$NPM_BIN" install -g --prefix "$GEMINI_PREFIX" --no-fund --no-audit --no-update-notifier \
+                  --loglevel=error "@google/gemini-cli@${target}" </dev/null 2>&1)"; then
+      echo "update FAILED (was: $before): $(printf '%s' "$out" | tail -1)"
+      exit 1
+    fi
+    after="$(gemini_version)"
+    [ "$after" = "$target" ] || { echo "update FAILED (was: $before): installed ${after:-nothing}, wanted $target"; exit 1; }
+    echo "updated: $before -> $after"
+    exit 0
     ;;
 
   transcript)

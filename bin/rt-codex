@@ -140,6 +140,24 @@
 #   o4-mini, …), in lowercase letters, digits, '.' and '-'. Claude and Gemini names,
 #   and Claude's aliases, are refused.
 #
+# update (#172): brings the openai/codex release package to CLAUDE_RUNNER_CODEX_VERSION
+#   from etc/runner.env. That is an exact version, or `latest`; unset leaves the CLI
+#   as it is. The layout is kalmia's runner image's (forge/runner/substrate.sh), all
+#   root-owned: /opt/codex/<version>, /opt/codex/current pointing at it, and
+#   /usr/local/bin/codex linking to current/bin/codex. A version not yet on disk is
+#   downloaded from the GitHub release, checked against the sha256 digest GitHub
+#   publishes for the asset, checked for the package layout, and unpacked beside
+#   the others. Then `current` moves to it. The digest comes from the same release
+#   API as the asset, so it catches a corrupt or truncated download. The release's
+#   authenticity rests on GitHub over TLS, as it does for the image's own install.
+#   Older versions stay on disk, so a rollback is a pin change. An exact pin that is
+#   already on disk, running or not, needs no network. Only an update that is due
+#   needs root: a layout this user cannot
+#   write is exit 4. A pin bump is a reviewed PR because this adapter rests on
+#   0.166 facts a new release can change: the CODEX_API_KEY name, the exec --json
+#   events, the turn_context model. Recapture the fixtures and re-run the live gate
+#   jobs before bumping.
+#
 # Limits: Codex has no native turn or budget cap and no tool allowlist. When
 #   --max-turns, --max-budget-usd or --allowed-tools is set, `run` writes one stderr
 #   line naming what is not enforced, and `enforces` answers no for both, so run-job
@@ -153,8 +171,13 @@ STATE="${XDG_CACHE_HOME:-${HOME:-/home/claude}/.cache}/rt-codex"
 # Codex's home is pinned: an ambient CODEX_HOME could hold another login or config.
 CODEX_DIR="${HOME:-/home/claude}/.codex"
 EX_CONFIG=78
+# The installed layout `update` manages, and where it finds releases (test seams).
+CODEX_ROOT="${CODEX_ROOT:-/opt/codex}"
+CODEX_LINK="${CODEX_LINK:-$CODEX_BIN}"
+CODEX_RELEASES_API="${CODEX_RELEASES_API:-https://api.github.com/repos/openai/codex/releases}"
+CODEX_ASSET=codex-package-x86_64-unknown-linux-musl.tar.gz
 
-usage() { echo "usage: rt-codex run|normalize|transcript|accepts-model|enforces [options]  (see the header)" >&2; exit 2; }
+usage() { echo "usage: rt-codex run|normalize|transcript|accepts-model|enforces|update [options]  (see the header)" >&2; exit 2; }
 
 cmd="${1:-}"; [ -n "$cmd" ] || usage; shift
 cwd=""; sid=""; model=""; max_turns=""; max_budget=""; allowed=""
@@ -352,6 +375,71 @@ case "$cmd" in
       turns|budget) exit 1 ;;
       *) usage ;;
     esac
+    ;;
+
+  update)
+    # `codex --version` prints "codex-cli <version>"; a throwaway home keeps it from
+    # writing state, and stdin is /dev/null.
+    codex_version() {
+      local h v; h="$(mktemp -d)" || return 1
+      v="$(HOME="$h" CODEX_HOME="$h" "$CODEX_BIN" --version </dev/null 2>/dev/null | head -1)"
+      rm -rf "$h"; printf '%s' "$v"
+    }
+    [ -x "$CODEX_BIN" ] || { echo "not installed ($CODEX_BIN)"; exit 3; }
+    before="$(codex_version)"; [ -n "$before" ] || before=unknown
+    have="${before##* }"
+    want="${CLAUDE_RUNNER_CODEX_VERSION:-}"; want="${want#rust-v}"
+    [ -n "$want" ] || { echo "not pinned, left at $before (CLAUDE_RUNNER_CODEX_VERSION is unset)"; exit 0; }
+    [[ $want =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]] \
+      || { echo "update FAILED (was: $before): CLAUDE_RUNNER_CODEX_VERSION '$want' is not a version"; exit 1; }
+    [ "$want" = "$have" ] && { echo "already current ($before)"; exit 0; }
+    url=""; sha=""
+    if [ "$want" != latest ] && [ -x "$CODEX_ROOT/$want/bin/codex" ]; then
+      ver="$want"   # already on disk (a rollback): no release lookup, no download
+    else
+      if [ "$want" = latest ]; then api="$CODEX_RELEASES_API/latest"; else api="$CODEX_RELEASES_API/tags/rust-v$want"; fi
+      rel="$(/usr/bin/curl -fsSL -H 'Accept: application/vnd.github+json' "$api" </dev/null 2>/dev/null)" \
+        || { echo "update FAILED (was: $before): no release at $api"; exit 1; }
+      ver="$(jq -r '.tag_name // empty | sub("^rust-v"; "")' <<<"$rel" 2>/dev/null)"
+      url="$(jq -r --arg n "$CODEX_ASSET" '[.assets[]? | select(.name == $n) | .browser_download_url] | first // empty' <<<"$rel" 2>/dev/null)"
+      sha="$(jq -r --arg n "$CODEX_ASSET" '[.assets[]? | select(.name == $n) | .digest // empty] | first // empty | sub("^sha256:"; "")' <<<"$rel" 2>/dev/null)"
+      [[ $ver =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]] && [ -n "$url" ] && [[ $sha =~ ^[0-9a-f]{64}$ ]] \
+        || { echo "update FAILED (was: $before): release ${want} has no $CODEX_ASSET with a sha256 digest"; exit 1; }
+      [ "$ver" = "$have" ] && { echo "already current ($before)"; exit 0; }
+    fi
+    if [ ! -w "$CODEX_ROOT" ] || [ ! -w "$(dirname "$CODEX_LINK")" ]; then
+      echo "needs root: $have -> $ver is due, and $CODEX_ROOT is not writable by $(id -un)"
+      exit 4
+    fi
+    if [ ! -x "$CODEX_ROOT/$ver/bin/codex" ]; then
+      tmp="$(mktemp -d)" || { echo "update FAILED (was: $before): no temp dir"; exit 1; }
+      why=""
+      if ! /usr/bin/curl -fsSL -o "$tmp/$CODEX_ASSET" "$url" </dev/null 2>/dev/null; then why="download failed: $url"
+      elif ! printf '%s  %s\n' "$sha" "$tmp/$CODEX_ASSET" | sha256sum -c --quiet >/dev/null 2>&1; then why="$CODEX_ASSET does not match its published sha256"
+      else
+        rm -rf "$CODEX_ROOT/$ver.partial"
+        if ! { install -d -m 755 "$CODEX_ROOT/$ver.partial" \
+               && tar --no-same-owner -xzf "$tmp/$CODEX_ASSET" -C "$CODEX_ROOT/$ver.partial"; } 2>/dev/null; then
+          why="could not unpack $CODEX_ASSET"
+        else
+          for f in bin/codex bin/codex-exec-server codex-resources/bwrap; do
+            [ -x "$CODEX_ROOT/$ver.partial/$f" ] || { why="the $ver package has no $f"; break; }
+          done
+          [ -n "$why" ] || mv "$CODEX_ROOT/$ver.partial" "$CODEX_ROOT/$ver" 2>/dev/null || why="could not move $ver into place"
+        fi
+        [ -z "$why" ] || rm -rf "$CODEX_ROOT/$ver.partial"
+      fi
+      rm -rf "$tmp"
+      [ -z "$why" ] || { echo "update FAILED (was: $before): $why"; exit 1; }
+    fi
+    if ! { ln -sfn "$ver" "$CODEX_ROOT/current" && ln -sfn "$CODEX_ROOT/current/bin/codex" "$CODEX_LINK"; } 2>/dev/null; then
+      echo "update FAILED (was: $before): could not point $CODEX_ROOT/current at $ver"
+      exit 1
+    fi
+    after="$(codex_version)"
+    [ "${after##* }" = "$ver" ] || { echo "update FAILED (was: $before): installed ${after:-nothing}, wanted $ver"; exit 1; }
+    echo "updated: $before -> $after"
+    exit 0
     ;;
 
   transcript)
