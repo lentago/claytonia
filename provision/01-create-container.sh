@@ -7,7 +7,8 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo ">>> installing packages"
 apt-get update -qq
-apt-get install -y -qq curl ca-certificates git jq ripgrep inotify-tools sudo python3 less openssh-server tini >/dev/null
+# python3-venv + make (#242): a project setup hook and its make targets need them. Keep in step with kalmia forge/runner/substrate.sh, the real image source.
+apt-get install -y -qq curl ca-certificates git jq ripgrep inotify-tools sudo python3 python3-venv make less openssh-server tini >/dev/null
 echo "PKGS_OK"
 
 # Node 22 LTS from the NodeSource 22.x channel (#140): Astro 7 needs Node 22 and the
