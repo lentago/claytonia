@@ -8,10 +8,12 @@
 # For run-job's PR footer (#174): `api .../pulls/<n>` prints the PR JSON object
 # (body from FAKE_GH_PR_BODY or FAKE_GH_PR_JSON, head from FAKE_GH_PR_HEAD or agent/feat,
 # author from FAKE_GH_PR_AUTHOR or lentago-claude-runner[bot], created_at from
-# FAKE_GH_PR_CREATED or now), and `api -X PATCH .../pulls/<n> -f body=...` writes that
-# body to FAKE_GH_PATCHED.
+# FAKE_GH_PR_CREATED or now; an author or created_at set empty is sent empty), and
+# `api -X PATCH .../pulls/<n> -f body=...` writes that body to FAKE_GH_PATCHED.
+# FAKE_GH_STDERR, if set, is written to stderr by every call, as a gh warning would be.
 set -u
 [ -n "${FAKE_GH_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+[ -n "${FAKE_GH_STDERR:-}" ] && printf '%s\n' "$FAKE_GH_STDERR" >&2
 if [ "${1:-} ${2:-}" = "pr list" ] && [ -n "${FAKE_GH_PRS:-}" ]; then
   [ -n "${FAKE_GH_SLEEP:-}" ] && sleep "$FAKE_GH_SLEEP"
   [ "${FAKE_GH_FAIL:-0}" = 1 ] && { echo "gh: HTTP 500" >&2; exit 1; }
@@ -32,8 +34,8 @@ case "${2:-}" in
     _b="$(cat "${FAKE_GH_PR_BODY:-/dev/null}")"
     jq -cn --arg b "$_b" \
       --arg head "${FAKE_GH_PR_HEAD:-agent/feat}" \
-      --arg author "${FAKE_GH_PR_AUTHOR:-lentago-claude-runner[bot]}" \
-      --arg created "${FAKE_GH_PR_CREATED:-$(date -u +%FT%TZ)}" \
+      --arg author "${FAKE_GH_PR_AUTHOR-lentago-claude-runner[bot]}" \
+      --arg created "${FAKE_GH_PR_CREATED-$(date -u +%FT%TZ)}" \
       '{body: $b, head: {ref: $head}, user: {login: $author}, created_at: $created}'
     exit 0 ;;
 esac

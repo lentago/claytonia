@@ -1,16 +1,18 @@
 #!/usr/bin/env bats
 #
 # Runtime disclosure (#174, lentago/.github ADR-0015 Decisions 6 and 7). run-job's
-# code, not the agent, ends every runner PR body with one line naming the runtime
+# code, not the agent, ends every project job's PR body with one line naming the runtime
 # that wrote it, the job's main model and the run; and its preamble names the running
 # runtime and the trailer its commits carry. These pin, through the real run-job and
 # the gh stub: the footer for each runtime with the ADR's strings; exactly one footer
 # (Claude Code's own line replaced, an earlier run's footer replaced); verification that
 # only a PR opened by this run is edited (head branch, runner App author, and creation
-# time checked; cited PRs skipped with a journald line); no model clause when the main
-# model is unknown; a failed edit logged to journald with the outcome unchanged; no footer
-# without a PR; adapter about failure or bad JSON logged and skipped; and the preamble's
-# attribution per runtime.
+# time checked; cited PRs skipped with a journald line), failing closed when the author
+# or creation time cannot be checked; the author set read as cr-automerge reads it; gh's
+# stderr kept out of the body; no model clause when the main model is unknown; a failed
+# edit logged to journald with the outcome unchanged; no footer without a PR; adapter
+# about failure or bad JSON logged and skipped; run-job running only the adapters beside
+# it; and the preamble's attribution per runtime.
 
 load test_helper
 
@@ -65,7 +67,7 @@ EOF
   chmod +x "$TEST_TMP/codex"
   export CODEX_BIN="$TEST_TMP/codex" CLAUDE_RUNNER_CODEX_ENV="$TEST_TMP/codex.env"
   printf 'GOOGLE_GENAI_USE_VERTEXAI=true\n' > "$CLAUDE_RUNNER_GEMINI_ENV"
-  printf 'OPENAI_API_KEY=sk-disclosure-test\n' > "$CLAUDE_RUNNER_CODEX_ENV"
+  printf 'OPENAI_API_KEY=placeholder-not-a-key\n' > "$CLAUDE_RUNNER_CODEX_ENV"
   export FAKE_GEMINI_RESPONSE="opened $PR" FAKE_CODEX_MESSAGE="opened $PR"
   export FAKE_GEMINI_STDIN="$TEST_TMP/gemini.stdin" FAKE_CODEX_STDIN="$TEST_TMP/codex.stdin"
 
@@ -89,6 +91,20 @@ run_job() { # <runtime> — one project job on that runtime, through process-inb
 }
 footers() { grep -c '^🤖 Generated with \[' "$FAKE_GH_PATCHED"; }
 last_line() { tail -n 1 "$FAKE_GH_PATCHED"; }
+# fake_about <shell> — a copy of bin/ whose rt-claude runs <shell> for `about` and is
+# the real adapter otherwise. process-inbox runs that copy's run-job, which finds its
+# adapters beside itself: run-job takes no override for where they are.
+fake_about() {
+  mkdir -p "$TEST_TMP/bin"
+  cp -a "$REPO_ROOT/bin/." "$TEST_TMP/bin/"
+  cat > "$TEST_TMP/bin/rt-claude" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = about ]; then $1; fi
+exec "$REPO_ROOT/bin/rt-claude" "\$@"
+EOF
+  chmod +x "$TEST_TMP/bin/rt-claude"
+  export CLAUDE_RUNNER_BIN="$TEST_TMP/bin"
+}
 
 # refute <command> — fails the test when the command succeeds. A bare `! cmd` would
 # not: bash's errexit ignores negated commands, so bats lets them pass mid-test.
@@ -222,14 +238,57 @@ EOF
   grep -q "before job started" "$FAKE_SYSTEMD_CAT_LOG"
 }
 
+@test "a PR with no author login fails closed, with the default author set or one with empty entries" {
+  export FAKE_GH_PR_AUTHOR=""
+  unset CLAUDE_AUTOMERGE_AUTHOR
+  run_job claude
+  [ ! -e "$FAKE_GH_PATCHED" ]
+  grep -q "author 'none' is not the runner App" "$FAKE_SYSTEMD_CAT_LOG"
+
+  : > "$FAKE_SYSTEMD_CAT_LOG"
+  export CLAUDE_AUTOMERGE_AUTHOR=",lentago-claude-runner[bot],,"
+  export FAKE_BRANCH=agent/feat-2 FAKE_GH_PR_HEAD=agent/feat-2   # a fresh branch per run
+  run_job claude
+  [ ! -e "$FAKE_GH_PATCHED" ]
+  grep -q "author 'none' is not the runner App" "$FAKE_SYSTEMD_CAT_LOG"
+}
+
+@test "a PR whose creation time cannot be checked fails closed" {
+  # date -d reads both "" (today's midnight) and "tomorrow"; only GitHub's own form counts.
+  n=0
+  for created in "" tomorrow "not a date" "2026-13-45T99:99:99Z"; do
+    : > "$FAKE_SYSTEMD_CAT_LOG"
+    n=$((n + 1)); export FAKE_BRANCH="agent/feat-$n" FAKE_GH_PR_HEAD="agent/feat-$n"   # a fresh branch per run
+    export FAKE_GH_PR_CREATED="$created"
+    run_job claude
+    [ ! -e "$FAKE_GH_PATCHED" ]
+    grep -q "cannot be checked against the job start" "$FAKE_SYSTEMD_CAT_LOG"
+  done
+}
+
+@test "the runner App's logins come from CLAUDE_AUTOMERGE_AUTHOR, as for cr-automerge" {
+  export CLAUDE_AUTOMERGE_AUTHOR="other-runner[bot]"   # replaces the default set
+  run_job claude
+  [ ! -e "$FAKE_GH_PATCHED" ]
+  grep -q "author 'lentago-claude-runner\[bot\]' is not the runner App" "$FAKE_SYSTEMD_CAT_LOG"
+
+  export FAKE_GH_PR_AUTHOR="other-runner[bot]"
+  export FAKE_BRANCH=agent/feat-2 FAKE_GH_PR_HEAD=agent/feat-2   # a fresh branch per run
+  run_job claude
+  [ "$(footers)" -eq 1 ]
+}
+
+@test "gh's stderr never reaches the PR body" {
+  export FAKE_GH_STDERR="A new release of gh is available: 9.9.9"
+  run_job claude
+  r="$(only_runid)"
+  [ "$(footers)" -eq 1 ]
+  [[ "$(last_line)" == *"$CLAYTONIA \`$r\`." ]]
+  refute grep -q 'new release of gh' "$FAKE_GH_PATCHED"
+}
+
 @test "rt-about failure is logged to journald and disclosure is skipped" {
-  cat > "$TEST_TMP/rt-claude" <<EOF
-#!/usr/bin/env bash
-[ "\${1:-}" = about ] && { echo "adapter about exploded" >&2; exit 1; }
-exec "$REPO_ROOT/bin/rt-claude" "\$@"
-EOF
-  chmod +x "$TEST_TMP/rt-claude"
-  export CLAUDE_RUNNER_RT_DIR="$TEST_TMP"
+  fake_about 'echo "adapter about exploded" >&2; exit 1'
   run_job claude
   [ "$(count_in done)" -eq 1 ]
   grep -q "rt-claude about failed" "$FAKE_SYSTEMD_CAT_LOG"
@@ -237,17 +296,22 @@ EOF
 }
 
 @test "rt-about invalid JSON is logged to journald and disclosure is skipped" {
-  cat > "$TEST_TMP/rt-claude" <<EOF
-#!/usr/bin/env bash
-[ "\${1:-}" = about ] && { echo "not-json"; exit 0; }
-exec "$REPO_ROOT/bin/rt-claude" "\$@"
-EOF
-  chmod +x "$TEST_TMP/rt-claude"
-  export CLAUDE_RUNNER_RT_DIR="$TEST_TMP"
+  fake_about 'echo not-json; exit 0'
   run_job claude
   [ "$(count_in done)" -eq 1 ]
   grep -q "rt-claude about emitted invalid disclosure JSON" "$FAKE_SYSTEMD_CAT_LOG"
   [ ! -e "$FAKE_GH_PATCHED" ]
+}
+
+@test "run-job runs only the adapters beside it: an adapter directory in the environment is ignored" {
+  mkdir -p "$TEST_TMP/elsewhere"
+  printf '#!/usr/bin/env bash\ntouch "%s/elsewhere/ran"\nexit 1\n' "$TEST_TMP" > "$TEST_TMP/elsewhere/rt-claude"
+  chmod +x "$TEST_TMP/elsewhere/rt-claude"
+  export CLAUDE_RUNNER_RT_DIR="$TEST_TMP/elsewhere"
+  run_job claude
+  [ "$(count_in done)" -eq 1 ]
+  [ ! -e "$TEST_TMP/elsewhere/ran" ]
+  [ "$(footers)" -eq 1 ]
 }
 
 # --- the preamble (Decision 7) ----------------------------------------------------

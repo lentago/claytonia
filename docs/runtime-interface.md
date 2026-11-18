@@ -173,8 +173,8 @@ The runtime's row of lentago/.github ADR-0015's disclosure tables, as one JSON o
   message with the co-author trailer `<trailer>`, &lt;trailer_note&gt;." The preamble
   says this overrides any repo `CLAUDE.md` or fleet text that asks for a different
   trailer.
-- **The PR footer** (Decision 6): run-job's code ends every runner PR's body with one
-  line:
+- **The PR footer** (Decision 6): run-job's code ends the body of every PR a project
+  job opens with one line:
 
   > 🤖 Generated with [&lt;name&gt;](&lt;link&gt;), model `<main model>`, in
   > [claytonia](https://github.com/lentago/claytonia) run `<runid>`.
@@ -182,12 +182,20 @@ The runtime's row of lentago/.github ADR-0015's disclosure tables, as one JSON o
   The main model is the `tokens_by_model` key with the most `out + thinking` (a null `thinking` counts as
   0). The clause is dropped when that key is `unknown` or there are no per-model counts.
   The edit removes Claude Code's own "Generated with" line and any earlier run-job
-  footer, so a PR carries exactly one. It edits only a PR this run opened (the PR's
-  head branch matches the job's branch, its author is the runner App, and it was
-  created after the job started); an existing PR merely cited in the report is
-  skipped with a journald note. It goes through `gh-token`'s `pr` profile
+  footer, so a PR carries exactly one. It edits only a PR this run opened: the PR's
+  head branch matches the job's branch, its author is one of the runner App's logins
+  (`CLAUDE_AUTOMERGE_AUTHOR`, the set `cr-automerge` trusts), and it was created after
+  the job started. A check that cannot be made (no author login, or a `created_at` not
+  in GitHub's form) counts as failed. An existing PR merely cited in the report is
+  skipped with a journald note. The edit is a GET and then a PATCH of the whole body.
+  GitHub's REST API documents no conditional write for a PR body, so a human edit landing
+  between the two is overwritten. It goes through `gh-token`'s `pr` profile
   (`pull_requests: write` only) and is best-effort and time-bounded. A failure is a
   journald line and never changes the job's outcome.
+- **Project jobs only.** The preamble and the footer are written for project jobs. An
+  ad-hoc job has no project repo, so run-job writes it no preamble and looks for no
+  PR. Ad-hoc jobs open none, since their git credential is `gh-token`'s read-only
+  fallback.
 - **No runtime label** (Decision 8).
 
 A runtime takes its row in the ADR's tables, with its trailer address checked as the

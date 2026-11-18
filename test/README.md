@@ -75,10 +75,13 @@ bats --print-output-on-failure test/
   anything else. A new adapter
   adds one `contract_entry` (its stub and two models); without it the suite fails.
 - `test/disclosure.bats` — runtime disclosure (#174, lentago/.github ADR-0015): through
-  the real run-job and the `gh` stub, every runner PR's body ends with exactly one footer
-  in the ADR's words for its runtime (Claude Code's own line and an earlier run's footer
-  replaced); only a PR opened by this run is edited (head branch, runner App author,
-  creation after job start verified; cited PRs skipped with a journald line); the main
+  the real run-job and the `gh` stub, the body of every PR a project job opens ends with
+  exactly one footer in the ADR's words for its runtime (Claude Code's own line and an
+  earlier run's footer replaced); only a PR opened by this run is edited (head branch,
+  runner App author, creation after job start verified; cited PRs skipped with a
+  journald line), failing closed on a missing author or an unreadable creation time,
+  with the author set read from `CLAUDE_AUTOMERGE_AUTHOR` as cr-automerge reads it; gh's
+  stderr never reaches the body; run-job runs only the adapters beside it; the main
   model is the one with the most `out + thinking`, and an unknown one drops the clause;
   a failed PR also gets it; a failed edit is a journald line with the outcome unchanged;
   no PR means no footer; adapter `about` failure or bad JSON is logged and disclosure

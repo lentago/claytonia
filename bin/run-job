@@ -38,7 +38,8 @@ PRIVATE_WORKROOT="${CLAUDE_RUNNER_PRIVATE_WORKROOT:-/home/claude/private}"
 LIVE_ROOT="${CLAUDE_RUNNER_LIVE_ROOT:-/home/claude/.claytonia/live}"
 # Runtime adapters ship beside this script (gitops deploys all of bin/ together);
 # readlink keeps that true when run-job is reached through /usr/local/bin.
-RT_DIR="${CLAUDE_RUNNER_RT_DIR:-$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")}"
+# No environment override: whatever set one would choose the binary run-job runs.
+RT_DIR="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")"
 
 [ -f "$RUNNER_ROOT/etc/runner.env" ] && . "$RUNNER_ROOT/etc/runner.env"
 # No vendor secret is held here (#170). Each adapter sources its own env file
@@ -347,13 +348,14 @@ gh_api_as() {
     fi
     return 1
   fi
-  _err="$(mktemp "${TMPDIR:-/tmp}/run-job-gh-err.XXXXXX")"
-  if ! GH_TOKEN="$_tok" timeout -k 2 "$GH_API_TIMEOUT" gh api "$@" 2>"$_err"; then
-    echo "run-job: gh api failed ($runid): $(head -c 200 "$_err" 2>/dev/null | tr '\n' ' ')" | systemd-cat -t claude-runner -p warning
-    rm -f "$_err"
+  # The response is gh's stdout alone, so a warning on stderr never reaches a PR body.
+  # stdout leaves through fd 3 (this function's stdout) and stderr is held for the
+  # failure note. No temp file is involved, so a full or unwritable /tmp cannot fail
+  # the call before gh runs.
+  if ! { _err="$(GH_TOKEN="$_tok" timeout -k 2 "$GH_API_TIMEOUT" gh api "$@" 2>&1 1>&3 3>&-)"; } 3>&1; then
+    echo "run-job: gh api failed ($runid): $(printf '%s' "$_err" | head -c 200 | tr '\n' ' ')" | systemd-cat -t claude-runner -p warning
     return 1
   fi
-  rm -f "$_err"
 }
 
 # Target issue, in the project repo only (ad-hoc jobs have no repo). The spec's
@@ -628,15 +630,21 @@ else
   fi
 fi
 # The PR footer (#174, lentago/.github ADR-0015 Decision 6). run-job's code, not the
-# agent, ends every runner PR's body with one line naming the runtime that wrote it,
-# the job's main model and the run. The main model is the tokens_by_model key with
-# the most out + thinking (a null thinking counts as 0); the clause is dropped when
-# that is unknown or there are no per-model counts. The edit takes out Claude Code's
-# own "Generated with" line and any earlier footer of run-job's, so a PR carries
-# exactly one.
+# agent, ends the body of every PR a project job opens with one line naming the
+# runtime that wrote it, the job's main model and the run. (An ad-hoc job has no
+# project repo, so it gets no footer, as it gets no preamble: ad-hoc jobs open no PR.)
+# The main model is the tokens_by_model key with the most out + thinking (a null
+# thinking counts as 0); the clause is dropped when that is unknown or there are no
+# per-model counts. The edit takes out Claude Code's own "Generated with" line and
+# any earlier footer of run-job's, so a PR carries exactly one.
 # To avoid clobbering existing PRs cited in reports, run-job only edits a PR this
 # run created: its head branch must match this job's branch, its author must be the
-# runner App, and it must have been created after this job started.
+# runner App, and it must have been created after this job started. Any of the three
+# that cannot be checked counts as failed.
+# The edit is a GET then a PATCH of the whole body. GitHub's REST API documents no
+# conditional write for a PR body, so a human edit to the description that lands
+# between the two (well under a second, minutes after the agent opened the PR) is
+# overwritten.
 # Best-effort and time-bounded like the issue comments: a failure is a journald
 # line and never changes the job's outcome.
 if [ -n "${prurl:-}" ] && [ -n "${repo:-}" ] && [ -n "$rt_name" ] && [ -n "$rt_link" ]; then
@@ -656,14 +664,28 @@ if [ -n "${prurl:-}" ] && [ -n "${repo:-}" ] && [ -n "$rt_name" ] && [ -n "$rt_l
     elif [ -z "$_pr_head" ] || [ "$_pr_head" != "$_job_branch" ]; then
       _skip="PR #$_n head branch '${_pr_head:-none}' does not match job branch '$_job_branch'"
     else
-      _app_authors=",${CLAUDE_RUNNER_APP_AUTHOR:-},${CLAUDE_AUTOMERGE_AUTHOR:-},app/lentago-claude-runner,lentago-claude-runner[bot],"
-      if [[ "$_app_authors" != *",$_pr_author,"* ]]; then
-        _skip="PR #$_n author '$_pr_author' is not the runner App"
-      else
+      # The runner App's logins, the same set cr-automerge trusts and read the same
+      # way: the variable, when set (even empty), replaces the default, and empty
+      # entries never count.
+      _is_app=0
+      if [ -n "$_pr_author" ]; then
+        IFS=, read -r -a _app_authors <<<"${CLAUDE_AUTOMERGE_AUTHOR-app/lentago-claude-runner,lentago-claude-runner[bot]}"
+        for _a in "${_app_authors[@]}"; do
+          [ -n "$_a" ] && [ "$_a" = "$_pr_author" ] && _is_app=1
+        done
+      fi
+      # Each check fails closed: no login, no creation time in the form GitHub sends
+      # (date -d reads "" and "tomorrow" too) or no job start skips the edit.
+      _created_s=""
+      if [[ $_pr_created =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
         _created_s="$(date -u -d "$_pr_created" +%s 2>/dev/null || true)"
-        if [ -n "$_created_s" ] && [ -n "${start:-}" ] && [ "$_created_s" -lt "$((start - 10))" ]; then
-          _skip="PR #$_n created at $_pr_created before job started"
-        fi
+      fi
+      if [ "$_is_app" != 1 ]; then
+        _skip="PR #$_n author '${_pr_author:-none}' is not the runner App"
+      elif ! [[ $_created_s =~ ^[0-9]+$ ]] || ! [[ ${start:-} =~ ^[0-9]+$ ]]; then
+        _skip="PR #$_n creation time '${_pr_created:-none}' cannot be checked against the job start"
+      elif [ "$_created_s" -lt "$((start - 10))" ]; then
+        _skip="PR #$_n created at $_pr_created before job started"
       fi
     fi
     if [ -n "$_skip" ]; then
@@ -684,7 +706,7 @@ if [ -n "${prurl:-}" ] && [ -n "${repo:-}" ] && [ -n "$rt_name" ] && [ -n "$rt_l
         && gh_api_as pr "$repo" -X PATCH "repos/$repo/pulls/$_n" -f body="$_new" >/dev/null
       unset _main _clause _footer _new
     fi
-    unset _pr_head _pr_author _pr_created _body _job_branch _skip _app_authors _created_s
+    unset _pr_head _pr_author _pr_created _body _job_branch _skip _app_authors _a _is_app _created_s
   fi
   unset _n _pr_json
 fi
