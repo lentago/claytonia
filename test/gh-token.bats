@@ -69,11 +69,12 @@ mint_url()  { awk '$1 == "POST" { print $2 }' "$FAKE_CURL_LOG" | tail -1; }
   want comment       '{"issues":"write","metadata":"read"}'
   want read          '{"contents":"read","issues":"read","metadata":"read","pull_requests":"read"}'
   want merge         '{"contents":"write","metadata":"read","pull_requests":"write"}'
+  want pr            '{"metadata":"read","pull_requests":"write"}'
 }
 
 @test "no profile asks for a permission the App lacks, or above the level it holds" {
   rank() { case "$1" in read) echo 1 ;; write) echo 2 ;; esac; }
-  for p in job job-workflows comment read merge; do
+  for p in job job-workflows comment read merge pr; do
     : > "$FAKE_CURL_LOG"
     "$REPO_ROOT/bin/gh-token" --access "$p" acme/proj >/dev/null
     mint_body | jq -e --argjson app "$APP_PERMS" '
@@ -85,7 +86,7 @@ mint_url()  { awk '$1 == "POST" { print $2 }' "$FAKE_CURL_LOG" | tail -1; }
 }
 
 @test "no write token is minted for a whole installation" {
-  for p in job job-workflows comment merge; do
+  for p in job job-workflows comment merge pr; do
     : > "$FAKE_CURL_LOG"
     run "$REPO_ROOT/bin/gh-token" --access "$p"
     [ "$status" -eq 2 ]

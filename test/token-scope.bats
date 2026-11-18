@@ -58,7 +58,8 @@ refusal() { printf '%s' "refusing to allow a GitHub App to create or ""update wo
   grep -qx -- '--access job acme/proj' "$FAKE_GH_TOKEN_LOG"       # the agent's gh login
   grep -qx -- '--access comment acme/proj' "$FAKE_GH_TOKEN_LOG"   # claim and outcome comments
   grep -qx -- '--access merge acme/proj' "$FAKE_GH_TOKEN_LOG"     # cr-automerge
-  ! grep -qvE -- '^--access (job|comment|merge|read) acme/proj$' "$FAKE_GH_TOKEN_LOG"
+  grep -qx -- '--access pr acme/proj' "$FAKE_GH_TOKEN_LOG"        # the PR footer (#174)
+  ! grep -qvE -- '^--access (job|comment|merge|read|pr) acme/proj$' "$FAKE_GH_TOKEN_LOG"
   [ "$(cat "$TEST_TMP/inherited-access")" = job ]                 # what git push mints with
 }
 

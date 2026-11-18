@@ -12,6 +12,7 @@
 #   comment        issues: write; metadata: read  (run-job's claim and failure comments)
 #   read           contents, issues, pull_requests: read; metadata: read
 #   merge          contents, pull_requests: write; metadata: read  (cr-automerge's arm/disarm)
+#   pr             pull_requests: write; metadata: read  (run-job's PR footer, #174)
 # Every profile but `read` needs a repo: no write token is ever minted for a whole
 # installation. `read` with no repo covers the installation (ad-hoc jobs open no PR).
 #
@@ -50,7 +51,7 @@ else
   PEM="${GH_APP_PEM:-/etc/claude-runner/gh-app.pem}"
 fi
 
-usage() { echo "usage: gh-token [--access job|job-workflows|comment|read|merge] [owner/repo]" >&2; exit 2; }
+usage() { echo "usage: gh-token [--access job|job-workflows|comment|read|merge|pr] [owner/repo]" >&2; exit 2; }
 
 access=""
 while [ $# -gt 0 ]; do
@@ -76,6 +77,7 @@ case "$access" in
   comment)       perms='{"issues":"write","metadata":"read"}' ;;
   read)          perms='{"contents":"read","issues":"read","metadata":"read","pull_requests":"read"}' ;;
   merge)         perms='{"contents":"write","metadata":"read","pull_requests":"write"}' ;;
+  pr)            perms='{"metadata":"read","pull_requests":"write"}' ;;
   *) echo "gh-token: unknown access profile: $access" >&2; usage ;;
 esac
 if [ "$access" != read ] && [ -z "$repo" ]; then

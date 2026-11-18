@@ -106,6 +106,10 @@
 #   against the full session id on its first line. Subagent sessions (in a
 #   directory named after the session) are not copied.
 #
+# about (#174)
+#   lentago/.github ADR-0015's row for Gemini: Gemini CLI, its repository, and the
+#   trailer GitHub links to gemini-cli[bot], the App bot google-gemini owns.
+#
 # live-session (#239)
 #   The same file, found the same way while the run is live, printed with the
 #   session id: run-job's UUID, which Gemini takes as its own sessionId. run-job
@@ -139,7 +143,7 @@ KEEP_DAYS=7
 CONTEXT_FILES='["GEMINI.md","AGENTS.md","CLAUDE.md"]'
 TURN_CAP_WARNING='Maximum session turns exceeded'
 
-usage() { echo "usage: rt-gemini run|normalize|transcript|accepts-model|enforces|update|live-session [options]  (see the header)" >&2; exit 2; }
+usage() { echo "usage: rt-gemini run|normalize|transcript|accepts-model|enforces|update|live-session|about [options]  (see the header)" >&2; exit 2; }
 # The per-run Gemini homes, outside any checkout.
 state_root() { printf '%s/claytonia/gemini' "${XDG_STATE_HOME:-$HOME/.local/state}"; }
 # The CLI's own rule for --session-id; it also keeps the id safe in a path.
@@ -401,6 +405,11 @@ case "$cmd" in
     [ -n "$sid" ] && [ -n "$out" ] || usage
     f="$(session_file_of "$sid")"
     [ -n "$f" ] && cp -f "$f" "$out" 2>/dev/null
+    exit 0
+    ;;
+
+  about)
+    printf '%s\n' '{"name":"Gemini CLI","link":"https://github.com/google-gemini/gemini-cli","trailer":"Co-Authored-By: Gemini CLI <218312386+gemini-cli[bot]@users.noreply.github.com>","trailer_note":""}'
     exit 0
     ;;
 

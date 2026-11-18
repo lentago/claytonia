@@ -360,6 +360,33 @@ Durable conventions live in the **repo's own `CLAUDE.md`** (reviewed, versioned,
 into every job automatically). Cross-run learnings live in the NAS **memory** store.
 Both reach any worker — nothing is trapped on one box.
 
+### Which runtime wrote a PR
+
+Every runner PR opens as the same App and lands in the same review queue, whatever
+runtime did the work. run-job's code, not the agent, records which runtime it was, with
+the strings `lentago/.github` ADR-0015 sets (#174). Both records below are written for
+project jobs, the jobs that open PRs. An ad-hoc job has no project repo, so it gets
+neither: its preamble has no project rules, and with a read-only git credential it
+opens no PR.
+
+- **The footer.** One line ends the PR body, for example:
+
+  > 🤖 Generated with [Gemini CLI](https://github.com/google-gemini/gemini-cli), model
+  > `gemini-3.8-flash`, in [claytonia](https://github.com/lentago/claytonia) run `<runid>`.
+
+  The model is the job's main model, the one that wrote the most. On a Claude PR the
+  line replaces Claude Code's own. run-job writes it only on a PR this job opened: the
+  PR's head branch is the job's, its author is the runner App, and it was created after
+  the job started. If any of these cannot be checked, the PR is left alone. The edit
+  reads the body and writes it back whole, so a human edit made in the moment between
+  the two is lost. A failed edit never changes the job's outcome.
+- **The trailer.** The preamble names the running runtime and the `Co-Authored-By:`
+  trailer its commits carry, overriding a repo `CLAUDE.md` that asks for Claude's.
+  Gemini commits credit `gemini-cli[bot]`, Codex commits credit OpenAI's `codex`, and
+  Claude commits are unchanged. The footer is the record when the two disagree, since
+  a trailer depends on the agent following the preamble.
+- **No runtime label.** The footer and trailer are the disclosure (ADR-0015 Decision 8).
+
 ## The fleet
 
 Multiple workers poll the same inbox and claim jobs by atomic `rename`. When co-located

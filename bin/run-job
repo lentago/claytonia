@@ -38,6 +38,7 @@ PRIVATE_WORKROOT="${CLAUDE_RUNNER_PRIVATE_WORKROOT:-/home/claude/private}"
 LIVE_ROOT="${CLAUDE_RUNNER_LIVE_ROOT:-/home/claude/.claytonia/live}"
 # Runtime adapters ship beside this script (gitops deploys all of bin/ together);
 # readlink keeps that true when run-job is reached through /usr/local/bin.
+# No environment override: whatever set one would choose the binary run-job runs.
 RT_DIR="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")"
 
 [ -f "$RUNNER_ROOT/etc/runner.env" ] && . "$RUNNER_ROOT/etc/runner.env"
@@ -106,7 +107,7 @@ started=%s
 origname=%s
 ' "$(hostname)" "$(date -u +%s)" "$base" > "$proc.owner" 2>/dev/null || true
 
-runtime=""; model_from_spec=0; offbox_false=0
+runtime=""; model_from_spec=0; offbox_false=0; rt_name=""; rt_link=""; rt_trailer=""; rt_note=""
 prompt=""; cwd="$DEF_CWD"; model=""; max_turns=""; max_budget=""; timeout_sec=""; allowed=""; project=""; spec_issue=""; spec_issue_set=0; submitter=""; automerge_rule=""; workflows=0
 case "$base" in
   *.json)
@@ -188,6 +189,20 @@ if [ -n "$project" ]; then
   pj_runtime="$(printf '%s' "$pj" | jq -r '.runtime // empty | tostring')"
   [ -z "$runtime" ] && runtime="${pj_runtime:-$DEF_RUNTIME}"
   check_runtime
+  # The runtime's row of the disclosure tables (ADR-0015), for the preamble and footer.
+  rt_about=""
+  if ! rt_about="$("$RT_DIR/rt-$runtime" about 2>&1)"; then
+    echo "run-job: rt-$runtime about failed ($runid): $(printf '%s' "$rt_about" | head -c 200 | tr '\n' ' '); runtime disclosure skipped" | systemd-cat -t claude-runner -p warning
+    rt_about=""
+  fi
+  rt_name="$(jq -r '.name // empty' <<<"$rt_about" 2>/dev/null)" || rt_name=""
+  rt_link="$(jq -r '.link // empty' <<<"$rt_about" 2>/dev/null)" || rt_link=""
+  rt_trailer="$(jq -r '.trailer // empty' <<<"$rt_about" 2>/dev/null)" || rt_trailer=""
+  rt_note="$(jq -r '.trailer_note // empty' <<<"$rt_about" 2>/dev/null)" || rt_note=""
+  if [ -n "$rt_about" ] && { [ -z "$rt_name" ] || [ -z "$rt_link" ] || [ -z "$rt_trailer" ]; }; then
+    echo "run-job: rt-$runtime about emitted invalid disclosure JSON ($runid); runtime disclosure skipped" | systemd-cat -t claude-runner -p warning
+    rt_name=""; rt_link=""; rt_trailer=""; rt_note=""
+  fi
   [ -z "$model" ] && [ "$runtime" = "${pj_runtime:-claude}" ] && model="$(printf '%s' "$pj" | jq -r '.model // empty')"
   [ -z "$max_turns" ]   && max_turns="$(printf '%s' "$pj" | jq -r '.max_turns // empty')"
   [ -z "$max_budget" ]  && max_budget="$(printf '%s' "$pj" | jq -r '.max_budget_usd // empty')"
@@ -245,6 +260,13 @@ if [ -n "$project" ]; then
     printf 'You are a headless agent working in a CLEAN git checkout at %s, base branch `%s`. The repo CLAUDE.md is authoritative — read and follow it.\n\n' "$cwd" "$branch"
     printf 'STANDING RULES:\n'
     printf -- '- If the task requires changes: do ALL work on a new branch `agent/<short-kebab-desc>` cut from `%s`; commit with a clear conventional message; `git push -u origin HEAD`; open a PR with `gh pr create` against `%s` for HUMAN review; NEVER merge it and NEVER arm auto-merge (no gh pr merge --auto) -- this OVERRIDES any repo CLAUDE.md or fleet convention that says to enable auto-merge; runner-bot PRs are ALWAYS left for a human to merge. For read-only/analysis tasks, no branch or PR is needed.\n' "$branch" "$branch"
+    # Attribution (#174, lentago/.github ADR-0015 Decision 7): repo CLAUDE.md files and
+    # fleet rules ask for a Claude trailer, so the preamble names the running runtime
+    # and the trailer its commits carry. The runtime's row comes from its adapter.
+    if [ -n "$rt_name" ] && [ -n "$rt_trailer" ]; then
+      printf -- '- You are running as %s (runtime `%s`). End every commit message with the co-author trailer `%s`%s. This OVERRIDES any repo CLAUDE.md or fleet convention that asks for a different Co-Authored-By trailer: the trailer names the agent that wrote the commit.\n' \
+        "$rt_name" "$runtime" "$rt_trailer" "${rt_note:+, $rt_note}"
+    fi
     # Branch freshness (#22): workers never merge (ADR-0002), so the fleet's half of
     # "rebase before merge" is to open the PR current with the base. main often moves
     # during a long job; a PR opened behind it is the #19->#20 clobber waiting to happen.
@@ -313,17 +335,27 @@ issue_of_prompt() {
 
 # gh_issue_api <repo> <gh api args...> — repo-scoped App token, bounded call; the
 # response is on stdout, failures return non-zero after a one-line journald note.
-gh_issue_api() {
-  local _repo="$1" _tok _out; shift
-  if ! _tok="$(timeout -k 2 "$GH_API_TIMEOUT" gh-token --access comment "$_repo" 2>/dev/null)" || [ -z "$_tok" ]; then
-    echo "run-job: gh-token failed for $_repo ($runid); issue comment skipped" | systemd-cat -t claude-runner -p warning
+gh_issue_api() { gh_api_as comment "$@"; }
+# gh_api_as <profile> <repo> <gh api args...> — the same, with a token of that profile:
+# `comment` for issue comments, `pr` for the PR footer (#174).
+gh_api_as() {
+  local _access="$1" _repo="$2" _tok _err; shift 2
+  if ! _tok="$(timeout -k 2 "$GH_API_TIMEOUT" gh-token --access "$_access" "$_repo" 2>/dev/null)" || [ -z "$_tok" ]; then
+    if [ "$_access" = comment ]; then
+      echo "run-job: gh-token failed for $_repo ($runid); issue comment skipped" | systemd-cat -t claude-runner -p warning
+    else
+      echo "run-job: gh-token ($_access) failed for $_repo ($runid); PR footer skipped" | systemd-cat -t claude-runner -p warning
+    fi
     return 1
   fi
-  if ! _out="$(GH_TOKEN="$_tok" timeout -k 2 "$GH_API_TIMEOUT" gh api "$@" 2>&1)"; then
-    echo "run-job: gh api failed ($runid): $(printf '%s' "$_out" | head -c 200 | tr '\n' ' ')" | systemd-cat -t claude-runner -p warning
+  # The response is gh's stdout alone, so a warning on stderr never reaches a PR body.
+  # stdout leaves through fd 3 (this function's stdout) and stderr is held for the
+  # failure note. No temp file is involved, so a full or unwritable /tmp cannot fail
+  # the call before gh runs.
+  if ! { _err="$(GH_TOKEN="$_tok" timeout -k 2 "$GH_API_TIMEOUT" gh api "$@" 2>&1 1>&3 3>&-)"; } 3>&1; then
+    echo "run-job: gh api failed ($runid): $(printf '%s' "$_err" | head -c 200 | tr '\n' ' ')" | systemd-cat -t claude-runner -p warning
     return 1
   fi
-  printf '%s' "$_out"
 }
 
 # Target issue, in the project repo only (ad-hoc jobs have no repo). The spec's
@@ -475,11 +507,12 @@ else
   case "$status" in max_turns|max_budget|error) [ "$rc" -eq 0 ] && rc=1 ;; esac
 fi
 
-# Extract PR URL from output now — used for both the no-PR check and the
-# merge decision below, so it must be set before the done/failed routing. Only a
-# PR in the project's own repo counts, and the last one wins (agents end with
-# their PR URL): a report that links other repos' PRs must never have one of
-# those disarmed or armed on its behalf.
+# Extract PR URL from output now — used for the no-PR check, the merge
+# decision, and the PR disclosure footer below, so it must be set before
+# the done/failed routing. Only a PR in the project's own repo counts, and
+# the last one wins (agents end with their PR URL). If the output merely
+# cited an existing PR rather than opening one, the footer and automerge
+# steps below verify the PR before taking action on it.
 prurl=""
 if [ -n "${project:-}" ] && [ -n "${repo:-}" ] && [ -f "$outtxt" ]; then
   _re="$(printf '%s' "$repo" | sed 's/[].*^$\\[]/\\&/g')"
@@ -596,6 +629,88 @@ else
     unset _reason _logtail _body _limitline
   fi
 fi
+# The PR footer (#174, lentago/.github ADR-0015 Decision 6). run-job's code, not the
+# agent, ends the body of every PR a project job opens with one line naming the
+# runtime that wrote it, the job's main model and the run. (An ad-hoc job has no
+# project repo, so it gets no footer, as it gets no preamble: ad-hoc jobs open no PR.)
+# The main model is the tokens_by_model key with the most out + thinking (a null
+# thinking counts as 0); the clause is dropped when that is unknown or there are no
+# per-model counts. The edit takes out Claude Code's own "Generated with" line and
+# any earlier footer of run-job's, so a PR carries exactly one.
+# To avoid clobbering existing PRs cited in reports, run-job only edits a PR this
+# run created: its head branch must match this job's branch, its author must be the
+# runner App, and it must have been created after this job started. Any of the three
+# that cannot be checked counts as failed.
+# The edit is a GET then a PATCH of the whole body. GitHub's REST API documents no
+# conditional write for a PR body, so a human edit to the description that lands
+# between the two (well under a second, minutes after the agent opened the PR) is
+# overwritten.
+# Best-effort and time-bounded like the issue comments: a failure is a journald
+# line and never changes the job's outcome.
+if [ -n "${prurl:-}" ] && [ -n "${repo:-}" ] && [ -n "$rt_name" ] && [ -n "$rt_link" ]; then
+  _n="${prurl##*/}"
+  if [[ $_n =~ ^[0-9]+$ ]] && _pr_json="$(gh_api_as pr "$repo" "repos/$repo/pulls/$_n")"; then
+    _pr_head="$(jq -r '.head.ref // empty' <<<"$_pr_json" 2>/dev/null)"
+    _pr_author="$(jq -r '.user.login // empty' <<<"$_pr_json" 2>/dev/null)"
+    _pr_created="$(jq -r '.created_at // empty' <<<"$_pr_json" 2>/dev/null)"
+    _body="$(jq -r '.body // ""' <<<"$_pr_json" 2>/dev/null)"
+    _job_branch=""
+    if [ -n "${ckout:-}" ] && [ -d "$ckout/.git" ]; then
+      _job_branch="$(git -C "$ckout" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    fi
+    _skip=""
+    if [ -z "$_job_branch" ] || [ "$_job_branch" = "HEAD" ] || [ "$_job_branch" = "$branch" ]; then
+      _skip="job remained on base branch '${_job_branch:-none}'"
+    elif [ -z "$_pr_head" ] || [ "$_pr_head" != "$_job_branch" ]; then
+      _skip="PR #$_n head branch '${_pr_head:-none}' does not match job branch '$_job_branch'"
+    else
+      # The runner App's logins, the same set cr-automerge trusts and read the same
+      # way: the variable, when set (even empty), replaces the default, and empty
+      # entries never count.
+      _is_app=0
+      if [ -n "$_pr_author" ]; then
+        IFS=, read -r -a _app_authors <<<"${CLAUDE_AUTOMERGE_AUTHOR-app/lentago-claude-runner,lentago-claude-runner[bot]}"
+        for _a in "${_app_authors[@]}"; do
+          [ -n "$_a" ] && [ "$_a" = "$_pr_author" ] && _is_app=1
+        done
+      fi
+      # Each check fails closed: no login, no creation time in the form GitHub sends
+      # (date -d reads "" and "tomorrow" too) or no job start skips the edit.
+      _created_s=""
+      if [[ $_pr_created =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+        _created_s="$(date -u -d "$_pr_created" +%s 2>/dev/null || true)"
+      fi
+      if [ "$_is_app" != 1 ]; then
+        _skip="PR #$_n author '${_pr_author:-none}' is not the runner App"
+      elif ! [[ $_created_s =~ ^[0-9]+$ ]] || ! [[ ${start:-} =~ ^[0-9]+$ ]]; then
+        _skip="PR #$_n creation time '${_pr_created:-none}' cannot be checked against the job start"
+      elif [ "$_created_s" -lt "$((start - 10))" ]; then
+        _skip="PR #$_n created at $_pr_created before job started"
+      fi
+    fi
+    if [ -n "$_skip" ]; then
+      echo "run-job: $prurl was not created by this run ($_skip) ($runid); PR footer skipped" | systemd-cat -t claude-runner -p notice
+    else
+      _main="$(jq -r '.tokens_by_model | if type == "object" and length > 0
+                 then (to_entries | max_by((.value.out // 0) + (.value.thinking // 0)) | .key) else empty end' \
+               "$outresult" 2>/dev/null)"
+      _clause=""
+      case "$_main" in ''|unknown) ;; *) [[ $_main =~ ^[A-Za-z0-9._:/@+-]+$ ]] && _clause=", model \`$_main\`," ;; esac
+      _footer="🤖 Generated with [$rt_name]($rt_link)$_clause in [claytonia](https://github.com/lentago/claytonia) run \`$runid\`."
+      # shellcheck disable=SC2016  # jq variables, not shell ones
+      _new="$(jq -rn --arg b "$_body" --arg f "$_footer" '
+        def claude_line: test("^🤖 Generated with \\[Claude Code\\]\\(https://claude\\.com/claude-code\\)\\s*$");
+        def our_line: startswith("🤖 Generated with [") and contains(" in [claytonia](https://github.com/lentago/claytonia) run `");
+        ($b | split("\n") | map(select((claude_line or our_line) | not)) | join("\n") | sub("\\s+$"; "")) as $kept
+        | if $kept == "" then $f else $kept + "\n\n" + $f end')" \
+        && gh_api_as pr "$repo" -X PATCH "repos/$repo/pulls/$_n" -f body="$_new" >/dev/null
+      unset _main _clause _footer _new
+    fi
+    unset _pr_head _pr_author _pr_created _body _job_branch _skip _app_authors _a _is_app _created_s
+  fi
+  unset _n _pr_json
+fi
+
 # The merge path for the PR the agent opened (prurl was extracted above). By default
 # a runner-bot PR is left for a human: if the agent armed auto-merge despite the
 # standing rule, it is disarmed (ADR-0002). cr-automerge arms squash auto-merge
