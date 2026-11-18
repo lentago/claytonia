@@ -5,8 +5,10 @@
 # PATCH bodies are appended to FAKE_GH_BODIES, separated by a NUL-free marker line.
 # For cr-submit's overlap check (#22): when FAKE_GH_PRS names a file, `pr list` prints
 # it (FAIL/SLEEP apply), and `api .../pulls/<n>/files` prints FAKE_GH_FILES_DIR/<n>.json.
-# For run-job's PR footer (#174): `api .../pulls/<n>` prints FAKE_GH_PR_BODY's contents
-# (what --jq '.body' yields), and `api -X PATCH .../pulls/<n> -f body=...` writes that
+# For run-job's PR footer (#174): `api .../pulls/<n>` prints the PR JSON object
+# (body from FAKE_GH_PR_BODY or FAKE_GH_PR_JSON, head from FAKE_GH_PR_HEAD or agent/feat,
+# author from FAKE_GH_PR_AUTHOR or lentago-claude-runner[bot], created_at from
+# FAKE_GH_PR_CREATED or now), and `api -X PATCH .../pulls/<n> -f body=...` writes that
 # body to FAKE_GH_PATCHED.
 set -u
 [ -n "${FAKE_GH_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_GH_LOG"
@@ -24,7 +26,16 @@ case "${2:-}" in
     cat "${FAKE_GH_FILES_DIR:-/nonexistent}/$_n.json" 2>/dev/null || { echo "gh: HTTP 404" >&2; exit 1; }
     exit 0 ;;
   */pulls/[0-9]*)
-    cat "${FAKE_GH_PR_BODY:-/dev/null}"; exit 0 ;;
+    if [ -n "${FAKE_GH_PR_JSON:-}" ] && [ -f "${FAKE_GH_PR_JSON:-}" ]; then
+      cat "$FAKE_GH_PR_JSON"; exit 0
+    fi
+    _b="$(cat "${FAKE_GH_PR_BODY:-/dev/null}")"
+    jq -cn --arg b "$_b" \
+      --arg head "${FAKE_GH_PR_HEAD:-agent/feat}" \
+      --arg author "${FAKE_GH_PR_AUTHOR:-lentago-claude-runner[bot]}" \
+      --arg created "${FAKE_GH_PR_CREATED:-$(date -u +%FT%TZ)}" \
+      '{body: $b, head: {ref: $head}, user: {login: $author}, created_at: $created}'
+    exit 0 ;;
 esac
 if [ "${2:-} ${3:-}" = "-X PATCH" ]; then
   case "${4:-}" in

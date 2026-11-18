@@ -182,7 +182,10 @@ The runtime's row of lentago/.github ADR-0015's disclosure tables, as one JSON o
   The main model is the `tokens_by_model` key with the most `out + thinking` (a null `thinking` counts as
   0). The clause is dropped when that key is `unknown` or there are no per-model counts.
   The edit removes Claude Code's own "Generated with" line and any earlier run-job
-  footer, so a PR carries exactly one. It goes through `gh-token`'s `pr` profile
+  footer, so a PR carries exactly one. It edits only a PR this run opened (the PR's
+  head branch matches the job's branch, its author is the runner App, and it was
+  created after the job started); an existing PR merely cited in the report is
+  skipped with a journald note. It goes through `gh-token`'s `pr` profile
   (`pull_requests: write` only) and is best-effort and time-bounded. A failure is a
   journald line and never changes the job's outcome.
 - **No runtime label** (Decision 8).

@@ -5,9 +5,12 @@
 # that wrote it, the job's main model and the run; and its preamble names the running
 # runtime and the trailer its commits carry. These pin, through the real run-job and
 # the gh stub: the footer for each runtime with the ADR's strings; exactly one footer
-# (Claude Code's own line replaced, an earlier run's footer replaced); no model clause
-# when the main model is unknown; a failed edit logged to journald with the outcome
-# unchanged; no footer without a PR; and the preamble's attribution per runtime.
+# (Claude Code's own line replaced, an earlier run's footer replaced); verification that
+# only a PR opened by this run is edited (head branch, runner App author, and creation
+# time checked; cited PRs skipped with a journald line); no model clause when the main
+# model is unknown; a failed edit logged to journald with the outcome unchanged; no footer
+# without a PR; adapter about failure or bad JSON logged and skipped; and the preamble's
+# attribution per runtime.
 
 load test_helper
 
@@ -33,7 +36,9 @@ setup() {
   cat > "$TEST_TMP/claude" <<'EOF'
 #!/usr/bin/env bash
 cat > "${FAKE_CLAUDE_STDIN:-/dev/null}"
-jq -cn --arg r "${FAKE_RESULT:-opened https://github.com/acme/proj/pull/77}" '{result: $r, is_error: false,
+res="${FAKE_RESULT:-opened https://github.com/acme/proj/pull/77}"
+[[ "$res" == *"opened http"* ]] && git checkout -q -b "${FAKE_BRANCH:-agent/feat}" 2>/dev/null || true
+jq -cn --arg r "$res" '{result: $r, is_error: false,
   total_cost_usd: 0.01, num_turns: 1,
   modelUsage: {"claude-haiku-5-5": {inputTokens: 900, outputTokens: 80, cacheReadInputTokens: 0, cacheCreationInputTokens: 0},
                "claude-opus-5-5": {inputTokens: 20, outputTokens: 400, cacheReadInputTokens: 9000, cacheCreationInputTokens: 500}}}'
@@ -42,8 +47,23 @@ EOF
   export CLAUDE_BIN="$TEST_TMP/claude" FAKE_CLAUDE_STDIN="$TEST_TMP/claude.stdin"
 
   # The peer runtimes, reporting the same PR.
-  export GEMINI_BIN="$STUBS_DIR/gemini" CLAUDE_RUNNER_GEMINI_ENV="$TEST_TMP/gemini.env"
-  export CODEX_BIN="$STUBS_DIR/codex" CLAUDE_RUNNER_CODEX_ENV="$TEST_TMP/codex.env"
+  cat > "$TEST_TMP/gemini" <<EOF
+#!/usr/bin/env bash
+res="\${FAKE_GEMINI_RESPONSE:-opened $PR}"
+[[ "\$res" == *"opened http"* ]] && git checkout -q -b "\${FAKE_BRANCH:-agent/feat}" 2>/dev/null || true
+exec "$STUBS_DIR/gemini" "\$@"
+EOF
+  chmod +x "$TEST_TMP/gemini"
+  export GEMINI_BIN="$TEST_TMP/gemini" CLAUDE_RUNNER_GEMINI_ENV="$TEST_TMP/gemini.env"
+
+  cat > "$TEST_TMP/codex" <<EOF
+#!/usr/bin/env bash
+res="\${FAKE_CODEX_MESSAGE:-opened $PR}"
+[[ "\$res" == *"opened http"* ]] && git checkout -q -b "\${FAKE_BRANCH:-agent/feat}" 2>/dev/null || true
+exec "$STUBS_DIR/codex" "\$@"
+EOF
+  chmod +x "$TEST_TMP/codex"
+  export CODEX_BIN="$TEST_TMP/codex" CLAUDE_RUNNER_CODEX_ENV="$TEST_TMP/codex.env"
   printf 'GOOGLE_GENAI_USE_VERTEXAI=true\n' > "$CLAUDE_RUNNER_GEMINI_ENV"
   printf 'OPENAI_API_KEY=sk-disclosure-test\n' > "$CLAUDE_RUNNER_CODEX_ENV"
   export FAKE_GEMINI_RESPONSE="opened $PR" FAKE_CODEX_MESSAGE="opened $PR"
@@ -147,6 +167,7 @@ refute() { if "$@"; then echo "unexpectedly true: $*"; return 1; fi; }
   cat > "$TEST_TMP/claude" <<'EOF'
 #!/usr/bin/env bash
 cat > /dev/null
+git checkout -q -b agent/feat 2>/dev/null || true
 jq -cn '{result: "opened https://github.com/acme/proj/pull/77", is_error: true, num_turns: 1}'
 EOF
   run_job claude
@@ -161,6 +182,72 @@ EOF
   [ "$(count_in done)" -eq 1 ]
   [ ! -e "$FAKE_GH_PATCHED" ]
   refute grep -q 'pulls/' "$FAKE_GH_LOG"
+}
+
+@test "a job that cites someone else's PR does not rewrite that PR's body" {
+  # A read-only analysis job reports finding an existing PR and quotes its URL.
+  # The job stayed on main, so it must not edit that PR's body.
+  export FAKE_RESULT="analysis complete; see prior PR https://github.com/acme/proj/pull/77"
+  run_job claude
+  [ "$(count_in done)" -eq 1 ]
+  r="$(only_runid)"
+  grep -qx 'exit=0' "$JOBS_ROOT/logs/$r.meta"
+  [ ! -e "$FAKE_GH_PATCHED" ]
+  grep -q "PR footer skipped" "$FAKE_SYSTEMD_CAT_LOG"
+  grep -q "job remained on base branch" "$FAKE_SYSTEMD_CAT_LOG"
+}
+
+@test "a job whose branch does not match the cited PR head branch skips the footer" {
+  export FAKE_BRANCH="agent/new-branch"
+  export FAKE_GH_PR_HEAD="agent/old-branch"
+  run_job claude
+  [ "$(count_in done)" -eq 1 ]
+  [ ! -e "$FAKE_GH_PATCHED" ]
+  grep -q "does not match job branch" "$FAKE_SYSTEMD_CAT_LOG"
+}
+
+@test "a job citing a PR authored by someone other than the runner App skips the footer" {
+  export FAKE_GH_PR_AUTHOR="octocat"
+  run_job claude
+  [ "$(count_in done)" -eq 1 ]
+  [ ! -e "$FAKE_GH_PATCHED" ]
+  grep -q "author 'octocat' is not the runner App" "$FAKE_SYSTEMD_CAT_LOG"
+}
+
+@test "a job citing a PR created before the job started skips the footer" {
+  export FAKE_GH_PR_CREATED="2026-11-01T00:00:00Z"
+  run_job claude
+  [ "$(count_in done)" -eq 1 ]
+  [ ! -e "$FAKE_GH_PATCHED" ]
+  grep -q "before job started" "$FAKE_SYSTEMD_CAT_LOG"
+}
+
+@test "rt-about failure is logged to journald and disclosure is skipped" {
+  cat > "$TEST_TMP/rt-claude" <<EOF
+#!/usr/bin/env bash
+[ "\${1:-}" = about ] && { echo "adapter about exploded" >&2; exit 1; }
+exec "$REPO_ROOT/bin/rt-claude" "\$@"
+EOF
+  chmod +x "$TEST_TMP/rt-claude"
+  export CLAUDE_RUNNER_RT_DIR="$TEST_TMP"
+  run_job claude
+  [ "$(count_in done)" -eq 1 ]
+  grep -q "rt-claude about failed" "$FAKE_SYSTEMD_CAT_LOG"
+  [ ! -e "$FAKE_GH_PATCHED" ]
+}
+
+@test "rt-about invalid JSON is logged to journald and disclosure is skipped" {
+  cat > "$TEST_TMP/rt-claude" <<EOF
+#!/usr/bin/env bash
+[ "\${1:-}" = about ] && { echo "not-json"; exit 0; }
+exec "$REPO_ROOT/bin/rt-claude" "\$@"
+EOF
+  chmod +x "$TEST_TMP/rt-claude"
+  export CLAUDE_RUNNER_RT_DIR="$TEST_TMP"
+  run_job claude
+  [ "$(count_in done)" -eq 1 ]
+  grep -q "rt-claude about emitted invalid disclosure JSON" "$FAKE_SYSTEMD_CAT_LOG"
+  [ ! -e "$FAKE_GH_PATCHED" ]
 }
 
 # --- the preamble (Decision 7) ----------------------------------------------------

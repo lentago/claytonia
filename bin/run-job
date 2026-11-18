@@ -38,7 +38,7 @@ PRIVATE_WORKROOT="${CLAUDE_RUNNER_PRIVATE_WORKROOT:-/home/claude/private}"
 LIVE_ROOT="${CLAUDE_RUNNER_LIVE_ROOT:-/home/claude/.claytonia/live}"
 # Runtime adapters ship beside this script (gitops deploys all of bin/ together);
 # readlink keeps that true when run-job is reached through /usr/local/bin.
-RT_DIR="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")"
+RT_DIR="${CLAUDE_RUNNER_RT_DIR:-$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")}"
 
 [ -f "$RUNNER_ROOT/etc/runner.env" ] && . "$RUNNER_ROOT/etc/runner.env"
 # No vendor secret is held here (#170). Each adapter sources its own env file
@@ -189,11 +189,19 @@ if [ -n "$project" ]; then
   [ -z "$runtime" ] && runtime="${pj_runtime:-$DEF_RUNTIME}"
   check_runtime
   # The runtime's row of the disclosure tables (ADR-0015), for the preamble and footer.
-  rt_about="$("$RT_DIR/rt-$runtime" about 2>/dev/null)"
-  rt_name="$(jq -r '.name // empty' <<<"$rt_about" 2>/dev/null)"
-  rt_link="$(jq -r '.link // empty' <<<"$rt_about" 2>/dev/null)"
-  rt_trailer="$(jq -r '.trailer // empty' <<<"$rt_about" 2>/dev/null)"
-  rt_note="$(jq -r '.trailer_note // empty' <<<"$rt_about" 2>/dev/null)"
+  rt_about=""
+  if ! rt_about="$("$RT_DIR/rt-$runtime" about 2>&1)"; then
+    echo "run-job: rt-$runtime about failed ($runid): $(printf '%s' "$rt_about" | head -c 200 | tr '\n' ' '); runtime disclosure skipped" | systemd-cat -t claude-runner -p warning
+    rt_about=""
+  fi
+  rt_name="$(jq -r '.name // empty' <<<"$rt_about" 2>/dev/null)" || rt_name=""
+  rt_link="$(jq -r '.link // empty' <<<"$rt_about" 2>/dev/null)" || rt_link=""
+  rt_trailer="$(jq -r '.trailer // empty' <<<"$rt_about" 2>/dev/null)" || rt_trailer=""
+  rt_note="$(jq -r '.trailer_note // empty' <<<"$rt_about" 2>/dev/null)" || rt_note=""
+  if [ -n "$rt_about" ] && { [ -z "$rt_name" ] || [ -z "$rt_link" ] || [ -z "$rt_trailer" ]; }; then
+    echo "run-job: rt-$runtime about emitted invalid disclosure JSON ($runid); runtime disclosure skipped" | systemd-cat -t claude-runner -p warning
+    rt_name=""; rt_link=""; rt_trailer=""; rt_note=""
+  fi
   [ -z "$model" ] && [ "$runtime" = "${pj_runtime:-claude}" ] && model="$(printf '%s' "$pj" | jq -r '.model // empty')"
   [ -z "$max_turns" ]   && max_turns="$(printf '%s' "$pj" | jq -r '.max_turns // empty')"
   [ -z "$max_budget" ]  && max_budget="$(printf '%s' "$pj" | jq -r '.max_budget_usd // empty')"
@@ -330,16 +338,22 @@ gh_issue_api() { gh_api_as comment "$@"; }
 # gh_api_as <profile> <repo> <gh api args...> — the same, with a token of that profile:
 # `comment` for issue comments, `pr` for the PR footer (#174).
 gh_api_as() {
-  local _access="$1" _repo="$2" _tok _out; shift 2
+  local _access="$1" _repo="$2" _tok _err; shift 2
   if ! _tok="$(timeout -k 2 "$GH_API_TIMEOUT" gh-token --access "$_access" "$_repo" 2>/dev/null)" || [ -z "$_tok" ]; then
-    echo "run-job: gh-token ($_access) failed for $_repo ($runid); skipped" | systemd-cat -t claude-runner -p warning
+    if [ "$_access" = comment ]; then
+      echo "run-job: gh-token failed for $_repo ($runid); issue comment skipped" | systemd-cat -t claude-runner -p warning
+    else
+      echo "run-job: gh-token ($_access) failed for $_repo ($runid); PR footer skipped" | systemd-cat -t claude-runner -p warning
+    fi
     return 1
   fi
-  if ! _out="$(GH_TOKEN="$_tok" timeout -k 2 "$GH_API_TIMEOUT" gh api "$@" 2>&1)"; then
-    echo "run-job: gh api failed ($runid): $(printf '%s' "$_out" | head -c 200 | tr '\n' ' ')" | systemd-cat -t claude-runner -p warning
+  _err="$(mktemp "${TMPDIR:-/tmp}/run-job-gh-err.XXXXXX")"
+  if ! GH_TOKEN="$_tok" timeout -k 2 "$GH_API_TIMEOUT" gh api "$@" 2>"$_err"; then
+    echo "run-job: gh api failed ($runid): $(head -c 200 "$_err" 2>/dev/null | tr '\n' ' ')" | systemd-cat -t claude-runner -p warning
+    rm -f "$_err"
     return 1
   fi
-  printf '%s' "$_out"
+  rm -f "$_err"
 }
 
 # Target issue, in the project repo only (ad-hoc jobs have no repo). The spec's
@@ -491,11 +505,12 @@ else
   case "$status" in max_turns|max_budget|error) [ "$rc" -eq 0 ] && rc=1 ;; esac
 fi
 
-# Extract PR URL from output now — used for both the no-PR check and the
-# merge decision below, so it must be set before the done/failed routing. Only a
-# PR in the project's own repo counts, and the last one wins (agents end with
-# their PR URL): a report that links other repos' PRs must never have one of
-# those disarmed or armed on its behalf.
+# Extract PR URL from output now — used for the no-PR check, the merge
+# decision, and the PR disclosure footer below, so it must be set before
+# the done/failed routing. Only a PR in the project's own repo counts, and
+# the last one wins (agents end with their PR URL). If the output merely
+# cited an existing PR rather than opening one, the footer and automerge
+# steps below verify the PR before taking action on it.
 prurl=""
 if [ -n "${project:-}" ] && [ -n "${repo:-}" ] && [ -f "$outtxt" ]; then
   _re="$(printf '%s' "$repo" | sed 's/[].*^$\\[]/\\&/g')"
@@ -618,26 +633,60 @@ fi
 # the most out + thinking (a null thinking counts as 0); the clause is dropped when
 # that is unknown or there are no per-model counts. The edit takes out Claude Code's
 # own "Generated with" line and any earlier footer of run-job's, so a PR carries
-# exactly one. Best-effort and time-bounded like the issue comments: a failure is a
-# journald line and never changes the job's outcome.
+# exactly one.
+# To avoid clobbering existing PRs cited in reports, run-job only edits a PR this
+# run created: its head branch must match this job's branch, its author must be the
+# runner App, and it must have been created after this job started.
+# Best-effort and time-bounded like the issue comments: a failure is a journald
+# line and never changes the job's outcome.
 if [ -n "${prurl:-}" ] && [ -n "${repo:-}" ] && [ -n "$rt_name" ] && [ -n "$rt_link" ]; then
   _n="${prurl##*/}"
-  _main="$(jq -r '.tokens_by_model | if type == "object" and length > 0
-             then (to_entries | max_by((.value.out // 0) + (.value.thinking // 0)) | .key) else empty end' \
-           "$outresult" 2>/dev/null)"
-  _clause=""
-  case "$_main" in ''|unknown) ;; *) [[ $_main =~ ^[A-Za-z0-9._:/@+-]+$ ]] && _clause=", model \`$_main\`," ;; esac
-  _footer="🤖 Generated with [$rt_name]($rt_link)$_clause in [claytonia](https://github.com/lentago/claytonia) run \`$runid\`."
-  if [[ $_n =~ ^[0-9]+$ ]] && _body="$(gh_api_as pr "$repo" "repos/$repo/pulls/$_n" --jq '.body // ""')"; then
-    # shellcheck disable=SC2016  # jq variables, not shell ones
-    _new="$(jq -rn --arg b "$_body" --arg f "$_footer" '
-      def claude_line: test("^🤖 Generated with \\[Claude Code\\]\\(https://claude\\.com/claude-code\\)\\s*$");
-      def our_line: startswith("🤖 Generated with [") and contains(" in [claytonia](https://github.com/lentago/claytonia) run `");
-      ($b | split("\n") | map(select((claude_line or our_line) | not)) | join("\n") | sub("\\s+$"; "")) as $kept
-      | if $kept == "" then $f else $kept + "\n\n" + $f end')" \
-      && gh_api_as pr "$repo" -X PATCH "repos/$repo/pulls/$_n" -f body="$_new" >/dev/null
+  if [[ $_n =~ ^[0-9]+$ ]] && _pr_json="$(gh_api_as pr "$repo" "repos/$repo/pulls/$_n")"; then
+    _pr_head="$(jq -r '.head.ref // empty' <<<"$_pr_json" 2>/dev/null)"
+    _pr_author="$(jq -r '.user.login // empty' <<<"$_pr_json" 2>/dev/null)"
+    _pr_created="$(jq -r '.created_at // empty' <<<"$_pr_json" 2>/dev/null)"
+    _body="$(jq -r '.body // ""' <<<"$_pr_json" 2>/dev/null)"
+    _job_branch=""
+    if [ -n "${ckout:-}" ] && [ -d "$ckout/.git" ]; then
+      _job_branch="$(git -C "$ckout" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    fi
+    _skip=""
+    if [ -z "$_job_branch" ] || [ "$_job_branch" = "HEAD" ] || [ "$_job_branch" = "$branch" ]; then
+      _skip="job remained on base branch '${_job_branch:-none}'"
+    elif [ -z "$_pr_head" ] || [ "$_pr_head" != "$_job_branch" ]; then
+      _skip="PR #$_n head branch '${_pr_head:-none}' does not match job branch '$_job_branch'"
+    else
+      _app_authors=",${CLAUDE_RUNNER_APP_AUTHOR:-},${CLAUDE_AUTOMERGE_AUTHOR:-},app/lentago-claude-runner,lentago-claude-runner[bot],"
+      if [[ "$_app_authors" != *",$_pr_author,"* ]]; then
+        _skip="PR #$_n author '$_pr_author' is not the runner App"
+      else
+        _created_s="$(date -u -d "$_pr_created" +%s 2>/dev/null || true)"
+        if [ -n "$_created_s" ] && [ -n "${start:-}" ] && [ "$_created_s" -lt "$((start - 10))" ]; then
+          _skip="PR #$_n created at $_pr_created before job started"
+        fi
+      fi
+    fi
+    if [ -n "$_skip" ]; then
+      echo "run-job: $prurl was not created by this run ($_skip) ($runid); PR footer skipped" | systemd-cat -t claude-runner -p notice
+    else
+      _main="$(jq -r '.tokens_by_model | if type == "object" and length > 0
+                 then (to_entries | max_by((.value.out // 0) + (.value.thinking // 0)) | .key) else empty end' \
+               "$outresult" 2>/dev/null)"
+      _clause=""
+      case "$_main" in ''|unknown) ;; *) [[ $_main =~ ^[A-Za-z0-9._:/@+-]+$ ]] && _clause=", model \`$_main\`," ;; esac
+      _footer="🤖 Generated with [$rt_name]($rt_link)$_clause in [claytonia](https://github.com/lentago/claytonia) run \`$runid\`."
+      # shellcheck disable=SC2016  # jq variables, not shell ones
+      _new="$(jq -rn --arg b "$_body" --arg f "$_footer" '
+        def claude_line: test("^🤖 Generated with \\[Claude Code\\]\\(https://claude\\.com/claude-code\\)\\s*$");
+        def our_line: startswith("🤖 Generated with [") and contains(" in [claytonia](https://github.com/lentago/claytonia) run `");
+        ($b | split("\n") | map(select((claude_line or our_line) | not)) | join("\n") | sub("\\s+$"; "")) as $kept
+        | if $kept == "" then $f else $kept + "\n\n" + $f end')" \
+        && gh_api_as pr "$repo" -X PATCH "repos/$repo/pulls/$_n" -f body="$_new" >/dev/null
+      unset _main _clause _footer _new
+    fi
+    unset _pr_head _pr_author _pr_created _body _job_branch _skip _app_authors _created_s
   fi
-  unset _n _main _clause _footer _body _new
+  unset _n _pr_json
 fi
 
 # The merge path for the PR the agent opened (prurl was extracted above). By default
